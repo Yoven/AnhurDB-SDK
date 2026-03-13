@@ -121,7 +121,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Auto-Release Python
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+          poetry install
+      - name: Build Python Packages
+        run: |
+          echo "=> Building Python Source Archive and Wheel..."
+          poetry build
+      - name: Auto-Release Python (with artifacts)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -130,19 +139,13 @@ jobs:
           if [ -z "$LATEST" ]; then LATEST="v2/python/v2.0.0"; fi
           NEW_TAG=$(echo $LATEST | awk -F. -v OFS=. '{$NF += 1 ; print}')
           echo "=> Prev: $LATEST | Next: $NEW_TAG"
-          gh release create "$NEW_TAG" --title "Python SDK ${NEW_TAG#v2/python/}" --generate-notes
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install poetry
-          poetry install
-      - name: Build and Publish
+          echo "=> Creating Release $NEW_TAG and uploading Wheels..."
+          gh release create "$NEW_TAG" dist/* --title "Python SDK ${NEW_TAG#v2/python/}" --generate-notes
+      - name: Publish to PyPI
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          echo "=> Building Python Package..."
-          poetry build
-          echo "=> Skipped actual publish since PYPI_API_TOKEN is not strictly configured yet."
+          echo "=> Skipped actual PyPI publish since PYPI_API_TOKEN is not strictly configured yet."
           
   publish-go:
     name: Prepare Golang SDK Tag
