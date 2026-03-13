@@ -34,13 +34,13 @@ jobs:
 
     - name: Run Go Tests
       run: |
-        echo "=> Executing Golang Test Suite..."
+        echo "=> Executing Golang Test Suite (Verbose)..."
         go test -v ./... -coverprofile=coverage.out
 
     - name: Build Go AST/Query Package
       run: |
-        echo "=> Verifying Golang Build..."
-        go build -v ./...
+        echo "=> Verifying Golang Build (Verbose)..."
+        go build -v -x ./...
 
   # ==========================================
   # Python SDK v2 Pipeline
@@ -66,17 +66,17 @@ jobs:
         echo "=> Installing Poetry and Dependencies..."
         python -m pip install --upgrade pip
         pip install poetry
-        poetry install
+        poetry install -v
 
     - name: Run Python Pytest
       run: |
-        echo "=> Executing Python Test Suite..."
-        poetry run pytest -v tests/
+        echo "=> Executing Python Test Suite (Verbose)..."
+        poetry run pytest -vv tests/
 
     - name: Static Type Checking
       run: |
-        echo "=> Running MyPy..."
-        poetry run mypy anhurdb/
+        echo "=> Running MyPy (Verbose)..."
+        poetry run mypy --show-error-context --show-column-numbers anhurdb/
 
   # ==========================================
   # Release Automation (Publish to PyPI / Tag Go)
