@@ -3,6 +3,8 @@ name: AnhurDB-SDK CI/CD
 on:
   push:
     branches: [ "main" ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ "main" ]
 
@@ -104,17 +106,52 @@ jobs:
   # ==========================================
   # Release Automation (Publish to PyPI / Tag Go)
   # ==========================================
-  publish:
-    name: Publish Release
+  publish-python:
+    name: Publish Python SDK to PyPI
     needs: [build-go, test-go, lint-python, test-python]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/python
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-      
-      - name: Log Success
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Dependencies
         run: |
-          echo "=> 🚀 CI Pipeline verified successfully in parallel."
-          echo "=> Future step: Add Twine/Poetry publish for PyPI here."
-          echo "=> Future step: Add Git Tag generation for Go pkg.go.dev here."
+          python -m pip install --upgrade pip
+          pip install poetry
+          poetry install
+      - name: Build and Publish
+        env:
+          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          echo "=> Building Python Package..."
+          poetry build
+          echo "=> Skipped actual publish since PYPI_API_TOKEN is not strictly configured yet."
+          
+  publish-go:
+    name: Prepare Golang SDK Tag
+    needs: [build-go, test-go, lint-python, test-python]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/golang
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Verify module
+        run: |
+          echo "=> Go modules are intrinsically published via Git Tags."
+          echo "=> Validating syntax for module github.com/yoven/anhurdb-sdk/v2/golang@${{ github.ref_name }}"
+          go mod tidy
+          go build ./...
