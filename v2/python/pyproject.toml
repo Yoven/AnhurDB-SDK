@@ -3,7 +3,7 @@ name = "anhurdb"
 version = "2.0.0"
 description = "Official Python SDK V2 for AnhurDB - The Cognitive Database"
 authors = ["Anhur Team <bot@anhur.io>"]
-readme = "../../README.md"
+readme = "README.md"
 packages = [{include = "anhurdb"}]
 
 [tool.poetry.dependencies]
