@@ -1,0 +1,98 @@
+name: AnhurDB-SDK CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # ==========================================
+  # Golang SDK v2 Pipeline
+  # ==========================================
+  build-and-test-go:
+    name: Build & Test Golang SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/golang
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+        cache-dependency-path: v2/golang/go.sum
+
+    - name: Ensure Dependencies
+      run: |
+        echo "=> Downloading Go Modules..."
+        go mod download
+        go mod tidy
+
+    - name: Run Go Tests
+      run: |
+        echo "=> Executing Golang Test Suite..."
+        go test -v ./... -coverprofile=coverage.out
+
+    - name: Build Go AST/Query Package
+      run: |
+        echo "=> Verifying Golang Build..."
+        go build -v ./...
+
+  # ==========================================
+  # Python SDK v2 Pipeline
+  # ==========================================
+  build-and-test-python:
+    name: Build & Test Python SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/python
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Dependencies
+      run: |
+        echo "=> Installing Poetry and Dependencies..."
+        python -m pip install --upgrade pip
+        pip install poetry
+        poetry install
+
+    - name: Run Python Pytest
+      run: |
+        echo "=> Executing Python Test Suite..."
+        poetry run pytest -v tests/
+
+    - name: Static Type Checking
+      run: |
+        echo "=> Running MyPy..."
+        poetry run mypy src/
+
+  # ==========================================
+  # Release Automation (Publish to PyPI / Tag Go)
+  # ==========================================
+  publish:
+    name: Publish Release
+    needs: [build-and-test-go, build-and-test-python]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Log Success
+        run: |
+          echo "=> 🚀 CI Pipeline verified successfully in parallel."
+          echo "=> Future step: Add Twine/Poetry publish for PyPI here."
+          echo "=> Future step: Add Git Tag generation for Go pkg.go.dev here."
