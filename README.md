@@ -44,19 +44,16 @@ pip install -e .
 import asyncio
 from anhurdb.client import Client
 from anhurdb.models import CreateRequest
-from anhurdb.query import Filter, Eq, Gt
+from anhurdb.query import Filter, Eq
 
 async def main():
     async with Client(url="http://localhost:8080") as client:
-        # Create a record
+        # Create a record (No cognitive params required!)
         req = CreateRequest(
             uuid="session-v2-001",
             type="episodic",
-            dimension=1024,
-            weight=0.75,
-            score=8,
-            summary="User asked about Redis",
-            vector=[...]
+            content="User asked about Redis",
+            metadata={"source": "slack", "context": "database"}
         )
         await client.create(req)
 
@@ -86,14 +83,12 @@ func main() {
     c := client.NewClient("http://localhost:8080", "api-key", "tenant-id")
     c.Connect(context.Background())
 
-    // Create
+    // Create (No cognitive params required!)
     rec := models.CreateRequest{
-        UUID:      "session-001",
-        Type:      "episodic",
-        Dimension: 1024,
-        Weight:    0.75,
-        Score:     8,
-        Summary:   "User asked about Redis",
+        UUID:     "session-001",
+        Type:     "episodic",
+        Content:  "User asked about Redis",
+        Metadata: map[string]string{"source": "cli"},
     }
     c.Create(context.Background(), rec)
 

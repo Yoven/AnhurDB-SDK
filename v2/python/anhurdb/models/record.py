@@ -1,11 +1,23 @@
-from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Any, Dict
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from .enums import MemoryType, MemoryStatus
 
+class CreateRequest(BaseModel):
+    """
+    High-Level input from a Client to AnhurDB.
+    The SDK hides cognitive params (weight, dimension, vectors) so the Server handles it.
+    """
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    
+    uuid: str
+    type: MemoryType = Field(default=MemoryType.EPISODIC)
+    content: str
+    metadata: Dict[str, str] = Field(default_factory=dict)
+
 class Record(BaseModel):
     """
-    Represents a unified Cognitive Memory Record inside AnhurDB.
+    Represents a unified Cognitive Memory Record structure returned by AnhurDB.
     """
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
