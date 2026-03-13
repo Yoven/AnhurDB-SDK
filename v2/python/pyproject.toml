@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "anhurdb"
+version = "2.0.0"
+description = "Official Python SDK V2 for AnhurDB - The Cognitive Database"
+authors = ["Anhur Team <bot@anhur.io>"]
+readme = "../../README.md"
+packages = [{include = "anhurdb"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pydantic = "^2.8.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-asyncio = "^0.23.0"
+mypy = "^1.11.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

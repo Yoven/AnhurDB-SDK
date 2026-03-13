@@ -109,5 +109,4 @@ func main() {
 | Document | Description |
 |----------|-------------|
 | [Architecture](./docs/general/ARCHITECTURE.md) | V1 Bridge pattern design (Legacy Concept) |
-| [Mathematics](./docs/general/MATHEMATICS.md) | Canonical formulas with LaTeX |
 | [REST API](./docs/api/REST_API.md) | Legacy REST interfaces |
