@@ -109,7 +109,7 @@ class QueryBuilder:
         """
         Compiles the fluent operations into the expected JSON AST format.
         """
-        ast = {
+        ast: Dict[str, Any] = {
             "filters": copy.deepcopy(self._filters),
             "pagination": {
                 "limit": self._limit,

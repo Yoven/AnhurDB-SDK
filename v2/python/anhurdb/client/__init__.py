@@ -1,5 +1,5 @@
 from .connection import HTTPConnection
-from ..query import QueryBuilder, QueryExecutor
+from ..query import QueryBuilder, QueryExecutor, SemanticMode
 from ..models import Record
 
 class MemoryCollection:
@@ -17,8 +17,10 @@ class MemoryCollection:
     def where(self, **kwargs) -> QueryBuilder:
         return QueryBuilder(self._executor).where(**kwargs)
         
-    def semantic_search(self, query: str, mode: str = "$hybrid") -> QueryBuilder:
+    def semantic_search(self, query: str, mode: SemanticMode | str = SemanticMode.HYBRID) -> QueryBuilder:
         # Note: mapping strings to SemanticMode Enum happens internally or user can pass Enum
+        if isinstance(mode, str):
+            mode = SemanticMode(mode)
         return QueryBuilder(self._executor).semantic_search(query, mode=mode)
         
     # 2. Singular Operations (Future)

@@ -3,7 +3,7 @@ import urllib.request
 import json
 from typing import Any, Dict
 
-from .exceptions import AnhurConnectionError, AnhurQueryError, AnhurAuthError
+from .exceptions import AnhurError, AnhurConnectionError, AnhurQueryError, AnhurAuthError
 
 class HTTPConnection:
     """

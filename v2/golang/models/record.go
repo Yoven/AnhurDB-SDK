@@ -11,8 +11,8 @@ type CreateRequest struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
-// Ensure interface compatibility for backwards references if needed
-type LegacyRecord struct {
+// Record ensures interface compatibility for backwards references
+type Record struct {
 	ID             int          `json:"id,omitempty"`
 	UUID           string       `json:"uuid"`
 	Type           MemoryType   `json:"type"`
