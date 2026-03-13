@@ -29,8 +29,7 @@ jobs:
 
     - name: Ensure Dependencies
       run: |
-        echo "=> Downloading Go Modules..."
-        go mod download
+        echo "=> Verifying Go Modules..."
         go mod tidy
 
     - name: Run Go Tests
@@ -77,7 +76,7 @@ jobs:
     - name: Static Type Checking
       run: |
         echo "=> Running MyPy..."
-        poetry run mypy src/
+        poetry run mypy anhurdb/
 
   # ==========================================
   # Release Automation (Publish to PyPI / Tag Go)
