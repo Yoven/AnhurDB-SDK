@@ -3,7 +3,7 @@ package storage_test
 import (
 	"testing"
 	"path/filepath"
-	"github.com/yoven/anhurdb-sdk/v2/golang/storage"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/storage"
 )
 
 func TestBuildPath(t *testing.T) {

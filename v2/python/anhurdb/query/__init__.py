@@ -1,5 +1,5 @@
 from .operators import QueryOperator, SemanticMode
-from .builder import QueryBuilder
+from .builder import QueryBuilder, Filter, Eq
 from .executor import QueryExecutor
 
 __all__ = [
@@ -7,4 +7,6 @@ __all__ = [
     "SemanticMode",
     "QueryBuilder",
     "QueryExecutor",
+    "Filter",
+    "Eq",
 ]

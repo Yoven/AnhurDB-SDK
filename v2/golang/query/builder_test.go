@@ -2,7 +2,7 @@ package query_test
 
 import (
 	"testing"
-	"github.com/yoven/anhurdb-sdk/v2/golang/query"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/query"
 )
 
 // MockExecutor for testing purely the AST builder

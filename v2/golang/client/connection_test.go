@@ -2,7 +2,7 @@ package client_test
 
 import (
 	"testing"
-	"github.com/yoven/anhurdb-sdk/v2/golang/client"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/client"
 )
 
 func TestNewConnection(t *testing.T) {

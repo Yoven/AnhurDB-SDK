@@ -3,15 +3,26 @@ package query
 type QueryOperator string
 
 const (
-	OpEq   QueryOperator = "$eq"
-	OpNeq  QueryOperator = "$neq"
-	OpGt   QueryOperator = "$gt"
-	OpGte  QueryOperator = "$gte"
-	OpLt   QueryOperator = "$lt"
-	OpLte  QueryOperator = "$lte"
-	OpIn   QueryOperator = "$in"
-	OpNin  QueryOperator = "$nin"
-	OpLike QueryOperator = "$like"
+	Eq   QueryOperator = "$eq"
+	Neq  QueryOperator = "$neq"
+	Gt   QueryOperator = "$gt"
+	Gte  QueryOperator = "$gte"
+	Lt   QueryOperator = "$lt"
+	Lte  QueryOperator = "$lte"
+	In   QueryOperator = "$in"
+	Nin  QueryOperator = "$nin"
+	Like QueryOperator = "$like"
+
+	// Old aliases for backwards compatibility
+	OpEq   = Eq
+	OpNeq  = Neq
+	OpGt   = Gt
+	OpGte  = Gte
+	OpLt   = Lt
+	OpLte  = Lte
+	OpIn   = In
+	OpNin  = Nin
+	OpLike = Like
 )
 
 type SemanticMode string

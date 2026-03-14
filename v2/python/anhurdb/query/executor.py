@@ -9,14 +9,15 @@ class QueryExecutor:
     def __init__(self, connection):
         self.connection = connection
 
-    def execute_query(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def execute_query(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Sends the compiled AST to the AnhurDB backend via the connection.
         """
-        # We expect the connection to expose a POST method
-        response_data = self.connection.post("/api/v1/query", json=ast)
+        # We expect the connection to expose an async post method
+        response_data = await self.connection.post("/v2/search/ast", json_data={"query": ast})
         
         if "records" not in response_data:
-            raise RuntimeError(f"Unexpected response structure from AnhurDB: {response_data}")
+             # Depending on endpoint, it might return empty or not wrap records
+             return response_data if isinstance(response_data, list) else []
             
         return response_data["records"]

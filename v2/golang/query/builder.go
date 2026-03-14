@@ -112,3 +112,13 @@ func (b *Builder) Execute() (interface{}, error) {
 
 	return b.executor.ExecuteQuery(b.ast)
 }
+
+// NewFilter creates a new builder without an executor for purely extracting the AST.
+func NewFilter() *Builder {
+	return NewBuilder(nil)
+}
+
+// AST returns the underlying constructed QueryAST structure.
+func (b *Builder) AST() QueryAST {
+	return b.ast
+}

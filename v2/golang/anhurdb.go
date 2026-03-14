@@ -3,8 +3,8 @@ package anhurdb
 import (
 	"context"
 
-	"github.com/yoven/anhurdb-sdk/v2/golang/client"
-	"github.com/yoven/anhurdb-sdk/v2/golang/query"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/client"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/query"
 )
 
 // AnhurClient represents the entry point for AnhurSDK V2.

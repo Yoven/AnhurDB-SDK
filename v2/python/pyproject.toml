@@ -9,6 +9,7 @@ packages = [{include = "anhurdb"}]
 [tool.poetry.dependencies]
 python = "^3.11"
 pydantic = "^2.8.0"
+aiohttp = "^3.9.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

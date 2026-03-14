@@ -1,41 +1,47 @@
+import os
+from typing import Optional, List
 from .connection import HTTPConnection
-from ..query import QueryBuilder, QueryExecutor, SemanticMode
-from ..models import Record
+from ..query import QueryBuilder, SemanticMode
+from ..models import Record, SearchResult, CreateRequest
 
-class MemoryCollection:
+class Client:
     """
-    Represents the cognitive memories space in AnhurDB.
-    Provides a factory for fluent queries.
+    The main asynchronous client for AnhurDB V2.
     """
-    def __init__(self, connection: HTTPConnection):
-        self._executor = QueryExecutor(connection)
+    def __init__(self, url: str = "http://localhost:8080", api_key: Optional[str] = None):
+        key = api_key or os.environ.get("ANHUR_API_KEY", "")
+        self._connection = HTTPConnection(base_url=url, api_key=key)
 
-    # 1. Fluent Query Builder Spawner
-    def select(self, *fields: str) -> QueryBuilder:
-        return QueryBuilder(self._executor).select(*fields)
+    async def __aenter__(self):
+        await self._connection.connect()
+        return self
 
-    def where(self, **kwargs) -> QueryBuilder:
-        return QueryBuilder(self._executor).where(**kwargs)
-        
-    def semantic_search(self, query: str, mode: SemanticMode | str = SemanticMode.HYBRID) -> QueryBuilder:
-        # Note: mapping strings to SemanticMode Enum happens internally or user can pass Enum
-        if isinstance(mode, str):
-            mode = SemanticMode(mode)
-        return QueryBuilder(self._executor).semantic_search(query, mode=mode)
-        
-    # 2. Singular Operations (Future)
-    def insert(self, record: Record) -> int:
-        raise NotImplementedError("Insert operation not yet mapped in V2 API.")
-        
-    def decay(self, ids: list[int], target_weight: float) -> bool:
-        raise NotImplementedError("Decay operation not yet mapped in V2 API.")
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._connection.close()
 
-class AnhurClient:
-    """
-    The main client for AnhurDB V2.
-    """
-    def __init__(self, url: str, api_key: str):
-        self._connection = HTTPConnection(base_url=url, api_key=api_key)
+    async def create(self, req: CreateRequest) -> None:
+        """
+        Stores a new cognitive or episodic record.
+        """
+        await self._connection.post("/v2/records", req.model_dump(by_alias=True))
         
-        # Domain objects (Collections)
-        self.memories = MemoryCollection(self._connection)
+    class _SearchResponse:
+        def __init__(self, records: List[Record]):
+            self.records = records
+
+    async def search_with_ast(self, session_uuid: str, filter_builder) -> _SearchResponse:
+        """
+        Uses the AST filter to search inside a specific dataset/session.
+        """
+        ast = filter_builder.ast()
+        
+        payload = {
+            "session_uuid": session_uuid,
+            "query": ast
+        }
+        
+        response_data = await self._connection.post("/v2/search/ast", payload)
+        
+        records_data = response_data.get("records", [])
+        records = [Record(**r) for r in records_data]
+        return self._SearchResponse(records=records)

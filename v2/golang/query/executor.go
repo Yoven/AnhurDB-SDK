@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/yoven/anhurdb-sdk/v2/golang/client"
-	"github.com/yoven/anhurdb-sdk/v2/golang/models"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/client"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/models"
 )
 
 // Executor struct binds the HTTP client to the AST execution.

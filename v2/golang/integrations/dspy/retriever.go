@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yoven/anhurdb-sdk/v2/golang"
-	"github.com/yoven/anhurdb-sdk/v2/golang/query"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2"
+	"github.com/yoven/anhurdb-sdk/v2/golang/v2/query"
 )
 
 // Document represents a standard retrieved abstraction used in Go agentic frameworks.

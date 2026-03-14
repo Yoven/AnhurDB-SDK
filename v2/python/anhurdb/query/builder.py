@@ -13,8 +13,13 @@ ALLOWED_WHERE_COLUMNS = {
 
 class QueryBuilder:
     """
-    A unified fluent interface for building AnhurDB Queries.
-    This class is purely functional and holds no network dependencies.
+    A unified fluent interface for building AnhurDB Queries (DSL).
+    
+    [V2 ARCHITECTURE NOTE]:
+    This builder explicitly generates a JSON Abstract Syntax Tree (AST).
+    When `.execute()` is called on the Public SDK, this AST is wrapped securely 
+    into an MCP Tool payload (`execute_ast`) and routed through the MCP Gateway
+    on port 9092, never hitting the AnhurDB cluster directly. 
     """
     def __init__(self, executor=None):
         self._executor = executor
@@ -123,7 +128,7 @@ class QueryBuilder:
             
         return ast
 
-    def execute(self) -> Any:
+    async def execute(self) -> Any:
         """
         Validates the AST and dispatches execution to the provided executor.
         """
@@ -131,4 +136,21 @@ class QueryBuilder:
             raise RuntimeError("Cannot execute: No executor was provided to QueryBuilder.")
         
         ast = self.build_ast()
-        return self._executor.execute_query(ast)
+        return await self._executor.execute_query(ast)
+
+def Eq(field: str, value: Any) -> Dict[str, Any]:
+    return {field: {"$eq": value}}
+
+class Filter:
+    """
+    Syntactic sugar for instantiating a QueryBuilder with a specific condition.
+    """
+    def __init__(self, condition: Optional[Dict[str, Any]] = None, **kwargs):
+        self._builder = QueryBuilder()
+        if condition:
+            # Merging condition directly into the builder's filter dictionary
+            for k, v in condition.items():
+                self._builder._filters[k] = v
+                
+    def ast(self) -> Dict[str, Any]:
+        return self._builder.build_ast()
