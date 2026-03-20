@@ -46,6 +46,11 @@ class Record(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
+    # Temporal Versioning (v6)
+    superseded_by: Optional[int] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    
     # Internal vectors (not usually returned in plain queries)
     vector: Optional[str] = None
     

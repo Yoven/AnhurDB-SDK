@@ -30,6 +30,10 @@ type Record struct {
 	
 	FilePath       string       `json:"file_path,omitempty"`
 	Checksum       string       `json:"checksum,omitempty"`
+	// Temporal Versioning (v6)
+	SupersededBy   *int        `json:"superseded_by,omitempty"`
+	ValidFrom      *time.Time  `json:"valid_from,omitempty"`
+	ValidUntil     *time.Time  `json:"valid_until,omitempty"`
 	
 	CreatedAt      *time.Time   `json:"created_at,omitempty"`
 	UpdatedAt      *time.Time   `json:"updated_at,omitempty"`
