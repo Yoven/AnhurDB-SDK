@@ -1,10 +1,243 @@
-# AnhurDB Python SDK V2
+# AnhurDB Python SDK
 
-Official Python client for interacting with AnhurDB natively. 
+Official async Python client for [AnhurDB](https://anhurdb.com) — cognitive memory for AI agents.
 
 ## Features
-- Full async support
-- Fluent Query Builder
-- Vector Math Abstractions
 
-See the main [AnhurDB Repository](https://github.com/Yoven/AnhurDB) for full architectural documentation.
+- **Two client levels**: `Memory` (simple 3-method API) and `AnhurClient` (full 40+ endpoint surface)
+- Full async support (aiohttp)
+- Type-safe models (Pydantic v2)
+- Fluent Query Builder (AST-based DSL for advanced filtering)
+- Entity knowledge graph (search, upsert, relationships, timeline)
+- Batch operations (read/update up to 100 records at once)
+- File upload with async ingestion (PDF, images, DOCX, etc.)
+- Temporal versioning (supersede old facts)
+- REST direct transport (default) with optional MCP tunnel mode
+- Session management with auto-generated container tags
+
+## Install
+
+```bash
+pip install anhurdb
+```
+
+## Quick Start — Memory (Simple API)
+
+```python
+from anhurdb import Memory
+
+async with Memory(api_key="anhur_xxx") as mem:
+    # Store a memory (auto-embedding + extraction on cloud)
+    await mem.add("I'm a data scientist at Google working on NLP")
+
+    # Search across all sessions
+    results = await mem.search("what does this user do?")
+    for r in results:
+        print(f"{r['summary']} (score: {r['score']:.2f})")
+
+    # Get user profile
+    profile = await mem.profile()
+    print(profile["static"])
+```
+
+## Quick Start — AnhurClient (Full API)
+
+```python
+from anhurdb import AnhurClient, CreateRequest, MemoryType
+
+async with AnhurClient(api_key="anhur_xxx") as client:
+    # Create a record
+    await client.create(CreateRequest(
+        uuid="session-1",
+        type=MemoryType.FACT,
+        summary="User is a data scientist",
+        content="Full conversation context here...",
+        score=8,
+    ))
+
+    # Search
+    results = await client.search("data scientist", limit=10)
+
+    # Entity knowledge graph
+    entity = await client.upsert_entity("Google", entity_type="org")
+    graph = await client.get_entity_graph(entity["id"], depth=2)
+    timeline = await client.entity_timeline(entity["id"])
+
+    # Batch operations
+    contents = await client.batch_read_content([1, 2, 3])
+    await client.batch_update_status([10, 11], status="archived")
+
+    # File upload
+    import base64
+    with open("report.pdf", "rb") as f:
+        content = base64.b64encode(f.read()).decode()
+    upload = await client.upload_file("report.pdf", content)
+    status = await client.upload_status(upload["id"])
+
+    # Temporal versioning
+    await client.supersede(old_id=42, new_id=99)
+```
+
+## API Reference — Memory Class
+
+### Constructor
+
+```python
+Memory(
+    api_key="anhur_xxx",       # Required (or set ANHUR_API_KEY env)
+    url="https://api.anhurdb.com",  # Server URL
+    user_id="user-123",        # Optional explicit container tag
+    tenant_id="tenant-a",      # Optional multi-tenant header
+    mode="rest",               # "rest" (default) or "mcp" (tunnel)
+)
+```
+
+### Core Methods
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `add(text, score=5, type="episodic")` | Store a memory | `dict` with session_id, records, mode |
+| `search(query, limit=10, type_filter=None)` | Hybrid search across all sessions | `list[dict]` |
+| `profile()` | Get user/agent memory profile | `dict` with static, dynamic, stats |
+
+### Search & Discovery
+
+| Method | Description |
+|--------|-------------|
+| `search_by_type(type, limit=20)` | Filter by cognitive type |
+| `smart_search(query, limit=10)` | Full-text + cognitive weight boosting |
+| `recall(query, limit=10)` | Global search alias |
+| `recent(limit=20)` | Most recent records |
+
+### Graph Traversal
+
+| Method | Description |
+|--------|-------------|
+| `walk(start_id, depth=3)` | BFS graph traversal |
+| `walk_semantic(start_id, depth=3)` | Vector-weighted semantic walk |
+| `get_context(record_id)` | Record + 1-hop neighbors |
+| `read_content(record_id)` | Full content payload |
+
+### Entity Knowledge Graph
+
+| Method | Description |
+|--------|-------------|
+| `search_entities(query, entity_type, limit)` | Search named entities |
+| `upsert_entity(name, entity_type, summary)` | Create/update entity |
+| `entity_graph(entity_id, depth)` | BFS entity relationship traversal |
+| `entity_timeline(entity_id)` | Temporal history of relationships |
+| `upsert_entity_edge(src, dst, relation)` | Create/update typed relationship |
+| `link_record_entity(record_id, entity_id)` | Cross-layer link |
+| `get_record_entities(record_id)` | Entities linked to a record |
+
+### Batch Operations
+
+| Method | Description |
+|--------|-------------|
+| `batch_read_content(ids)` | Fetch content for up to 100 records |
+| `batch_update_status(ids, status)` | Bulk status update |
+
+### File Upload
+
+| Method | Description |
+|--------|-------------|
+| `upload_file(filename, content)` | Upload document for async ingestion |
+| `upload_status(upload_id)` | Poll file ingestion status |
+
+### Temporal Versioning
+
+| Method | Description |
+|--------|-------------|
+| `supersede(old_id, new_id)` | Mark old record as superseded |
+
+### Record CRUD
+
+| Method | Description |
+|--------|-------------|
+| `update(record_id, **fields)` | Partial update |
+| `delete(record_id)` | Hard delete |
+
+### Session Management
+
+| Method | Description |
+|--------|-------------|
+| `new_session()` | Generate fresh session UUID |
+| `list_sessions()` | All sessions with stats |
+| `get_session_history(uuid, limit, offset)` | Paginated session history |
+| `get_session_clusters(uuid)` | Thematic clusters |
+
+### Properties
+
+| Property | Description |
+|----------|-------------|
+| `session_id` | Current session UUID |
+| `container_tag` | User/agent identifier |
+
+## API Reference — AnhurClient Class
+
+AnhurClient exposes the full AnhurDB surface (40+ endpoints):
+
+- **CRUD**: `create`, `get`, `read_content`, `get_context`, `update`, `delete`
+- **Search**: `search`, `search_by_type`, `smart_search`, `recall`, `search_with_ast`
+- **Batch**: `batch_read_content`, `batch_update_status`
+- **Graph**: `walk`, `walk_semantic`
+- **Entity**: `search_entities`, `upsert_entity`, `get_entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
+- **Upload**: `upload_file`, `upload_status`
+- **Temporal**: `supersede`
+- **Session**: `list_sessions`, `list_chat`, `get_session_history`, `get_session_clusters`, `manifest_global`, `manifest_session`, `recent`
+- **Profile**: `profile`
+
+## Query Builder
+
+The Python SDK includes a fluent query builder for advanced filtering:
+
+```python
+from anhurdb.query import QueryBuilder, Filter
+
+# Fluent builder with Django-style kwargs
+qb = QueryBuilder()
+qb.where(type="risk", score__gte=7).order_by("weight", "desc").limit(10)
+
+# Execute via AnhurClient
+records = await client.search_with_ast(qb)
+
+# Scope to a specific session
+records = await client.search_with_ast(qb, session_uuid="session-123")
+
+# Or use Filter shorthand for simple cases
+records = await client.search_with_ast(
+    Filter({"type": {"$eq": "risk"}, "score": {"$gt": 7}}),
+)
+```
+
+Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
+
+## Error Handling
+
+```python
+from anhurdb import AnhurError, AnhurAuthError, AnhurQueryError, AnhurConnectionError
+
+try:
+    await mem.add("something")
+except AnhurAuthError:
+    print("Invalid API key")
+except AnhurConnectionError:
+    print("Server unreachable")
+except AnhurQueryError as e:
+    print(f"Bad request: {e}")
+```
+
+## Transport Modes
+
+- **REST direct** (default): Calls AnhurDB REST endpoints directly. Recommended.
+- **MCP tunnel**: Routes through `/api/v1/mcp/direct` gateway. Use when you only have MCP access.
+
+```python
+# MCP tunnel mode
+async with Memory(api_key="key", mode="mcp") as mem:
+    await mem.add("text")  # routed through MCP gateway
+```
+
+## License
+
+MIT

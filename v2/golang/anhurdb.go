@@ -1,26 +1,53 @@
+/*
+Package anhurdb provides the top-level entry point for the AnhurDB Go SDK.
+
+This is a convenience re-export so callers can write:
+
+	mem := anhurdb.NewMemory("key")
+	mem.Add(ctx, "some memory")
+
+instead of importing the client sub-package directly.
+
+All real logic lives in client/. This file is a thin facade so the
+import path stays clean for end users.
+
+Junior Tip: The Go SDK has ZERO external dependencies — it uses only
+net/http, crypto/sha256, encoding/json, and other stdlib packages.
+*/
 package anhurdb
 
 import (
-	"context"
-
-	"github.com/yoven/anhurdb-sdk/v2/golang/v2/client"
-	"github.com/yoven/anhurdb-sdk/v2/golang/v2/query"
+	"github.com/anhurdb/sdk-go/v2/client"
 )
 
-// AnhurClient represents the entry point for AnhurSDK V2.
-type AnhurClient struct {
-	conn *client.HTTPConnection
+// NewMemory creates a new Memory instance connected to AnhurDB.
+//
+// The apiKey is required. Use functional options to configure URL,
+// user ID, and tenant ID:
+//
+//	mem := anhurdb.NewMemory("key", anhurdb.WithURL("http://localhost:8000"))
+//
+// See client.NewMemory for full documentation.
+func NewMemory(apiKey string, opts ...client.Option) *client.Memory {
+	return client.NewMemory(apiKey, opts...)
 }
 
-// NewClient initializes the root client referencing a specific database endpoint and tenant key.
-func NewClient(url, apiKey string) *AnhurClient {
-	return &AnhurClient{
-		conn: client.NewConnection(url, apiKey),
-	}
-}
+// Re-export option constructors so callers don't need a separate import.
 
-// Memories provides access to the Fluent Query Builder for cognitive operations.
-func (c *AnhurClient) Memories(ctx context.Context) *query.Builder {
-	executor := query.NewExecutor(c.conn, ctx)
-	return query.NewBuilder(executor)
-}
+// WithURL sets the AnhurDB server URL (default: https://api.anhurdb.com).
+var WithURL = client.WithURL
+
+// WithUserID sets an explicit container tag (user identifier).
+var WithUserID = client.WithUserID
+
+// WithTenantID sets the X-Tenant-ID header for multi-tenant deployments.
+var WithTenantID = client.WithTenantID
+
+// WithLimit sets the maximum number of search results.
+var WithLimit = client.WithLimit
+
+// WithTypeFilter restricts search results to a specific memory type.
+var WithTypeFilter = client.WithTypeFilter
+
+// WithTimeout sets the HTTP client timeout.
+var WithTimeout = client.WithTimeout

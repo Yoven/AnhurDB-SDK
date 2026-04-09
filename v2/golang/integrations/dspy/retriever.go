@@ -1,91 +1,81 @@
+/*
+Package dspy provides a retriever adapter for DSPy/LangChain Go pipelines.
+
+Junior Tip: This bridges AnhurDB's Memory API to the standard
+"retriever" interface used by Go agentic frameworks. It converts
+SearchResult into Document structs that LangChainGo/DSPy expect.
+*/
 package dspy
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/yoven/anhurdb-sdk/v2/golang/v2"
-	"github.com/yoven/anhurdb-sdk/v2/golang/v2/query"
+	"github.com/anhurdb/sdk-go/v2/client"
 )
 
 // Document represents a standard retrieved abstraction used in Go agentic frameworks.
 type Document struct {
-	ID         string
+	ID          string
 	PageContent string
-	Metadata   map[string]interface{}
-	Score      float64
+	Metadata    map[string]interface{}
+	Score       float64
 }
 
 // Retriever adheres to standard Go interfaces (like LangChainGo or DSPy equivalents).
+//
+// Junior Tip: It wraps the Memory client and translates search results
+// into Document structs. Configure TargetType to filter by memory type
+// (default: all types).
 type Retriever struct {
-	client     *anhurdb.AnhurClient
-	TenantID   string
-	TargetType string
-	Mode       query.SemanticMode
+	mem        *client.Memory
+	TargetType string // optional: filter by memory type
 	TopK       int
 }
 
-// NewRetriever initializes a semantic AnhurDB retriever for integration into DSPy/LangChain pipelines.
-func NewRetriever(client *anhurdb.AnhurClient, tenantID string, k int) *Retriever {
+// NewRetriever initialises a semantic AnhurDB retriever.
+//
+// Junior Tip: k is the maximum number of documents to return per query.
+func NewRetriever(mem *client.Memory, k int) *Retriever {
 	return &Retriever{
-		client:     client,
-		TenantID:   tenantID,
-		TargetType: "fact", // Default to cognitive facts
-		Mode:       query.ModeHybrid,
-		TopK:       k,
+		mem:  mem,
+		TopK: k,
 	}
 }
 
-// GetRelevantDocuments executes the cognitive search against the Motor.
-func (r *Retriever) GetRelevantDocuments(ctx context.Context, queryStr string) ([]Document, error) {
-	b := r.client.Memories(ctx).
-		Limit(r.TopK).
-		SemanticSearch(queryStr, r.Mode)
-
-	// Inject type filter safely
+// GetRelevantDocuments executes a search and returns Documents.
+//
+// Junior Tip: This is the method that LangChainGo/DSPy pipelines call.
+// It maps AnhurDB SearchResult fields to Document fields automatically.
+func (r *Retriever) GetRelevantDocuments(ctx context.Context, query string) ([]Document, error) {
+	opts := []client.SearchOption{client.WithLimit(r.TopK)}
 	if r.TargetType != "" {
-		b = b.WhereEq("type", r.TargetType)
+		opts = append(opts, client.WithTypeFilter(r.TargetType))
 	}
 
-	result, err := b.Execute()
+	results, err := r.mem.Search(ctx, query, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("anhurdb retriever failed: %w", err)
 	}
 
-	// Map generic abstract AST result into DSPy/LangChain Documents
-	// In the real Anhur ecosystem, 'result' is map[string]interface{} containing 'results'
-	var docs []Document
-	if resultMap, ok := result.(map[string]interface{}); ok {
-		if recordsRaw, exists := resultMap["results"]; exists {
-			if records, ok := recordsRaw.([]interface{}); ok {
-				for _, recRaw := range records {
-					if rec, ok := recRaw.(map[string]interface{}); ok {
-						doc := Document{
-							ID:       fmt.Sprintf("%v", rec["id"]),
-							Metadata: make(map[string]interface{}),
-						}
-						
-						// Prefer full content, fallback to summary
-						if content, ok := rec["content"].(string); ok && content != "" {
-							doc.PageContent = content
-						} else if summary, ok := rec["summary"].(string); ok {
-							doc.PageContent = summary
-						}
-
-						if sim, ok := rec["similarity"].(float64); ok {
-							doc.Score = sim
-						}
-
-						if meta, ok := rec["metadata"].(map[string]interface{}); ok {
-							doc.Metadata = meta
-						}
-						
-						docs = append(docs, doc)
-					}
-				}
-			}
+	docs := make([]Document, 0, len(results))
+	for _, hit := range results {
+		content := hit.Content
+		if content == "" {
+			content = hit.Summary
 		}
+
+		doc := Document{
+			ID:          fmt.Sprintf("%d", hit.ID),
+			PageContent: content,
+			Score:       hit.Similarity,
+			Metadata: map[string]interface{}{
+				"type":     hit.Type,
+				"metadata": hit.Metadata,
+			},
+		}
+		docs = append(docs, doc)
 	}
-	
+
 	return docs, nil
 }

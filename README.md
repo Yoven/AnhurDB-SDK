@@ -1,112 +1,476 @@
-# AnhurDB-SDK — The V2 Cognitive SDK
+# AnhurDB SDK — Cognitive Memory for AI Agents
 
-> **Role:** Unified Software Development Kit for AnhurDB V2.
+**3 lines. That's all you need.**
 
-This repository focuses on unifying and serving the Go and Python interfaces, schema models, and AST logic for the **AnhurDB V2** engine.
+```python
+from anhurdb import Memory
+
+async with Memory(api_key="anhur_xxx") as mem:
+    await mem.add("I'm a data scientist at Google working on NLP")
+    context = await mem.search("what does this user do?")
+```
+
+Available in **Python**, **TypeScript**, and **Go**. Same API. Same endpoints. Zero heavy dependencies.
 
 ---
 
-## 🏗️ Repository Structure
+## Install
 
-```
-AnhurDB-SDK/
-├── v2/
-│   ├── golang/                    Official Go SDK V2
-│   │   ├── client/                HTTP connection & pooling
-│   │   ├── models/                Data structures (Record, Session)
-│   │   ├── query/                 AST Generator & Executor
-│   │   └── go.mod                 Go module definition
-│   │
-│   └── python/                    Official Python SDK V2
-│       ├── anhurdb/client/        Async/Sync HTTP connection
-│       ├── anhurdb/models/        Pydantic/Dataclass structures
-│       ├── anhurdb/query/         AST Generator & Executor
-│       ├── pyproject.toml         Poetry definition
-│       └── README.md              Python-specific guide
-├── .github/workflows/             CI/CD Pipelines
-└── docs/                          Documentation
+```bash
+# Python (async Memory class + full AnhurClient + Query Builder)
+pip install anhurdb
+
+# TypeScript / Node.js (zero runtime dependencies)
+npm install anhurdb
+
+# Go (zero external dependencies — stdlib only)
+go get github.com/anhurdb/sdk-go/v2
 ```
 
 ---
 
-## 🚀 Quick Start (V2)
+## How It Works
+
+```
+Your App                        AnhurDB Cloud
+========                        =============
+
+mem.add("text")
+    |
+    |  POST /api/v1/ingest
+    |  {content, container_tag}
+    +-------------------------->  1. Create episodic record
+                                  2. Extract facts (LLM)
+                                  3. Link via graph topology
+                                  4. Enrich with embeddings
+                                  5. Return extracted records
+    <--------------------------+
+    |
+    |  {session_id, records: [
+    |    {id: 42, type: "fact", summary: "Data scientist at Google"},
+    |    {id: 43, type: "preference", summary: "Works on NLP"}
+    |  ]}
+
+
+mem.search("query")
+    |
+    |  POST /api/v1/search/global
+    +-------------------------->  5-stage pipeline:
+                                  1. Vector pre-filter (HNSW + BSQ)
+                                  2. Full-text search (FTS5)
+                                  3. Reciprocal Rank Fusion
+                                  4. Cognitive reranking
+                                  5. Top-K extraction
+    <--------------------------+
+    |
+    |  [{id, type, summary, similarity}]
+```
+
+---
+
+## Full API Reference
+
+All 3 SDKs share the same methods. Names follow each language's convention.
+
+### Core Methods
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `add(text)` | Store a memory with auto-extraction | POST /api/v1/ingest |
+| `search(query)` | Find relevant memories (global, cross-session) | POST /api/v1/search/global |
+| `profile()` | Get structured user profile | GET /api/v1/profile |
+
+### Search & Discovery
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `search_by_type(type)` | Filter by memory type (fact, preference, etc.) | GET /api/v1/search/type |
+| `smart_search(query)` | Full-text search with cognitive weight boosting | GET /api/v1/search/smart |
+| `recall(query)` | Broad fan-out search (alias for global search) | POST /api/v1/search/global |
+| `recent(limit)` | Most recent memories | GET /api/v1/manifest |
+
+### Graph Traversal
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `walk(seed_id, depth)` | BFS graph traversal | POST /api/v1/walk |
+| `walk_semantic(seed_id, depth)` | Semantic graph walk (vector-weighted edges) | POST /api/v1/walk/semantic |
+| `get_context(record_id)` | Get record + 1-hop neighbors | GET /api/v1/records/{id}/topology |
+
+### Record CRUD
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `read_content(record_id)` | Full content payload of a record | GET /api/v1/records/{id}/content |
+| `update(record_id, ...)` | Modify record fields | PATCH /api/v1/records/{id} |
+| `delete(record_id)` | Hard-delete a record | DELETE /api/v1/records/{id} |
+
+### Batch Operations
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `batch_read_content(ids)` | Fetch content for up to 100 records in one call | POST /api/v1/records/batch-content |
+| `batch_update_status(ids, status)` | Bulk status update (consolidated, archived, etc.) | PATCH /api/v1/records/mark-consolidated |
+
+### Entity Knowledge Graph (Layer 2)
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `search_entities(query)` | Search named entities (people, orgs, concepts) | GET /api/v1/entities |
+| `upsert_entity(name, type)` | Create or update an entity (idempotent) | POST /api/v1/entities |
+| `entity_graph(entity_id, depth)` | BFS traversal of entity relationships | GET /api/v1/entities/{id}/graph |
+| `entity_timeline(entity_id)` | Temporal history of entity relationships | GET /api/v1/entities/{id}/timeline |
+| `upsert_entity_edge(src, dst, rel)` | Create/update typed relationship between entities | POST /api/v1/entities/edges |
+| `link_record_entity(rec_id, ent_id)` | Cross-layer link: memory record to entity | POST /api/v1/entities/link |
+| `get_record_entities(record_id)` | Get entities linked to a record | GET /api/v1/records/{id}/entities |
+
+### File Upload
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `upload_file(filename, content)` | Upload document for async ingestion (PDF, images, etc.) | POST /api/v1/upload |
+| `upload_status(upload_id)` | Poll file ingestion status | GET /api/v1/upload/{id}/status |
+
+### Temporal Versioning
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `supersede(old_id, new_id)` | Mark old record as superseded by new one | POST /api/v1/records/supersede |
+
+### Session Management
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `new_session()` | Start a fresh session UUID | — |
+| `session_id` | Current session ID | — |
+| `container_tag` | User/agent identifier (derived from API key) | — |
+| `list_sessions()` | List all sessions with stats | GET /api/v1/sessions/stats |
+| `get_session_history(uuid)` | Paginated full-text session history | GET /api/v1/sessions/{uuid}/history |
+| `get_session_clusters(uuid)` | Thematic clusters within a session | GET /api/v1/sessions/{uuid}/clusters |
+
+---
+
+## Examples by Language
 
 ### Python
 
-```bash
-cd v2/python
-poetry install
-# or
-pip install -e .
+```python
+from anhurdb import Memory
+
+async with Memory(api_key="anhur_xxx") as mem:
+    # Core
+    result = await mem.add("I'm a senior engineer. I prefer Go over Python.")
+    results = await mem.search("what language does this user prefer?")
+    profile = await mem.profile()
+
+    # Search & discovery
+    facts = await mem.search_by_type("fact", limit=50)
+    smart = await mem.smart_search("engineering experience", limit=10)
+    latest = await mem.recent(limit=5)
+
+    # Graph traversal
+    graph = await mem.walk(start_id=42, depth=3)
+    semantic = await mem.walk_semantic(start_id=42, depth=3)
+    context = await mem.get_context(record_id=42)
+    content = await mem.read_content(record_id=42)
+
+    # Entity knowledge graph
+    entities = await mem.search_entities(query="Google")
+    entity = await mem.upsert_entity("Google", entity_type="org")
+    graph = await mem.entity_graph(entity["id"], depth=2)
+    timeline = await mem.entity_timeline(entity["id"])
+    await mem.upsert_entity_edge(1, 2, "works_at", confidence=0.95)
+    await mem.link_record_entity(42, entity["id"], role="mentions")
+    linked = await mem.get_record_entities(42)
+
+    # Batch operations
+    contents = await mem.batch_read_content([1, 2, 3])
+    await mem.batch_update_status([10, 11], status="archived")
+
+    # File upload
+    upload = await mem.upload_file("report.pdf", base64_content)
+    status = await mem.upload_status(upload["id"])
+
+    # Temporal versioning
+    await mem.supersede(old_id=42, new_id=99)
+
+    # Sessions
+    sessions = await mem.list_sessions()
+    history = await mem.get_session_history("session-uuid", limit=50)
+    clusters = await mem.get_session_clusters("session-uuid")
+    mem.new_session()
+    print(mem.session_id, mem.container_tag)
+
+    # Mutate
+    await mem.update(42, summary="Updated summary", score=8)
+    await mem.delete(42)
+
+# AnhurClient also available for advanced use (AST queries, admin-level ops)
+from anhurdb import AnhurClient
+async with AnhurClient(api_key="anhur_xxx") as client:
+    from anhurdb.query import Filter
+    results = await client.search_with_ast(
+        Filter({"type": {"$eq": "risk"}, "weight": {"$gt": 0.8}}),
+        session_uuid="session-uuid",
+    )
 ```
 
-```python
-import asyncio
-from anhurdb.client import Client
-from anhurdb.models import CreateRequest
-from anhurdb.query import Filter, Eq
+### TypeScript
 
-async def main():
-    async with Client(url="http://localhost:8080") as client:
-        # Create a record (No cognitive params required!)
-        req = CreateRequest(
-            uuid="session-v2-001",
-            type="episodic",
-            content="User asked about Redis",
-            metadata={"source": "slack", "context": "database"}
-        )
-        await client.create(req)
+```typescript
+import { Memory } from 'anhurdb';
 
-        # Search with AST
-        results = await client.search_with_ast("session-v2-001", Filter(
-            condition=Eq("type", "episodic")
-        ))
-        
-        for r in results.records:
-            print(f"ID={r.id}")
+const mem = new Memory({ apiKey: 'anhur_xxx' });
 
-asyncio.run(main())
+// Core
+const result = await mem.add("I'm a senior engineer.");
+const results = await mem.search("what language?");
+const profile = await mem.profile();
+
+// Extended search
+const facts = await mem.searchByType("fact", 50);
+const smart = await mem.smartSearch("engineering", 10);
+const latest = await mem.recent(5);
+
+// Graph traversal
+const graph = await mem.walk(42, 3);
+const semantic = await mem.walkSemantic(42, 3);
+const ctx = await mem.getContext(42);
+const content = await mem.readContent(42);
+
+// Entity knowledge graph
+const entities = await mem.searchEntities("Google");
+const entity = await mem.upsertEntity("Google", { entityType: "org" });
+const entityGraph = await mem.entityGraph(entity.id, 2);
+const timeline = await mem.entityTimeline(entity.id);
+await mem.upsertEntityEdge(1, 2, "works_at", { confidence: 0.95 });
+await mem.linkRecordEntity(42, entity.id, "mentions");
+const linked = await mem.getRecordEntities(42);
+
+// Batch operations
+const contents = await mem.batchReadContent([1, 2, 3]);
+await mem.batchUpdateStatus([10, 11], "archived");
+
+// File upload
+const upload = await mem.uploadFile("report.pdf", base64Content);
+const status = await mem.uploadStatus(upload.id);
+
+// Temporal versioning
+await mem.supersede(42, 99);
+
+// Sessions
+const sessions = await mem.listSessions();
+const history = await mem.getSessionHistory("session-uuid");
+const clusters = await mem.getSessionClusters("session-uuid");
+await mem.newSession();
+
+// Mutate
+await mem.update(42, { summary: "Updated" });
+await mem.delete(42);
 ```
 
 ### Go
 
 ```go
+package main
+
 import (
     "context"
     "fmt"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/client"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/models"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/query"
+    anhurdb "github.com/anhurdb/sdk-go/v2"
+    "github.com/anhurdb/sdk-go/v2/client"
 )
 
 func main() {
-    c := client.NewClient("http://localhost:8080", "api-key", "tenant-id")
-    c.Connect(context.Background())
+    ctx := context.Background()
 
-    // Create (No cognitive params required!)
-    rec := models.CreateRequest{
-        UUID:     "session-001",
-        Type:     "episodic",
-        Content:  "User asked about Redis",
-        Metadata: map[string]string{"source": "cli"},
-    }
-    c.Create(context.Background(), rec)
+    // Connect
+    mem := anhurdb.NewMemory("anhur_xxx")
+    // or: anhurdb.NewMemory("key", anhurdb.WithURL("http://localhost:8000"))
+    // or: anhurdb.NewMemory("key", anhurdb.WithUserID("user-123"))
 
-    // Search via AST Builder
-    f := query.NewFilter().Where("type", query.Eq, "episodic")
-    res, _ := c.SearchWithAST(context.Background(), "session-001", f)
+    // Core
+    result, _ := mem.Add(ctx, "I'm a senior engineer.")
+    hits, _ := mem.Search(ctx, "what language?")
+    profile, _ := mem.Profile(ctx)
 
-    for _, doc := range res.Records {
-        fmt.Println("ID:", doc.ID)
-    }
+    // Extended search
+    facts, _ := mem.SearchByType(ctx, "fact", 50)
+    smart, _ := mem.SmartSearch(ctx, "engineering", 10)
+    latest, _ := mem.RecentMemories(ctx, 5)
+
+    // Graph traversal
+    graph, _ := mem.Walk(ctx, 42, 3)
+    semantic, _ := mem.WalkSemantic(ctx, 42, 3)
+    topo, _ := mem.GetContext(ctx, 42)
+    content, _ := mem.ReadContent(ctx, 42)
+
+    // Entity knowledge graph
+    entities, _ := mem.SearchEntities(ctx, "Google", "", 20)
+    entity, _ := mem.UpsertEntity(ctx, "Google", "org", "", nil)
+    entityGraph, _ := mem.EntityGraph(ctx, entity.ID, 2)
+    timeline, _ := mem.EntityTimeline(ctx, entity.ID)
+    _ = mem.UpsertEntityEdge(ctx, 1, 2, "works_at",
+        client.WithConfidence(0.95))
+    _ = mem.LinkRecordEntity(ctx, 42, entity.ID, "mentions")
+    linked, _ := mem.GetRecordEntities(ctx, 42)
+
+    // Batch operations
+    contents, _ := mem.BatchReadContent(ctx, []int64{1, 2, 3})
+    _ = mem.BatchUpdateStatus(ctx, []int64{10, 11}, "archived")
+
+    // File upload
+    upload, _ := mem.UploadFile(ctx, "report.pdf", base64Content, "")
+    status, _ := mem.UploadStatus(ctx, upload.ID)
+
+    // Temporal versioning
+    _ = mem.Supersede(ctx, 42, 99)
+
+    // Sessions
+    sessions, _ := mem.ListSessions(ctx)
+    history, _ := mem.GetSessionHistory(ctx, "session-uuid", 50, 0)
+    clusters, _ := mem.GetSessionClusters(ctx, "session-uuid")
+    mem.NewSession()
+    fmt.Println(mem.SessionID(), mem.ContainerTag())
+
+    // Mutate
+    _ = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
+    _ = mem.Delete(ctx, 42)
 }
 ```
 
 ---
 
-## 📄 Documentation Index
+## Authentication
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](./docs/general/ARCHITECTURE.md) | V1 Bridge pattern design (Legacy Concept) |
-| [REST API](./docs/api/REST_API.md) | Legacy REST interfaces |
+All SDKs use the `X-API-Key` header. Get your key from the [AnhurDB Dashboard](https://app.anhurdb.com).
+
+```
+SDK sets header:  X-API-Key: anhur_xxx
+Server decrypts:  AES-256-GCM -> {client_id, tenant_id, scope_path}
+```
+
+For multi-tenant apps, the API key already contains the tenant scope. No extra configuration needed.
+
+---
+
+## Self-Hosted (OSS)
+
+AnhurDB OSS runs as a single-node Docker container:
+
+```bash
+docker compose up -d
+```
+
+Then point the SDK to your local instance:
+
+```python
+async with Memory(url="http://localhost:8000", api_key="your-local-key") as mem:
+    await mem.add("hello")
+```
+
+OSS includes: REST API, vector search (HNSW + FTS5), Raft consensus, graph topology.
+Cloud adds: auto-extraction, cognitive agents, user profiles, temporal decay.
+
+---
+
+## Memory Types
+
+AnhurDB classifies memories into 12 cognitive types:
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `episodic` | Raw conversation turns | "User asked about Redis" |
+| `fact` | Verifiable information | "Senior engineer at Google" |
+| `preference` | Likes, dislikes | "Prefers dark mode" |
+| `decision` | Choices made | "Team chose PostgreSQL" |
+| `task` | Action items | "Deploy auth service by Friday" |
+| `risk` | Concerns, warnings | "No rollback strategy" |
+| `emotion` | Feelings expressed | "Frustrated with build times" |
+| `reasoning` | Chain of thought | "Chose Redis because..." |
+| `idea` | Proposals | "Could use event sourcing" |
+| `consolidated` | Agent-synthesized summary | (auto-created by consolidation agent) |
+| `hub` | Cross-session cluster | (auto-created by hub growth agent) |
+| `file` | Uploaded document root | (from file upload endpoint) |
+
+---
+
+## Project Structure
+
+```
+AnhurDB-SDK/
++-- v2/
+|   +-- python/              Python SDK (async, Pydantic models)
+|   |   +-- anhurdb/
+|   |   |   +-- client/      Memory + AnhurClient (30+ methods)
+|   |   |   +-- models/      Pydantic models (Record, Entity, Enums)
+|   |   |   +-- query/       Fluent Query Builder (AST-based DSL)
+|   |   |   +-- crypto/      BSQ quantizer (stub)
+|   |   |   +-- storage/     Filesystem (.gz read with API fallback)
+|   |   +-- pyproject.toml
+|   |   +-- tests/
+|   |
+|   +-- typescript/          TypeScript SDK (zero runtime deps)
+|   |   +-- src/
+|   |   |   +-- memory.ts    Memory class (30+ methods)
+|   |   |   +-- client.ts    HTTP client (native fetch)
+|   |   |   +-- types.ts     All interfaces + error classes
+|   |   |   +-- index.ts     Public exports
+|   |   +-- package.json     ESM + CJS dual output
+|   |
+|   +-- golang/              Go SDK (zero external deps)
+|       +-- client/
+|       |   +-- client.go    Memory struct (30+ methods)
+|       |   +-- connection.go REST HTTP client (stdlib only)
+|       |   +-- types.go     Response types, Entity, Upload, options
+|       |   +-- errors.go    Typed error constants
+|       +-- models/          Record, Session, Enums (13 statuses)
+|       +-- crypto/          BSQ quantizer (stub)
+|       +-- storage/         Filesystem (.gz read)
+|       +-- integrations/    DSPy/LangChain retriever adapter
+|       +-- go.mod           github.com/anhurdb/sdk-go/v2
+|
++-- docs/
+|   +-- general/ARCHITECTURE.md     Bridge pattern, SSOT via core.yaml
+|   +-- api/REST_API.md             Full REST endpoint reference
+|   +-- claude/CLAUDE_ANHURDB_INTEGRATION.md  Claude Code setup guide
+```
+
+---
+
+## Comparison: SDK vs MCP vs gRPC
+
+| | SDK (REST) | MCP Server | gRPC |
+|---|---|---|---|
+| **For** | App developers | Claude / Cursor / AI IDEs | Internal agents |
+| **Protocol** | HTTP REST | SSE + Streamable HTTP | HTTP/2 protobuf |
+| **Auth** | X-API-Key header | API key in tool args | X-API-Key metadata |
+| **Dependencies** | Zero (stdlib) | MCP client library | protobuf + grpc |
+| **Best for** | Production apps | AI agent integration | High-perf internal |
+| **Latency** | ~10-50ms | ~50-200ms (SSE overhead) | ~1-5ms (binary) |
+
+**Use the SDK** unless you're building a Claude/Cursor plugin (use MCP) or an internal agent (use gRPC).
+
+---
+
+## What Makes AnhurDB Different
+
+Features no competitor (Mem0, Zep, LangMem) offers:
+
+- **12 cognitive memory types** — not just flat key-value storage
+- **Entity knowledge graph** — named entities with typed, temporal relationships
+- **Temporal versioning** — supersede old facts without losing history
+- **Graph traversal** — BFS and semantic walk across the memory graph
+- **Cognitive search** — smart search that boosts by importance, not just relevance
+- **LLM-powered analysis** — explain why nodes are connected (via MCP)
+- **File ingestion** — upload PDFs, images, docs for async processing
+- **10 background agents** — regression, consolidation, judge, hub growth, linker, decay, and more
+
+---
+
+## Links
+
+- [AnhurDB Dashboard](https://app.anhurdb.com) — Create API keys, view usage
+- [API Reference](https://docs.anhurdb.com/api) — Full endpoint documentation
+- [Architecture](https://docs.anhurdb.com/architecture) — How AnhurDB works internally
+- [GitHub](https://github.com/anhurdb/sdk) — Source code, issues, contributions

@@ -1,3 +1,3 @@
-module github.com/yoven/anhurdb-sdk/v2/golang/v2
+module github.com/anhurdb/sdk-go/v2
 
-go 1.21
+go 1.24

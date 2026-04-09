@@ -105,11 +105,55 @@ jobs:
         poetry run pytest -vv tests/
 
   # ==========================================
+  # TypeScript SDK v2 Pipeline
+  # ==========================================
+  build-ts:
+    name: Build TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/typescript
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Install Dependencies
+      run: npm ci
+    - name: Build
+      run: |
+        echo "=> Building TypeScript SDK..."
+        npm run build
+
+  test-ts:
+    name: Test TypeScript SDK
+    needs: build-ts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/typescript
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Install Dependencies
+      run: npm ci
+    - name: Run Tests
+      run: |
+        echo "=> Executing TypeScript Test Suite..."
+        npm test
+
+  # ==========================================
   # Release Automation (Publish to PyPI / Tag Go)
   # ==========================================
   publish-python:
     name: Publish Python SDK to PyPI
-    needs: [build-go, test-go, lint-python, test-python]
+    needs: [build-go, test-go, lint-python, test-python, build-ts, test-ts]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     defaults:
@@ -148,11 +192,16 @@ jobs:
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          echo "=> Skipped actual PyPI publish since PYPI_API_TOKEN is not strictly configured yet."
+          if [ -n "$POETRY_PYPI_TOKEN_PYPI" ]; then
+            echo "=> Publishing to PyPI..."
+            poetry publish --no-interaction
+          else
+            echo "=> Skipped PyPI publish (PYPI_API_TOKEN not configured)."
+          fi
           
   publish-go:
     name: Prepare Golang SDK Tag
-    needs: [build-go, test-go, lint-python, test-python]
+    needs: [build-go, test-go, lint-python, test-python, build-ts, test-ts]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     defaults:
