@@ -65,14 +65,12 @@ async with AnhurClient(api_key="anhur_xxx") as client:
 
     # Batch operations
     contents = await client.batch_read_content([1, 2, 3])
-    await client.batch_update_status([10, 11], status="archived")
 
     # File upload
-    import base64
     with open("report.pdf", "rb") as f:
-        content = base64.b64encode(f.read()).decode()
-    upload = await client.upload_file("report.pdf", content)
-    status = await client.upload_status(upload["id"])
+        pdf_bytes = f.read()
+    upload = await client.upload_file("report.pdf", pdf_bytes)
+    status = await client.upload_status(upload["record_id"])
 
     # Temporal versioning
     await client.supersede(old_id=42, new_id=99)
@@ -135,7 +133,7 @@ Memory(
 | Method | Description |
 |--------|-------------|
 | `batch_read_content(ids)` | Fetch content for up to 100 records |
-| `batch_update_status(ids, status)` | Bulk status update |
+| `mark_consolidated(ids)` | Mark records as consolidated |
 
 ### File Upload
 
@@ -177,9 +175,10 @@ Memory(
 
 AnhurClient exposes the full AnhurDB surface (40+ endpoints):
 
-- **CRUD**: `create`, `get`, `read_content`, `get_context`, `update`, `delete`
+- **CRUD**: `create`, `get`, `read_content`, `get_context`, `update`, `delete`, `explain`
+- **Diagnostics**: `access_stats`, `get_engine_config`
 - **Search**: `search`, `search_by_type`, `smart_search`, `recall`, `search_with_ast`
-- **Batch**: `batch_read_content`, `batch_update_status`
+- **Batch**: `batch_read_content`, `mark_consolidated`, `link_to_consolidated`, `append_main_links`, `decay`
 - **Graph**: `walk`, `walk_semantic`
 - **Entity**: `search_entities`, `upsert_entity`, `get_entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
 - **Upload**: `upload_file`, `upload_status`

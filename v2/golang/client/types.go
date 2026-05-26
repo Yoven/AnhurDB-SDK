@@ -194,6 +194,22 @@ type entitiesResponse struct {
 	Entities []Entity `json:"entities"`
 }
 
+// EntitiesPage carries the paginated /api/v1/entities/list response: a slice
+// of entities for the requested page plus cursor metadata for the next call.
+//
+// Junior Tip [pagination contract]: HasMore + NextOffset is the read-side
+// of the cursor protocol. Loop until HasMore is false; for each iteration,
+// pass NextOffset as the next call's offset argument.
+type EntitiesPage struct {
+	Entities   []Entity `json:"entities"`
+	Count      int      `json:"count"`
+	Total      int64    `json:"total"`
+	Limit      int      `json:"limit"`
+	Offset     int      `json:"offset"`
+	HasMore    bool     `json:"has_more"`
+	NextOffset int      `json:"next_offset"`
+}
+
 // --------------------------------------------------------------------------
 // File upload types
 // --------------------------------------------------------------------------

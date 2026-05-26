@@ -36,6 +36,7 @@ Go SDKs.
 """
 
 import hashlib
+import json
 import os
 import secrets
 from datetime import datetime, timezone
@@ -86,6 +87,29 @@ def _derive_container_tag(api_key: str) -> str:
     return f"mem-{digest[:12]}"
 
 
+def _build_metadata_json(container_tag: str) -> str:
+    """
+    Wrap ``container_tag`` into the canonical metadata JSON envelope
+    ``{"container_tag": "<tag>"}``.
+
+    Junior Tip [metadata corruption parity, 2026-05-22]: every record-create
+    path historically wrote ``metadata`` as the bare container_tag string
+    (``"mem-3f9..."``) instead of a JSON object. On the server this poisoned
+    every downstream agent that runs ``json.loads(metadata)`` — entity taggers
+    logged ``tagged_no_entities`` because the parse failed at the first step,
+    and a one-shot repair had to fix 516 corrupted records. The Go SDK was
+    fixed first (buildMetadataJSON); this is the Python parity. The TypeScript
+    SDK carries the same fix. ALL THREE SDKs MUST stay byte-identical here —
+    see the SDK-sync rule in project memory.
+
+    Returns ``"{}"`` when container_tag is empty so the column always holds a
+    parseable JSON object.
+    """
+    if not container_tag:
+        return "{}"
+    return json.dumps({"container_tag": container_tag})
+
+
 def _utc_timestamp() -> str:
     """Return current UTC time as ``YYYYMMDD-HHMMSS``."""
     now = datetime.now(timezone.utc)
@@ -104,15 +128,27 @@ class Memory:
     automatically. Mirrors the TypeScript ``Memory`` class and Go
     ``client.Memory`` struct method-for-method.
 
+    Junior Tip [refactor 2026-04-25]: This class is now a THIN WRAPPER over
+    ``AnhurClient``. The 27 generic API calls (search, walk, upload, entity_*,
+    etc.) delegate directly to the same method on the underlying client, so
+    we maintain ONE implementation of each call. Memory adds value only in:
+      1. Auto-deriving the container_tag from api_key (SHA-256).
+      2. Auto-creating session_uuid (container_tag + UTC timestamp).
+      3. The cloud→OSS fallback for ``add()`` (try /api/v1/ingest, fall
+         back to direct /api/v1/records on 404).
+      4. Defaulting session-scoped methods (profile, get_session_history,
+         get_session_clusters) to the current session.
+
     Core methods:
         - ``add(text)``    — store a memory
         - ``search(query)`` — find relevant memories
         - ``profile()``    — get user/agent profile
 
-    Extended methods:
+    Extended methods (delegate to AnhurClient):
         - ``search_by_type``, ``recall``, ``walk``, ``list_sessions``,
           ``get_context``, ``read_content``, ``recent``, ``update``,
-          ``delete``, ``new_session``
+          ``delete``, ``new_session``, plus all entity_*/upload_*/batch_*
+          methods.
 
     Args:
         api_key:   AnhurDB API key (required). Falls back to
@@ -138,12 +174,18 @@ class Memory:
                 "api_key is required. Pass it directly or set ANHUR_API_KEY."
             )
 
-        self._connection = HTTPConnection(
-            base_url=url,
+        # Compose an AnhurClient — Memory delegates 27 API methods to it.
+        # We share its HTTPConnection via the _connection alias below so the
+        # private helpers (_try_ingest, _create_record) can keep using
+        # `self._connection` directly.
+        self._client = AnhurClient(
+            url=url,
             api_key=key,
             tenant_id=tenant_id,
             mode=mode,
         )
+        # Alias — same underlying HTTPConnection, single TCP/HTTP pool.
+        self._connection = self._client._connection
 
         # Container tag: explicit user_id or SHA-256 derived from API key.
         if user_id:
@@ -198,9 +240,9 @@ class Memory:
         """
         Store a memory. Simplest way to save information.
 
-        Tries the cloud ``/api/v1/ingest`` endpoint first (auto-embedding
-        + entity extraction). If that returns 404, falls back to direct
-        record creation via ``/api/v1/records`` (OSS mode, FTS5 only).
+        Tries the enriched ``/api/v1/ingest`` endpoint first (full processing
+        pipeline). If that returns 404, falls back to direct record creation
+        via ``/api/v1/records`` (minimal mode).
 
         Args:
             text:  The text to remember (required, non-empty).
@@ -261,21 +303,7 @@ class Memory:
             for hit in hits:
                 print(hit["summary"], hit["score"])
         """
-        if not query:
-            raise ValueError("query cannot be empty")
-
-        payload: Dict[str, Any] = {
-            "query": query,
-            "text": query,
-            "limit": limit,
-        }
-        if type_filter:
-            payload["type_filter"] = type_filter
-
-        data = await self._connection.post("/api/v1/search/global", payload)
-        return self._flatten_search_results(data)
-
-    # -- Core: profile() ----------------------------------------------------
+        return await self._client.search(query, limit=limit, type_filter=type_filter)
 
     async def profile(self) -> Dict[str, Any]:
         """
@@ -315,6 +343,35 @@ class Memory:
                 }
             raise
 
+    async def search_session(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        type_filter: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search within the current session (all types, including recent memories).
+
+        Unlike ``search()``, this returns ALL memory types so you can find
+        recent episodic records and in-progress tasks within this session.
+
+        Args:
+            query:       Natural language query.
+            limit:       Maximum results (default 10).
+            type_filter: Optional memory type filter.
+
+        Returns:
+            List of search result dicts.
+
+        Example::
+
+            hits = await mem.search_session("what did we discuss about payments?")
+        """
+        return await self._client.search_session(
+            self._session_uuid, query, limit=limit, type_filter=type_filter
+        )
+
     # -- Extended: search_by_type() -----------------------------------------
 
     async def search_by_type(
@@ -334,11 +391,7 @@ class Memory:
         Returns:
             List of search result dicts.
         """
-        params = {"type": memory_type, "limit": str(limit)}
-        data = await self._connection.get("/api/v1/search/type", params=params)
-        return data.get("results", [])
-
-    # -- Extended: recall() -------------------------------------------------
+        return await self._client.search_by_type(memory_type, limit=limit)
 
     async def recall(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -354,9 +407,7 @@ class Memory:
         Returns:
             List of search result dicts.
         """
-        return await self.search(query, limit=limit)
-
-    # -- Extended: walk() ---------------------------------------------------
+        return await self._client.recall(query, limit)
 
     async def walk(self, start_id: int, depth: int = 3) -> Dict[str, Any]:
         """
@@ -372,10 +423,7 @@ class Memory:
         Returns:
             Dict with ``nodes`` and ``edges`` arrays.
         """
-        payload = {"seed_id": start_id, "depth": depth, "direction": "both"}
-        return await self._connection.post("/api/v1/walk", payload)
-
-    # -- Extended: list_sessions() ------------------------------------------
+        return await self._client.walk(start_id, depth)
 
     async def list_sessions(self) -> List[Dict[str, Any]]:
         """
@@ -385,10 +433,7 @@ class Memory:
             List of dicts with ``uuid``, ``record_count``, ``types``,
             ``last_activity``.
         """
-        data = await self._connection.get("/api/v1/sessions/stats")
-        return data.get("sessions", data) if isinstance(data, dict) else data
-
-    # -- Extended: get_context() --------------------------------------------
+        return await self._client.list_sessions()
 
     async def get_context(self, record_id: int) -> Dict[str, Any]:
         """
@@ -403,33 +448,22 @@ class Memory:
         Returns:
             Dict with ``target`` and ``neighbors``.
         """
-        return await self._connection.get(
-            f"/api/v1/records/{record_id}/topology"
-        )
+        return await self._client.get_context(record_id)
 
-    # -- Extended: read_content() -------------------------------------------
-
-    async def read_content(self, record_id: int) -> str:
+    async def read_content(self, record_id: int) -> Any:
         """
         Read the full content payload for a record.
 
-        Records store a summary for search indexing, but the full content
-        may be much larger. This returns the complete gzip-decompressed text.
+        Returns the complete decompressed content. Type depends on what
+        was stored — a dict for structured records, a string for plain text.
 
         Args:
             record_id: The record ID to read.
 
         Returns:
-            The raw content string.
+            Content payload (dict or string).
         """
-        data = await self._connection.get(
-            f"/api/v1/records/{record_id}/content"
-        )
-        if isinstance(data, dict):
-            return data.get("content", str(data))
-        return str(data)
-
-    # -- Extended: recent() -------------------------------------------------
+        return await self._client.read_content(record_id)
 
     async def recent(self, limit: int = 20) -> List[Dict[str, Any]]:
         """
@@ -441,13 +475,7 @@ class Memory:
         Returns:
             List of record dicts ordered by creation time (newest first).
         """
-        data = await self._connection.get(
-            "/api/v1/manifest",
-            params={"limit": str(limit)},
-        )
-        return data.get("records", []) if isinstance(data, dict) else data
-
-    # -- Extended: update() -------------------------------------------------
+        return await self._client.recent(limit)
 
     async def update(self, record_id: int, **fields: Any) -> None:
         """
@@ -462,9 +490,7 @@ class Memory:
 
             await mem.update(42, summary="Updated summary", score=8)
         """
-        await self._connection.patch(f"/api/v1/records/{record_id}", fields)
-
-    # -- Extended: delete() -------------------------------------------------
+        await self._client.update(record_id, **fields)
 
     async def delete(self, record_id: int) -> None:
         """
@@ -475,9 +501,7 @@ class Memory:
         Args:
             record_id: The record ID to delete.
         """
-        await self._connection.delete(f"/api/v1/records/{record_id}")
-
-    # -- Extended: new_session() --------------------------------------------
+        await self._client.delete(record_id)
 
     def new_session(self) -> str:
         """
@@ -503,8 +527,8 @@ class Memory:
         """
         Full-text search with cognitive weight boosting.
 
-        Uses the DuckDB-backed smart search engine that ranks results
-        by a combination of text relevance and cognitive importance.
+        Ranks results by a combination of text relevance and cognitive
+        importance (score × weight).
 
         Args:
             query:       Search query.
@@ -514,12 +538,7 @@ class Memory:
         Returns:
             Search results ranked by cognitive relevance.
         """
-        params: Dict[str, str] = {"q": query, "limit": str(limit)}
-        if memory_type:
-            params["type"] = memory_type
-        return await self._connection.get("/api/v1/search/smart", params=params)
-
-    # -- Extended: walk_semantic() ------------------------------------------
+        return await self._client.smart_search(query, limit=limit, memory_type=memory_type)
 
     async def walk_semantic(self, start_id: int, depth: int = 3) -> Dict[str, Any]:
         """
@@ -535,12 +554,7 @@ class Memory:
         Returns:
             Dict with ``nodes`` and ``edges``.
         """
-        return await self._connection.post(
-            "/api/v1/walk/semantic",
-            {"seed_id": start_id, "depth": depth},
-        )
-
-    # -- Extended: batch_read_content() -------------------------------------
+        return await self._client.walk_semantic(start_id, depth)
 
     async def batch_read_content(self, ids: List[int]) -> Dict[str, Any]:
         """
@@ -554,30 +568,19 @@ class Memory:
         Returns:
             Dict mapping ``record_id → content_payload``.
         """
-        return await self._connection.post(
-            "/api/v1/records/batch-content", {"ids": ids}
-        )
+        return await self._client.batch_read_content(ids)
 
-    # -- Extended: batch_update_status() ------------------------------------
-
-    async def batch_update_status(
-        self, ids: List[int], status: str
-    ) -> Dict[str, Any]:
+    async def mark_consolidated(self, ids: List[int]) -> Dict[str, Any]:
         """
-        Update status for multiple records at once.
+        Mark a batch of records as consolidated.
 
         Args:
-            ids:    List of record IDs.
-            status: Target status (e.g. ``"consolidated"``, ``"archived"``).
+            ids: List of record IDs to mark.
 
         Returns:
             Confirmation dict with count of updated records.
         """
-        return await self._connection.patch(
-            "/api/v1/records/mark-consolidated", {"ids": ids, "status": status}
-        )
-
-    # -- Extended: supersede() ----------------------------------------------
+        return await self._client.mark_consolidated(ids)
 
     async def supersede(self, old_id: int, new_id: int) -> Dict[str, Any]:
         """
@@ -593,16 +596,12 @@ class Memory:
         Returns:
             Confirmation dict.
         """
-        return await self._connection.post(
-            "/api/v1/records/supersede", {"old_id": old_id, "new_id": new_id}
-        )
-
-    # -- Extended: upload_file() --------------------------------------------
+        return await self._client.supersede(old_id, new_id)
 
     async def upload_file(
         self,
         filename: str,
-        content: str,
+        content: bytes,
         session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -613,18 +612,13 @@ class Memory:
 
         Args:
             filename:   Original filename (format detection).
-            content:    Base64-encoded file content.
+            content:    Raw file bytes.
             session_id: Optional session UUID to associate with.
 
         Returns:
-            Dict with ``id`` for status polling.
+            Dict with ``record_id``, ``uuid``, ``filename``, ``status``.
         """
-        payload: Dict[str, Any] = {"filename": filename, "content": content}
-        if session_id:
-            payload["session_id"] = session_id
-        return await self._connection.post("/api/v1/upload", payload)
-
-    # -- Extended: upload_status() ------------------------------------------
+        return await self._client.upload_file(filename, content, session_id=session_id)
 
     async def upload_status(self, upload_id: int) -> Dict[str, Any]:
         """
@@ -637,9 +631,7 @@ class Memory:
             Dict with ``status`` (``"processing"``, ``"completed"``,
             ``"failed"``).
         """
-        return await self._connection.get(f"/api/v1/upload/{upload_id}/status")
-
-    # -- Extended: get_session_history() ------------------------------------
+        return await self._client.upload_status(upload_id)
 
     async def get_session_history(
         self,
@@ -672,7 +664,8 @@ class Memory:
         """
         Get thematic clusters within a session.
 
-        Uses BSQ vectors and DBSCAN to identify topic groups.
+        Uses vector similarity and clustering to identify thematic groups
+        within the session's records.
 
         Args:
             session_uuid: The session UUID.
@@ -703,15 +696,31 @@ class Memory:
         Returns:
             List of entity dicts.
         """
-        params: Dict[str, str] = {"limit": str(limit)}
-        if query:
-            params["query"] = query
-        if entity_type:
-            params["type"] = entity_type
-        data = await self._connection.get("/api/v1/entities", params=params)
-        return data.get("entities", data) if isinstance(data, dict) else data
+        return await self._client.search_entities(query=query, entity_type=entity_type, limit=limit)
 
-    # -- Entity: upsert_entity() --------------------------------------------
+    async def list_entities(self, limit: int = 200, offset: int = 0) -> Dict[str, Any]:
+        """
+        Paginated walk of ALL entities for the tenant (id ASC, stable cursor).
+
+        Loop until ``has_more`` is false to consume the full set. See the
+        low-level :meth:`AnhurClient.list_entities` for the full contract.
+        """
+        return await self._client.list_entities(limit=limit, offset=offset)
+
+    async def create_in_session(self, text: str, session_uuid: str) -> Dict[str, Any]:
+        """
+        Store ``text`` as an episodic record under a CALLER-OWNED session uuid.
+        See :meth:`AnhurClient.create_in_session`.
+        """
+        return await self._client.create_in_session(text, session_uuid)
+
+    async def append_main_ids(self, record_id: int, main_ids: List[int]) -> Dict[str, Any]:
+        """Append parent IDs to ``record_id``'s main_ids. See :meth:`AnhurClient.append_main_ids`."""
+        return await self._client.append_main_ids(record_id, main_ids)
+
+    async def update_consolidate_ids(self, ids: List[int], consolidate_id: int) -> Dict[str, Any]:
+        """Set ``consolidate_id`` on a batch of children. See :meth:`AnhurClient.update_consolidate_ids`."""
+        return await self._client.update_consolidate_ids(ids, consolidate_id)
 
     async def upsert_entity(
         self,
@@ -732,16 +741,7 @@ class Memory:
         Returns:
             Dict with entity ``id``.
         """
-        payload: Dict[str, Any] = {"name": name}
-        if entity_type:
-            payload["entity_type"] = entity_type
-        if summary:
-            payload["summary"] = summary
-        if attributes:
-            payload["attributes"] = attributes
-        return await self._connection.post("/api/v1/entities", payload)
-
-    # -- Entity: entity_graph() ---------------------------------------------
+        return await self._client.upsert_entity(name, entity_type=entity_type, summary=summary, attributes=attributes)
 
     async def entity_graph(
         self, entity_id: int, depth: int = 2
@@ -756,12 +756,7 @@ class Memory:
         Returns:
             Dict with ``entity``, ``nodes``, ``node_count``.
         """
-        return await self._connection.get(
-            f"/api/v1/entities/{entity_id}/graph",
-            params={"depth": str(depth)},
-        )
-
-    # -- Entity: entity_timeline() ------------------------------------------
+        return await self._client.get_entity_graph(entity_id, depth=depth)
 
     async def entity_timeline(self, entity_id: int) -> Dict[str, Any]:
         """
@@ -775,11 +770,7 @@ class Memory:
         Returns:
             Dict with ``entity``, ``timeline``, ``record_ids``.
         """
-        return await self._connection.get(
-            f"/api/v1/entities/{entity_id}/timeline"
-        )
-
-    # -- Entity: upsert_entity_edge() ---------------------------------------
+        return await self._client.entity_timeline(entity_id)
 
     async def upsert_entity_edge(
         self,
@@ -804,20 +795,7 @@ class Memory:
         Returns:
             Confirmation dict.
         """
-        payload: Dict[str, Any] = {
-            "source_id": source_id,
-            "target_id": target_id,
-            "relation": relation,
-        }
-        if event_time:
-            payload["event_time"] = event_time
-        if confidence is not None:
-            payload["confidence"] = confidence
-        if source_record_id is not None:
-            payload["source_record_id"] = source_record_id
-        return await self._connection.post("/api/v1/entities/edges", payload)
-
-    # -- Entity: link_record_entity() ---------------------------------------
+        return await self._client.upsert_entity_edge(source_id, target_id, relation, event_time=event_time, confidence=confidence, source_record_id=source_record_id)
 
     async def link_record_entity(
         self, record_id: int, entity_id: int, role: str = ""
@@ -833,15 +811,7 @@ class Memory:
         Returns:
             Confirmation dict.
         """
-        payload: Dict[str, Any] = {
-            "record_id": record_id,
-            "entity_id": entity_id,
-        }
-        if role:
-            payload["role"] = role
-        return await self._connection.post("/api/v1/entities/link", payload)
-
-    # -- Entity: get_record_entities() --------------------------------------
+        return await self._client.link_record_entity(record_id, entity_id, role=role)
 
     async def get_record_entities(self, record_id: int) -> List[Dict[str, Any]]:
         """
@@ -853,12 +823,7 @@ class Memory:
         Returns:
             List of entity dicts.
         """
-        data = await self._connection.get(
-            f"/api/v1/records/{record_id}/entities"
-        )
-        return data.get("entities", data) if isinstance(data, dict) else data
-
-    # -- Stub: forget() -----------------------------------------------------
+        return await self._client.get_record_entities(record_id)
 
     async def forget(self, memory_id: Optional[int] = None) -> None:
         """
@@ -922,7 +887,7 @@ class Memory:
         Create a record directly via ``POST /api/v1/records`` (OSS mode).
 
         Without server-side embedding, text is stored in both ``summary``
-        (for FTS5 search) and ``content`` (for full retrieval).
+        (for keyword search) and ``content`` (for full retrieval).
         """
         summary = text[:200] + "..." if len(text) > 200 else text
 
@@ -933,7 +898,7 @@ class Memory:
             content=text,
             score=score,
             weight=score / 10,
-            metadata=self._container_tag,
+            metadata=_build_metadata_json(self._container_tag),
         )
 
         data = await self._connection.post(
@@ -981,7 +946,7 @@ class AnhurClient:
 
     Exposes the complete AnhurDB REST API surface including:
       - Memory CRUD (create, read, update, delete)
-      - Batch operations (batch_read_content, batch_update_status)
+      - Batch operations (batch_read_content, mark_consolidated, decay)
       - Search (global, by type, smart, AST query)
       - Graph traversal (walk, semantic walk)
       - Entity knowledge graph (search, upsert, edges, timeline)
@@ -1032,6 +997,20 @@ class AnhurClient:
     async def __aexit__(self, *exc: Any) -> None:
         await self._connection.close()
 
+    # ── Health ─────────────────────────────────────────────────────
+
+    async def health(self) -> Dict[str, Any]:
+        """
+        Check server health.
+
+        Returns:
+            Dict with ``status`` (``"healthy"``) and ``name`` fields.
+
+        Raises:
+            AnhurConnectionError: If the server is unreachable.
+        """
+        return await self._connection.get("/api/v1/health")
+
     # ── Memory CRUD ────────────────────────────────────────────────
 
     async def create(self, req: CreateRequest) -> Dict[str, Any]:
@@ -1061,7 +1040,7 @@ class AnhurClient:
         """
         return await self._connection.get(f"/api/v1/records/{record_id}")
 
-    async def read_content(self, record_id: int) -> str:
+    async def read_content(self, record_id: int) -> Any:
         """
         Read the full content payload for a record.
 
@@ -1069,14 +1048,12 @@ class AnhurClient:
             record_id: The record ID.
 
         Returns:
-            The decompressed content string.
+            The content payload. Type depends on what was stored:
+            a dict for structured records, a string for plain text.
         """
-        data = await self._connection.get(
+        return await self._connection.get(
             f"/api/v1/records/{record_id}/content"
         )
-        if isinstance(data, dict):
-            return data.get("content", str(data))
-        return str(data)
 
     async def get_context(self, record_id: int) -> Dict[str, Any]:
         """
@@ -1121,7 +1098,7 @@ class AnhurClient:
         type_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Global hybrid search (vector + FTS5) across all sessions.
+        Global semantic search across all sessions (safe memory types only).
 
         Args:
             query:       Natural language query.
@@ -1156,8 +1133,37 @@ class AnhurClient:
         """
         params: Dict[str, str] = {"type": memory_type, "limit": str(limit)}
         if query:
-            params["query"] = query
+            params["q"] = query
         data = await self._connection.get("/api/v1/search/type", params=params)
+        return data.get("results", []) if isinstance(data, dict) else []
+
+    async def search_session(
+        self,
+        session_uuid: str,
+        query: str = "",
+        *,
+        limit: int = 10,
+        type_filter: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search within a specific session (all record types).
+
+        Unlike ``search()`` (global, safe types only), this returns ALL types
+        including recent episodic records for the given session.
+
+        Args:
+            session_uuid: UUID of the session to search within.
+            query:        Natural language query.
+            limit:        Maximum results (default 10).
+            type_filter:  Optional memory type filter.
+
+        Returns:
+            List of search result dicts.
+        """
+        payload: Dict[str, Any] = {"uuid": session_uuid, "text": query, "limit": limit}
+        if type_filter:
+            payload["type_filter"] = type_filter
+        data = await self._connection.post("/api/v1/search", payload)
         return data.get("results", []) if isinstance(data, dict) else []
 
     async def smart_search(
@@ -1170,8 +1176,8 @@ class AnhurClient:
         """
         Full-text search with cognitive weight boosting.
 
-        Uses the DuckDB-backed smart search engine that ranks results
-        by a combination of text relevance and cognitive importance (score).
+        Ranks results by a combination of text relevance and cognitive
+        importance (score × weight).
 
         Args:
             query:       Search query.
@@ -1192,17 +1198,18 @@ class AnhurClient:
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """
-        Cognitive fan-out search combining multiple search strategies.
+        Global search alias for backward compatibility.
 
-        The server-side ``recall`` performs smart_search + fact search +
-        consolidated search in parallel and merges results.
+        Delegates directly to ``search()`` (``POST /api/v1/search/global``).
+        There is no server-side recall endpoint or fan-out — the name mirrors
+        the MCP ``recall`` tool convention.
 
         Args:
             query: Natural language query.
             limit: Maximum results (default 10).
 
         Returns:
-            List of search result dicts ranked by cognitive relevance.
+            List of search result dicts.
         """
         return await self.search(query, limit=limit)
 
@@ -1278,27 +1285,123 @@ class AnhurClient:
         )
         return data if isinstance(data, dict) else {}
 
-    async def batch_update_status(
-        self,
-        ids: List[int],
-        status: str,
-    ) -> Dict[str, Any]:
+    async def mark_consolidated(self, ids: List[int]) -> Dict[str, Any]:
         """
-        Update status for multiple records at once.
+        Mark a batch of records as consolidated.
 
-        Useful for bulk operations like marking records as consolidated,
-        archived, or hubbed.
+        Flags the given records as having been included in a summary record.
+        Use ``link_to_consolidated()`` afterward to set the parent record pointer.
 
         Args:
-            ids:    List of record IDs.
-            status: Target status (e.g. ``"consolidated"``, ``"archived"``).
+            ids: List of record IDs to mark.
 
         Returns:
             Confirmation dict with count of updated records.
         """
         return await self._connection.patch(
             "/api/v1/records/mark-consolidated",
-            {"ids": ids, "status": status},
+            {"ids": ids},
+        )
+
+    async def link_to_consolidated(
+        self,
+        ids: List[int],
+        consolidate_id: int,
+    ) -> Dict[str, Any]:
+        """
+        Set the parent consolidated record for a batch of records.
+
+        Links child records to their summary record after consolidation.
+
+        Args:
+            ids:             List of child record IDs.
+            consolidate_id:  ID of the summary (parent) record.
+
+        Returns:
+            Confirmation dict.
+        """
+        return await self._connection.patch(
+            "/api/v1/records/consolidate-ids",
+            {"ids": ids, "consolidate_id": consolidate_id},
+        )
+
+    async def append_main_links(
+        self,
+        ids: List[int],
+        main_ids_to_append: List[int],
+    ) -> Dict[str, Any]:
+        """
+        Append parent record IDs to a batch of records (non-destructive).
+
+        Does NOT replace existing ``main_ids`` — only adds new links.
+        Use this to build parent-child relationships in the knowledge graph.
+
+        Args:
+            ids:                 Records to update.
+            main_ids_to_append:  Parent IDs to add to each record's ``main_ids``.
+
+        Returns:
+            Confirmation dict.
+        """
+        return await self._connection.patch(
+            "/api/v1/records/append-main-ids",
+            {"ids": ids, "main_ids_to_append": main_ids_to_append},
+        )
+
+    async def append_related_links(
+        self,
+        ids: List[int],
+        related_ids_to_append: List[int],
+    ) -> Dict[str, Any]:
+        """
+        Append lateral record links to a batch of records (non-destructive).
+
+        .. note::
+            The server-side ``PATCH /api/v1/records/append-related-ids`` route
+            is not yet registered. Use ``create()`` with ``related_ids`` set on
+            the ``CreateRequest``, or build lateral links via the topology rules
+            in the AnhurDB pipeline. This method will raise ``AnhurQueryError``
+            until the server exposes the route.
+
+        Args:
+            ids:                    Records to update.
+            related_ids_to_append:  Lateral record IDs to add.
+
+        Returns:
+            Confirmation dict.
+
+        Raises:
+            AnhurQueryError: Always — the server route is not yet available.
+        """
+        raise AnhurQueryError(
+            "append_related_links: server route PATCH /api/v1/records/append-related-ids "
+            "is not registered. Use CreateRequest.related_ids on create, or rely on "
+            "topology rules to build lateral links automatically."
+        )
+
+    async def decay(
+        self,
+        ids: List[int],
+        target_weight: float = 0.05,
+        target_dimension: int = 64,
+    ) -> Dict[str, Any]:
+        """
+        Apply memory decay to a batch of records.
+
+        Decayed records are downgraded to floor values and archived.
+        Use this to prune low-importance memories over time.
+
+        Args:
+            ids:              List of record IDs to decay.
+            target_weight:    Floor weight after decay (default 0.05).
+            target_dimension: Target embedding dimension after decay (default 64).
+
+        Returns:
+            Confirmation dict with count of decayed records.
+        """
+        return await self._connection.patch(
+            "/api/v1/records/decay",
+            {"ids": ids, "target_weight": target_weight, "target_dimension": target_dimension},
         )
 
     # ── Graph Traversal ────────────────────────────────────────────
@@ -1316,7 +1419,7 @@ class AnhurClient:
         """
         return await self._connection.post(
             "/api/v1/walk",
-            {"seed_id": start_id, "depth": depth, "direction": "both"},
+            {"seed_id": start_id, "depth": depth},
         )
 
     async def walk_semantic(self, start_id: int, depth: int = 3) -> Dict[str, Any]:
@@ -1337,6 +1440,24 @@ class AnhurClient:
             "/api/v1/walk/semantic",
             {"seed_id": start_id, "depth": depth},
         )
+
+    async def graph(self, archived: bool = False) -> Dict[str, Any]:
+        """
+        Fetch the full knowledge graph (all nodes and edges).
+
+        Returns every record node and relationship edge in the database.
+        Use ``walk()`` for targeted traversal from a specific record.
+
+        Args:
+            archived: Include archived records (default False).
+
+        Returns:
+            Dict with ``nodes`` (list of records) and ``edges`` (list of links).
+        """
+        params: Dict[str, str] = {}
+        if archived:
+            params["archived"] = "1"
+        return await self._connection.get("/api/v1/graph", params=params or None)
 
     # ── Session Management ─────────────────────────────────────────
 
@@ -1396,7 +1517,7 @@ class AnhurClient:
         """
         Get mathematically clustered topological groups for a session.
 
-        Uses BSQ vectors and DBSCAN to identify thematic clusters
+        Uses vector similarity and clustering to identify thematic groups
         within the session's records.
 
         Args:
@@ -1431,7 +1552,7 @@ class AnhurClient:
         """
         params: Dict[str, str] = {"limit": str(limit), "offset": str(offset)}
         if query:
-            params["query"] = query
+            params["q"] = query
         return await self._connection.get("/api/v1/manifest", params=params)
 
     async def manifest_session(
@@ -1451,7 +1572,7 @@ class AnhurClient:
         """
         params: Dict[str, str] = {}
         if query:
-            params["query"] = query
+            params["q"] = query
         return await self._connection.get(
             f"/api/v1/chats/{session_uuid}/manifest",
             params=params or None,
@@ -1478,7 +1599,7 @@ class AnhurClient:
     async def upload_file(
         self,
         filename: str,
-        content: str,
+        content: bytes,
         session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -1492,16 +1613,28 @@ class AnhurClient:
 
         Args:
             filename:   Original filename (used for format detection).
-            content:    Base64-encoded file content.
+            content:    Raw file bytes.
             session_id: Optional session UUID to associate with.
 
         Returns:
-            Dict with ``id`` for status polling.
+            Dict with ``record_id``, ``uuid``, ``filename``, ``status``.
+
+        Example::
+
+            with open("report.pdf", "rb") as f:
+                result = await client.upload_file("report.pdf", f.read())
+            record_id = result["record_id"]
         """
-        payload: Dict[str, Any] = {"filename": filename, "content": content}
+        extra: Dict[str, str] = {}
         if session_id:
-            payload["session_id"] = session_id
-        return await self._connection.post("/api/v1/upload", payload)
+            extra["session_id"] = session_id
+        return await self._connection.post_multipart(
+            "/api/v1/upload",
+            file_field="file",
+            file_data=content,
+            filename=filename,
+            extra_fields=extra or None,
+        )
 
     async def upload_status(self, upload_id: int) -> Dict[str, Any]:
         """
@@ -1559,11 +1692,146 @@ class AnhurClient:
         """
         params: Dict[str, str] = {"limit": str(limit)}
         if query:
-            params["query"] = query
+            params["q"] = query
         if entity_type:
             params["type"] = entity_type
         data = await self._connection.get("/api/v1/entities", params=params)
         return data.get("entities", data) if isinstance(data, dict) else data
+
+    async def list_entities(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Paginated walk of ALL entities for the tenant, ordered by id ASC.
+
+        Unlike :meth:`search_entities` (keyword LIKE filter, limited match
+        set), this walks every row with a stable cursor — pages never shift
+        under concurrent inserts. Use for analytics, normalization sweeps,
+        exports, or admin dashboards.
+
+        Junior Tip [SDK parity, 2026-05-22]: mirrors Go ``Memory.ListEntities``
+        and TS ``listEntities``. The response carries ``has_more`` +
+        ``next_offset``; loop until ``has_more`` is false to consume the set.
+
+        Args:
+            limit:  Page size (default 200, server-clamped to [1, 500]).
+            offset: 0-based offset (default 0).
+
+        Returns:
+            Dict with ``entities``, ``count``, ``total``, ``limit``,
+            ``offset``, ``has_more``, ``next_offset``.
+        """
+        if limit <= 0:
+            limit = 200
+        if limit > 500:
+            limit = 500
+        if offset < 0:
+            offset = 0
+        params = {"limit": str(limit), "offset": str(offset)}
+        return await self._connection.get("/api/v1/entities/list", params=params)
+
+    async def create_in_session(
+        self,
+        text: str,
+        session_uuid: str,
+    ) -> Dict[str, Any]:
+        """
+        Store ``text`` directly as an episodic record under ``session_uuid``,
+        bypassing the auto-session assignment of the ingest path.
+
+        Junior Tip [SDK parity, 2026-05-22]: mirrors Go ``Memory.CreateInSession``
+        and TS ``createInSession``. Used by agents that must place a record in
+        a CALLER-OWNED session (e.g. consolidation writing a consolidated star
+        into the chat session it summarised). Metadata is wrapped through the
+        canonical JSON envelope to avoid the container_tag corruption bug.
+
+        Args:
+            text:         Record text (stored in both summary and content).
+            session_uuid: The session UUID to place the record under (required).
+
+        Returns:
+            Dict with ``session_id`` and ``records`` (the new episodic anchor).
+        """
+        if not session_uuid:
+            raise AnhurError("create_in_session: session_uuid is required")
+        summary = text[:200] + "..." if len(text) > 200 else text
+        payload: Dict[str, Any] = {
+            "uuid": session_uuid,
+            "type": "episodic",
+            "dimension": 0,
+            "prefix": "",
+            "weight": 0.5,
+            "score": 5,
+            "vector": "",
+            "related_ids": [],
+            "main_ids": [],
+            "consolidate_id": 0,
+            "metadata": _build_metadata_json(self._container_tag),
+            "summary": summary,
+            "content": text,
+            "consolidated": False,
+            "status": "saved",
+        }
+        data = await self._connection.post("/api/v1/records", payload)
+        return {
+            "session_id": session_uuid,
+            "records": [{"id": data.get("id", 0), "type": "episodic", "summary": summary}],
+            "mode": "oss",
+        }
+
+    async def append_main_ids(
+        self,
+        record_id: int,
+        main_ids: List[int],
+    ) -> Dict[str, Any]:
+        """
+        Append parent record IDs to the ``main_ids`` array of a single record.
+
+        Server-side this reads, deduplicates, and writes back — idempotent on
+        the union of existing + supplied IDs. Junior Tip [SDK parity]: mirrors
+        Go ``Memory.AppendMainIDs`` and TS ``appendMainIds``.
+
+        Args:
+            record_id: Child record that receives the parents.
+            main_ids:  Parent IDs to append.
+
+        Returns:
+            Confirmation dict (empty when ``main_ids`` is empty — no-op).
+        """
+        if record_id <= 0:
+            raise AnhurError("append_main_ids: record_id must be > 0")
+        if not main_ids:
+            return {}
+        payload = {"ids": [record_id], "main_ids_to_append": main_ids}
+        return await self._connection.patch("/api/v1/records/append-main-ids", payload)
+
+    async def update_consolidate_ids(
+        self,
+        ids: List[int],
+        consolidate_id: int,
+    ) -> Dict[str, Any]:
+        """
+        Set ``consolidate_id`` on a batch of child records (judge → star link).
+
+        Junior Tip [SDK parity]: mirrors Go ``Memory.UpdateConsolidateIDs`` and
+        TS ``updateConsolidateIds``. Batched so N children pointing at the same
+        star cost ONE Raft round-trip instead of N.
+
+        Args:
+            ids:            Child record IDs.
+            consolidate_id: The consolidated star's ID.
+
+        Returns:
+            Confirmation dict (empty when ``ids`` is empty — no-op).
+        """
+        if not ids:
+            return {}
+        if consolidate_id <= 0:
+            raise AnhurError("update_consolidate_ids: consolidate_id must be > 0")
+        payload = {"ids": ids, "consolidate_id": consolidate_id}
+        return await self._connection.patch("/api/v1/records/consolidate-ids", payload)
 
     async def upsert_entity(
         self,
@@ -1717,8 +1985,10 @@ class AnhurClient:
         Get aggregated record counts per type.
 
         Returns:
-            Dict mapping type name → count
-            (e.g. ``{"episodic": 120, "fact": 45}``).
+            Raw manifest metadata dict from the server (limit=0 probe).
+            May include ``count``, ``has_more``, ``records`` keys.
+            For actual per-type counts, use ``search_by_type()`` per type
+            or ``manifest_global()`` with a small limit and inspect ``count``.
         """
         # Uses the manifest endpoint with a type aggregation.
         data = await self._connection.get("/api/v1/manifest", params={"limit": "0"})
@@ -1739,3 +2009,42 @@ class AnhurClient:
             "/api/v1/profile",
             params={"tag": container_tag},
         )
+
+    async def explain(self, record_id: int) -> Dict[str, Any]:
+        """
+        Get a human-readable explanation of why a record scored the way it did.
+
+        Returns the cognitive weight breakdown, decay factors, and the reasoning
+        behind the record's current score and status.
+
+        Args:
+            record_id: The record ID to explain.
+
+        Returns:
+            Dict with weight breakdown, decay factors, and cognitive rationale.
+        """
+        return await self._connection.get(f"/api/v1/records/{record_id}/explain")
+
+    async def access_stats(self) -> Dict[str, Any]:
+        """
+        Get access frequency statistics for records.
+
+        Returns aggregated access counts used by the decay and hub-growth agents
+        to calibrate weight decay and identify high-traffic hubs.
+
+        Returns:
+            Dict with per-record access counts and aggregated statistics.
+        """
+        return await self._connection.get("/api/v1/stats/access")
+
+    async def get_engine_config(self) -> Dict[str, Any]:
+        """
+        Get the current tenant's cognitive engine configuration.
+
+        Returns the effective tuning parameters (decay rates, consolidation
+        thresholds, hub growth limits) that the agents are operating with.
+
+        Returns:
+            Dict with engine configuration parameters.
+        """
+        return await self._connection.get("/api/v1/tenant/engine-config")

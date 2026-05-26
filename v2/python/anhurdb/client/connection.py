@@ -15,6 +15,11 @@ Security hardening:
   - Response size capped at 100 MB (prevents memory exhaustion DoS).
   - Header injection protection: tenant_id validated against CRLF injection.
   - API key never included in error messages or URLs.
+  - HTTP 409 (Conflict) raises ``AnhurQueryError`` in both REST and
+    multipart paths (e.g. max_session_records exceeded).
+  - HTTP 415 (Unsupported Media Type) raises ``AnhurQueryError`` in both
+    REST and multipart paths.
+  - HTTP 429 (Rate Limited) raises ``AnhurError`` so callers can retry.
 """
 
 import aiohttp
@@ -204,6 +209,94 @@ class HTTPConnection:
         """
         return await self._request("DELETE", path)
 
+    async def post_multipart(
+        self,
+        path: str,
+        file_field: str,
+        file_data: bytes,
+        filename: str,
+        extra_fields: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        """
+        Send a POST request with multipart/form-data (file upload).
+
+        Args:
+            path:         API path.
+            file_field:   Form field name for the file.
+            file_data:    Raw file bytes.
+            filename:     Original filename (used for MIME detection).
+            extra_fields: Additional string form fields.
+
+        Returns:
+            Parsed JSON response body.
+        """
+        session = self._session
+        if session is None:
+            raise AnhurConnectionError(
+                "Connection not established. Use 'async with' or call connect() first."
+            )
+
+        form = aiohttp.FormData()
+        form.add_field(file_field, file_data, filename=filename)
+        if extra_fields:
+            for key, value in extra_fields.items():
+                form.add_field(key, value)
+
+        # Build auth headers without Content-Type (aiohttp sets multipart boundary).
+        headers = {
+            "X-API-Key": self.api_key,
+            "User-Agent": "AnhurSDK-Python/2.1",
+        }
+        if self.tenant_id:
+            headers["X-Tenant-ID"] = self.tenant_id
+
+        url = f"{self.base_url}{path}"
+        try:
+            async with session.post(
+                url,
+                data=form,
+                headers=headers,
+                allow_redirects=False,
+            ) as response:
+                raw = await response.content.read(self._max_response_size + 1)
+                if len(raw) > self._max_response_size:
+                    raise AnhurError(
+                        f"Response exceeds maximum size ({self._max_response_size // (1024*1024)} MB)"
+                    )
+                body_text = raw.decode("utf-8", errors="replace")
+
+                if response.status in (401, 403):
+                    raise AnhurAuthError(f"Authentication failed (HTTP {response.status})")
+                elif response.status in (400, 422):
+                    raise AnhurQueryError(f"Invalid request (HTTP {response.status}): {body_text[:500]}")
+                elif response.status == 404:
+                    raise AnhurQueryError(f"Resource not found (HTTP 404): {path}")
+                elif response.status == 409:
+                    raise AnhurQueryError(f"Conflict (HTTP 409): {body_text[:500]}")
+                elif response.status == 415:
+                    raise AnhurQueryError(f"Unsupported media type (HTTP 415): {body_text[:500]}")
+                elif response.status == 429:
+                    raise AnhurError(f"Rate limited (HTTP 429): {body_text[:200]}")
+                elif response.status in (301, 302, 303, 307, 308):
+                    raise AnhurError(
+                        f"Server returned redirect (HTTP {response.status}). "
+                        f"Redirects are disabled to prevent credential leakage."
+                    )
+                elif response.status >= 500:
+                    raise AnhurError(f"Server error (HTTP {response.status}): {body_text[:500]}")
+
+                if not body_text:
+                    return {}
+                try:
+                    return json.loads(body_text)
+                except json.JSONDecodeError:
+                    return {"message": body_text[:1000]}
+
+        except aiohttp.ClientError as exc:
+            raise AnhurConnectionError(
+                f"Failed to connect to AnhurDB: {type(exc).__name__}"
+            ) from exc
+
     # -- Internal request engine --------------------------------------------
 
     async def _request(
@@ -223,8 +316,8 @@ class HTTPConnection:
 
         Raises:
             AnhurAuthError: On 401/403.
-            AnhurQueryError: On 400/404/422.
-            AnhurError: On 5xx.
+            AnhurQueryError: On 400/404/409/415/422.
+            AnhurError: On 429, redirect (3xx), or 5xx.
             AnhurConnectionError: On network failure or timeout.
         """
         session = self._session
@@ -269,6 +362,18 @@ class HTTPConnection:
                 elif response.status == 404:
                     raise AnhurQueryError(
                         f"Resource not found (HTTP 404): {path}"
+                    )
+                elif response.status == 409:
+                    raise AnhurQueryError(
+                        f"Conflict (HTTP 409): {body_text[:500]}"
+                    )
+                elif response.status == 415:
+                    raise AnhurQueryError(
+                        f"Unsupported media type (HTTP 415): {body_text[:500]}"
+                    )
+                elif response.status == 429:
+                    raise AnhurError(
+                        f"Rate limited (HTTP 429): {body_text[:200]}"
                     )
                 elif response.status in (301, 302, 303, 307, 308):
                     # Redirects are disabled for security. Log the attempt.

@@ -20,24 +20,18 @@ class MemoryType(str, Enum):
 
 class MemoryStatus(str, Enum):
     """
-    Status of a cognitive record in the cluster.
-    Must match all statuses used across agents and AnhurDB handlers.
-
-    DEFINITIVE LIST — sourced from:
-      - Go server: create.go, update.go, record_batch.go, upload.go
-      - Python agents: consolidator.py, judge.py, regression/worker.py
+    Processing status of a memory record.
     """
-    SAVED = "saved"                                # Default on record creation
-    PENDING = "pending"                            # Legacy status (pre-v2 records)
-    CONSOLIDATED = "consolidated"                  # After consolidation merges records
-    ARCHIVED = "archived"                          # Soft-deleted (consolidated children)
-    DECAYED = "decayed"                            # Memory decay applied (low fidelity)
-    PROCESSING = "processing"                      # Being ingested/transformed
-    COMPLETED = "completed"                        # File ingestion or planner step done
-    LINKED = "linked"                              # Similarity edges established by linker
-    HUBBED = "hubbed"                              # Assigned to a hub node by hub_growth
-    FAILED = "failed"                              # Generic failure
-    # Agent pipeline statuses (set by Judge, Consolidation, Planner)
-    PENDING_JUDGE = "pending_judge"                # Awaiting Judge validation
-    FAILED_JUDGE = "failed_judge"                  # Judge rejected after max retries
-    FAILED_CONSOLIDATION = "failed_consolidation"  # Consolidation failed
+    SAVED = "saved"                                # Written, awaiting processing
+    PENDING = "pending"                            # Queued for processing
+    PROCESSING = "processing"                      # Being processed
+    COMPLETED = "completed"                        # Processing complete
+    FAILED = "failed"                              # Processing failed
+    ARCHIVED = "archived"                          # Soft-deleted
+    DECAYED = "decayed"                            # Low-fidelity (memory decay applied)
+    CONSOLIDATED = "consolidated"                  # Included in a summary record
+    LINKED = "linked"                              # Cross-session links established
+    HUBBED = "hubbed"                              # Grouped into a topic cluster
+    PENDING_JUDGE = "pending_judge"                # Pending review
+    FAILED_JUDGE = "failed_judge"                  # Review rejected
+    FAILED_CONSOLIDATION = "failed_consolidation"  # Summarization failed

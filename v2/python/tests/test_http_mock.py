@@ -10,9 +10,10 @@ simulates AnhurDB responses. Tests cover:
   - AnhurClient.create() record creation
   - AnhurClient.batch_read_content()
   - AnhurClient.search_entities()
-  - Error handling (401, 400, 500, timeout, oversized response)
+  - Error handling (401, 400, 409, 415, 429, 403, 500, timeout, oversized response)
   - Redirect blocking (credential leak protection)
   - Response size cap enforcement
+  - HTTP status code → exception type mapping (TestHTTPStatusCodes)
 """
 
 import asyncio
@@ -294,7 +295,8 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             content = await mem.read_content(42)
-            self.assertEqual(content, "Full payload content")
+            self.assertIsInstance(content, dict)
+            self.assertEqual(content["content"], "Full payload content")
 
     @unittest_run_loop
     async def test_list_sessions(self):
@@ -547,6 +549,67 @@ class TestSecurityHeaders(AioHTTPTestCase):
             headers = self.app["captured_headers"]
             auth = headers.get("Authorization", "")
             self.assertNotIn("Bearer", auth)
+
+
+class TestHTTPStatusCodes(AioHTTPTestCase):
+    """Tests that specific HTTP status codes raise the correct exception types."""
+
+    async def get_application(self):
+        app = web.Application()
+
+        async def handle_409(request):
+            return web.Response(status=409, text="session has reached the maximum of 1000 records")
+
+        async def handle_415(request):
+            return web.Response(status=415, text="Unsupported Media Type")
+
+        async def handle_429(request):
+            return web.Response(status=429, text="rate limit exceeded")
+
+        async def handle_403(request):
+            return web.Response(status=403, text="Forbidden")
+
+        app.router.add_post("/api/v1/records", handle_409)
+        app.router.add_post("/api/v1/upload", handle_415)
+        app.router.add_post("/api/v1/search/global", handle_429)
+        app.router.add_get("/api/v1/profile", handle_403)
+        return app
+
+    @unittest_run_loop
+    async def test_409_raises_query_error(self):
+        """HTTP 409 Conflict must raise AnhurQueryError (not silently return a dict)."""
+        url = f"http://localhost:{self.server.port}"
+        async with AnhurClient(url=url, api_key="test-key") as client:
+            from anhurdb.models import CreateRequest, MemoryType
+            with self.assertRaises(AnhurQueryError) as ctx:
+                await client.create(CreateRequest(uuid="s1", content="test"))
+            self.assertIn("409", str(ctx.exception))
+
+    @unittest_run_loop
+    async def test_415_raises_query_error(self):
+        """HTTP 415 Unsupported Media Type must raise AnhurQueryError."""
+        url = f"http://localhost:{self.server.port}"
+        async with AnhurClient(url=url, api_key="test-key") as client:
+            with self.assertRaises(AnhurQueryError) as ctx:
+                await client.upload_file("test.pdf", b"fake pdf content")
+            self.assertIn("415", str(ctx.exception))
+
+    @unittest_run_loop
+    async def test_429_raises_anhur_error(self):
+        """HTTP 429 Rate Limited must raise AnhurError."""
+        url = f"http://localhost:{self.server.port}"
+        async with AnhurClient(url=url, api_key="test-key") as client:
+            with self.assertRaises(AnhurError) as ctx:
+                await client.search("test")
+            self.assertIn("429", str(ctx.exception))
+
+    @unittest_run_loop
+    async def test_403_raises_auth_error(self):
+        """HTTP 403 Forbidden must raise AnhurAuthError."""
+        url = f"http://localhost:{self.server.port}"
+        async with AnhurClient(url=url, api_key="test-key") as client:
+            with self.assertRaises(AnhurAuthError):
+                await client.profile("tag1")
 
 
 if __name__ == "__main__":

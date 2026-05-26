@@ -102,6 +102,24 @@ function utcTimestamp(d: Date = new Date()): string {
 }
 
 /**
+ * Wrap a container tag into the canonical metadata JSON envelope
+ * `{"container_tag":"<tag>"}`.
+ *
+ * Junior Tip [metadata corruption parity, 2026-05-22]: every record-create
+ * path historically wrote `metadata` as the bare container_tag string
+ * ("mem-3f9...") instead of a JSON object. On the server that poisoned every
+ * downstream agent running `JSON.parse(metadata)` — entity taggers logged
+ * `tagged_no_entities` and a one-shot repair had to fix 516 corrupted records.
+ * Go and Python SDKs carry the identical fix (buildMetadataJSON /
+ * _build_metadata_json). ALL THREE SDKs MUST stay byte-identical here — see
+ * the SDK-sync rule in project memory. Returns "{}" when the tag is empty.
+ */
+function buildMetadataJson(containerTag: string): string {
+  if (!containerTag) return "{}";
+  return JSON.stringify({ container_tag: containerTag });
+}
+
+/**
  * Dead-simple memory interface for AnhurDB.
  *
  * Handles session management, container tagging, and fallback
@@ -681,6 +699,132 @@ export class Memory {
   }
 
   /**
+   * Paginated walk of ALL entities for the tenant, ordered by id ASC.
+   *
+   * Unlike `searchEntities` (keyword LIKE filter, limited match set), this
+   * walks every row with a stable cursor — pages never shift under concurrent
+   * inserts. Loop until `has_more` is false to consume the full set.
+   *
+   * Junior Tip [SDK parity, 2026-05-22]: mirrors Go `ListEntities` and Python
+   * `list_entities`. All three SDKs must expose this identically.
+   *
+   * @param limit  - Page size (default 200, server-clamped to [1, 500]).
+   * @param offset - 0-based offset (default 0).
+   */
+  async listEntities(
+    limit = 200,
+    offset = 0,
+  ): Promise<{
+    entities: EntityRecord[];
+    count: number;
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+    next_offset: number;
+  }> {
+    if (limit <= 0) limit = 200;
+    if (limit > 500) limit = 500;
+    if (offset < 0) offset = 0;
+    return this.client.get("/api/v1/entities/list", {
+      limit: String(limit),
+      offset: String(offset),
+    });
+  }
+
+  /**
+   * Store `text` as an episodic record under a CALLER-OWNED session uuid,
+   * bypassing the auto-session assignment of the ingest path.
+   *
+   * Junior Tip [SDK parity, 2026-05-22]: mirrors Go `CreateInSession` and
+   * Python `create_in_session`. Metadata is wrapped through the canonical
+   * JSON envelope to avoid the container_tag corruption bug.
+   *
+   * @param text        - Record text (stored in summary + content).
+   * @param sessionUuid - Session UUID to place the record under (required).
+   */
+  async createInSession(text: string, sessionUuid: string): Promise<AddResult> {
+    if (!sessionUuid) {
+      throw new Error("createInSession: sessionUuid is required");
+    }
+    const summary = text.length > 200 ? text.slice(0, 200) + "..." : text;
+    const payload: RecordPayload = {
+      uuid: sessionUuid,
+      type: "episodic" as MemoryType,
+      dimension: 0,
+      prefix: "",
+      weight: 0.5,
+      score: 5,
+      vector: "",
+      related_ids: [],
+      main_ids: [],
+      consolidate_id: 0,
+      metadata: buildMetadataJson(this.containerTag),
+      summary,
+      content: text,
+      consolidated: false,
+      status: "saved",
+    };
+    const data = await this.client.post<{ id?: number }>(
+      "/api/v1/records",
+      payload,
+    );
+    return {
+      sessionId: sessionUuid,
+      records: [{ id: data.id ?? 0, type: "episodic", summary }],
+      mode: "oss",
+    };
+  }
+
+  /**
+   * Append parent record IDs to a single record's `main_ids` array.
+   * Server-side: read, dedup, write back — idempotent.
+   *
+   * Junior Tip [SDK parity]: mirrors Go `AppendMainIDs` and Python
+   * `append_main_ids`.
+   *
+   * @param recordId - Child record that receives the parents.
+   * @param mainIds  - Parent IDs to append.
+   */
+  async appendMainIds(
+    recordId: number,
+    mainIds: number[],
+  ): Promise<Record<string, unknown>> {
+    if (recordId <= 0) {
+      throw new Error("appendMainIds: recordId must be > 0");
+    }
+    if (mainIds.length === 0) return {};
+    return this.client.patch<Record<string, unknown>>(
+      "/api/v1/records/append-main-ids",
+      { ids: [recordId], main_ids_to_append: mainIds },
+    );
+  }
+
+  /**
+   * Set `consolidate_id` on a batch of child records (judge → star link).
+   * Batched so N children pointing at one star cost ONE Raft round-trip.
+   *
+   * Junior Tip [SDK parity]: mirrors Go `UpdateConsolidateIDs` and Python
+   * `update_consolidate_ids`.
+   *
+   * @param ids           - Child record IDs.
+   * @param consolidateId - The consolidated star's ID.
+   */
+  async updateConsolidateIds(
+    ids: number[],
+    consolidateId: number,
+  ): Promise<Record<string, unknown>> {
+    if (ids.length === 0) return {};
+    if (consolidateId <= 0) {
+      throw new Error("updateConsolidateIds: consolidateId must be > 0");
+    }
+    return this.client.patch<Record<string, unknown>>(
+      "/api/v1/records/consolidate-ids",
+      { ids, consolidate_id: consolidateId },
+    );
+  }
+
+  /**
    * Create or update a named entity (idempotent by name).
    *
    * @param name    - Entity name (required).
@@ -896,7 +1040,7 @@ export class Memory {
       related_ids: [],
       main_ids: [],
       consolidate_id: 0,
-      metadata: this.containerTag,
+      metadata: buildMetadataJson(this.containerTag),
       summary,
       content: text,
       consolidated: false,

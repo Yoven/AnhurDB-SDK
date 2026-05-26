@@ -127,6 +127,34 @@ func randomHex(n int) string {
 // Core methods — match Python/TS exactly
 // --------------------------------------------------------------------------
 
+// buildMetadataJSON wraps containerTag into the canonical metadata JSON
+// envelope `{"container_tag":"<tag>"}`. Used by every record-create code path
+// so the `metadata` column always holds a valid JSON object — not the raw
+// container_tag string.
+//
+// Junior Tip [Bug 2026-05-21 — metadata corruption]: every consolidated
+// record (and several record-create code paths) had `metadata` written as the
+// bare containerTag string ("mem-3f9...") rather than a JSON object. That
+// poisoned every downstream agent that does json.Unmarshal(metadata) — entity
+// taggers logged "tagged_no_entities" on these records because the metadata
+// parse failed at the very first step. We now centralise the wrapping here so
+// the bug cannot regress through a different write path.
+//
+// Returns "{}" when containerTag is empty, so callers can rely on the column
+// always holding a parseable JSON object.
+func buildMetadataJSON(containerTag string) string {
+	if containerTag == "" {
+		return "{}"
+	}
+	encoded, marshalErr := json.Marshal(map[string]string{"container_tag": containerTag})
+	if marshalErr != nil {
+		// json.Marshal of map[string]string is guaranteed to succeed for any
+		// valid Go string; treat this as a hard programming error.
+		return "{}"
+	}
+	return string(encoded)
+}
+
 // Add stores a memory. This is the simplest way to save information.
 //
 // It tries the cloud /api/v1/ingest endpoint first (which handles
@@ -198,6 +226,121 @@ func (m *Memory) tryIngest(ctx context.Context, text string) (*AddResult, error)
 	}, nil
 }
 
+// CreateInSession stores `text` directly via POST /api/v1/records as an
+// episodic record under the supplied sessionUUID — bypassing m.sessionUUID
+// and any auto-session assignment in /api/v1/ingest. Used by agents that
+// must write into the SAME session as the source content they are
+// summarising (e.g. consolidation creating a consolidated star inside the
+// chat-* session it synthesised, so the judge can locate the source
+// records by session uuid).
+//
+// Junior Tip [why not Memory.Add]: Memory.Add routes through /api/v1/ingest
+// when the client is connected to a hosted endpoint, and the ingest worker
+// owns its own auto-session policy ("mem-xxxx-random" container tags). For
+// CreateInSession we need to place the row in a CALLER-OWNED session uuid,
+// so we POST to /api/v1/records directly. The SDK does not advertise
+// /api/v1/records as part of the public surface for application use; this
+// method is an agent-internal write path.
+func (m *Memory) CreateInSession(ctx context.Context, text string, sessionUUID string) (*AddResult, error) {
+	if m.conn == nil {
+		return nil, ErrEmptyAPIKey
+	}
+	if sessionUUID == "" {
+		return nil, fmt.Errorf("CreateInSession: sessionUUID is required")
+	}
+	summary := text
+	if len(text) > 200 {
+		summary = text[:200] + "..."
+	}
+	payload := map[string]interface{}{
+		"uuid":           sessionUUID,
+		"type":           "episodic",
+		"dimension":      0,
+		"prefix":         "",
+		"weight":         0.5,
+		"score":          5,
+		"vector":         "",
+		"related_ids":    []int{},
+		"main_ids":       []int{},
+		"consolidate_id": 0,
+		"metadata":       buildMetadataJSON(m.containerTag),
+		"summary":        summary,
+		"content":        text,
+		"consolidated":   false,
+		"status":         "saved",
+	}
+	respBytes, postErr := m.conn.Post(ctx, "/api/v1/records", payload)
+	if postErr != nil {
+		return nil, postErr
+	}
+	var resp recordCreateResponse
+	if decodeErr := json.Unmarshal(respBytes, &resp); decodeErr != nil {
+		return nil, fmt.Errorf("parsing record response: %w", decodeErr)
+	}
+	return &AddResult{
+		ID:      resp.ID,
+		Records: []RecordSummary{{ID: resp.ID, Type: "episodic", Summary: summary}},
+		Status:  "ok",
+		Mode:    "oss",
+	}, nil
+}
+
+// AppendMainIDs appends parent record IDs to the main_ids array of a single
+// record via PATCH /api/v1/records/append-main-ids. Server-side the operation
+// reads, deduplicates, and writes back — safe to call repeatedly with the
+// same payload (idempotent on the union of existing + supplied IDs).
+//
+// Junior Tip [server contract]: the endpoint accepts a list of target record
+// IDs (children that will receive the new parents) and a list of parent IDs
+// to append to EACH child. The SDK wrapper exposes the single-record shape
+// (one child, N parents) because that is the common consolidation-time
+// call site; agents that need multi-child fan-out can call the REST
+// endpoint directly with `ids` being a slice.
+func (m *Memory) AppendMainIDs(ctx context.Context, recordID int64, mainIDs []int64) error {
+	if m.conn == nil {
+		return ErrEmptyAPIKey
+	}
+	if recordID <= 0 {
+		return fmt.Errorf("AppendMainIDs: recordID must be > 0")
+	}
+	if len(mainIDs) == 0 {
+		return nil // nothing to append, server would no-op too
+	}
+	payload := map[string]interface{}{
+		"ids":                []int64{recordID},
+		"main_ids_to_append": mainIDs,
+	}
+	_, patchErr := m.conn.Patch(ctx, "/api/v1/records/append-main-ids", payload)
+	return patchErr
+}
+
+// UpdateConsolidateIDs sets the consolidate_id column on a batch of children
+// records via PATCH /api/v1/records/consolidate-ids. Used by the judge agent
+// after a consolidated star is approved: every source record gets its
+// consolidate_id pointed at the star so subsequent queries can navigate
+// child → parent in one column read.
+//
+// Junior Tip [why batch, not per-child]: the typical session has 5-15
+// children pointing at the same star. Looping per-id would cost N Raft
+// round-trips; the batch endpoint compresses to one log entry.
+func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolidateID int64) error {
+	if m.conn == nil {
+		return ErrEmptyAPIKey
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if consolidateID <= 0 {
+		return fmt.Errorf("UpdateConsolidateIDs: consolidateID must be > 0")
+	}
+	payload := map[string]interface{}{
+		"ids":            ids,
+		"consolidate_id": consolidateID,
+	}
+	_, patchErr := m.conn.Patch(ctx, "/api/v1/records/consolidate-ids", payload)
+	return patchErr
+}
+
 // createRecord stores text directly via POST /api/v1/records.
 //
 // Without server-side embedding, we store the text in both summary
@@ -220,7 +363,7 @@ func (m *Memory) createRecord(ctx context.Context, text string) (*AddResult, err
 		"related_ids":    []int{},
 		"main_ids":       []int{},
 		"consolidate_id": 0,
-		"metadata":       m.containerTag,
+		"metadata":       buildMetadataJSON(m.containerTag),
 		"summary":        summary,
 		"content":        text,
 		"consolidated":   false,
@@ -726,6 +869,61 @@ func (m *Memory) UploadStatus(ctx context.Context, uploadID int64) (*UploadStatu
 // --------------------------------------------------------------------------
 // Entity Knowledge Graph (Layer 2)
 // --------------------------------------------------------------------------
+
+// ListEntities returns a paginated snapshot of all entities for the tenant,
+// ordered by id ASC (stable cursor — pages never shift under concurrent inserts).
+//
+// Use this instead of SearchEntities with a placeholder query whenever you
+// need to walk EVERY entity (cluster discovery, exports, dashboards). The
+// returned EntitiesPage carries HasMore + NextOffset so the caller can keep
+// paging until exhausted:
+//
+//	offset := 0
+//	for {
+//	    page, err := mem.ListEntities(ctx, 200, offset)
+//	    if err != nil { return err }
+//	    process(page.Entities)
+//	    if !page.HasMore { break }
+//	    offset = page.NextOffset
+//	}
+//
+// limit is server-clamped to [1, 500]; offset is clamped to >= 0.
+//
+// Junior Tip [why a dedicated method, not SearchEntities("")]: SearchEntities
+// runs a LIKE filter that the server escapes — semantically it is a "find by
+// name" call. Even though LIKE %% would match every entity, that contract
+// could change (e.g. minimum query length added) and silently break the
+// caller. ListEntities has a hard guarantee: deterministic full-set walk.
+func (m *Memory) ListEntities(ctx context.Context, limit, offset int) (*EntitiesPage, error) {
+	if m.conn == nil {
+		return nil, ErrEmptyAPIKey
+	}
+
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	params := url.Values{}
+	params.Set("limit", strconv.Itoa(limit))
+	params.Set("offset", strconv.Itoa(offset))
+
+	respBytes, getErr := m.conn.Get(ctx, "/api/v1/entities/list", params)
+	if getErr != nil {
+		return nil, getErr
+	}
+
+	var page EntitiesPage
+	if decodeErr := json.Unmarshal(respBytes, &page); decodeErr != nil {
+		return nil, fmt.Errorf("parsing entities list response: %w", decodeErr)
+	}
+	return &page, nil
+}
 
 // SearchEntities searches named entities (people, organisations, concepts).
 func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, limit int) ([]Entity, error) {
