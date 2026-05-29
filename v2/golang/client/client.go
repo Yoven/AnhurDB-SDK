@@ -664,7 +664,20 @@ func (m *Memory) GetContext(ctx context.Context, recordID int64) (*ContextResult
 // ReadContent retrieves the full content payload for a record.
 //
 // Records store a summary for search indexing, but the full content may
-// be much larger. This endpoint returns the complete gzip-decompressed text.
+// be much larger. This endpoint returns the complete decrypted file
+// bytes for file records, or the inline content for episodic records.
+//
+// Junior Tip [no JSON-wrapper unwrap, fixed 2026-05-28]:
+// An earlier version tried `json.Unmarshal` into a `{"content": "…"}`
+// wrapper before falling back to raw text. The server has never
+// returned that shape — RecordHandler.GetContent writes raw bytes with
+// `Content-Type: text/plain` — so the unwrap branch was dead AND
+// actively dangerous: a user uploading a `.json` file whose own
+// contents happen to be `{"content": "hello"}` would have the SDK
+// silently return "hello" instead of the 18-byte file, mangling
+// subsequent checksum verification and extractor input. The wrapper
+// is gone; bytes round-trip verbatim. Discovered while wiring
+// the file_ingestor agent to use this method for chat-mode uploads.
 func (m *Memory) ReadContent(ctx context.Context, recordID int64) (string, error) {
 	if m.conn == nil {
 		return "", ErrEmptyAPIKey
@@ -675,13 +688,6 @@ func (m *Memory) ReadContent(ctx context.Context, recordID int64) (string, error
 	if err != nil {
 		return "", err
 	}
-
-	// Try JSON wrapper first, fall back to raw text.
-	var resp contentResponse
-	if err := json.Unmarshal(respBytes, &resp); err == nil && resp.Content != "" {
-		return resp.Content, nil
-	}
-
 	return string(respBytes), nil
 }
 

@@ -351,7 +351,3 @@ type manifestRecord struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// contentResponse wraps the content endpoint response.
-type contentResponse struct {
-	Content string `json:"content"`
-}
