@@ -34,6 +34,43 @@ interface RequestOptions {
 /** Maximum response body size: 100 MB. */
 const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
 
+/**
+ * Number of attempts (initial + retries) for idempotent writes that hit a
+ * transient cluster condition.
+ *
+ * Junior Tip [retry parity, 2026-06]: 3 total attempts matches the Go/Python
+ * SDK retry budget. We ONLY retry writes whose effect is idempotent at the
+ * application layer (POST/PATCH of the same record payload) and ONLY for the
+ * two known-transient signatures below — never blanket-retry, or a genuine
+ * 500 storm turns into a 3x amplification.
+ */
+const WRITE_RETRY_ATTEMPTS = 3;
+
+/** Base backoff in milliseconds; doubles each attempt (100, 200, 400...). */
+const RETRY_BACKOFF_BASE_MS = 100;
+
+/**
+ * Decide whether an error response is a transient cluster condition that a
+ * retry can plausibly clear.
+ *
+ *   - HTTP 500 with a "not_leader" body: the contacted node was not the Raft
+ *     leader at that instant; a moment later a leader is elected / known.
+ *   - Any status with an "episodic anchor" body: the anchor record this write
+ *     depends on was created microseconds earlier and the read that validates
+ *     it raced ahead of replication — read-your-writes catches up on retry.
+ */
+function isTransientWriteError(status: number, bodyText: string): boolean {
+  const lower = bodyText.toLowerCase();
+  if (status === 500 && lower.includes("not_leader")) return true;
+  if (lower.includes("episodic anchor")) return true;
+  return false;
+}
+
+/** Sleep helper for backoff between retries. */
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 /** Regex for safe HTTP header values (printable ASCII only). */
 const HEADER_SAFE = /^[\x20-\x7e]*$/;
 
@@ -109,6 +146,43 @@ export class HttpClient {
   // ── Core request method ──────────────────────────────────────
 
   private async request<T>(opts: RequestOptions): Promise<T> {
+    // Junior Tip [retry, 2026-06]: only POST/PATCH are retried, and only on
+    // the transient signatures in isTransientWriteError. GET is safe to retry
+    // too in principle, but the two transient conditions we target
+    // (not_leader on a write, missing anchor for a dependent write) are
+    // write-path only, so we scope the budget to writes to avoid masking
+    // genuine read failures. DELETE is left single-shot (idempotency of a
+    // hard delete on retry is server-dependent).
+    const retryable = opts.method === "POST" || opts.method === "PATCH";
+    const maxAttempts = retryable ? WRITE_RETRY_ATTEMPTS : 1;
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.attempt<T>(opts);
+      } catch (err: unknown) {
+        lastError = err;
+        const transient =
+          err instanceof TransientWriteError && attempt < maxAttempts;
+        if (!transient) {
+          // Unwrap the carrier so callers see the real typed AnhurError.
+          if (err instanceof TransientWriteError) throw err.cause;
+          throw err;
+        }
+        // Exponential backoff: 100ms, 200ms, ...
+        await delay(RETRY_BACKOFF_BASE_MS * 2 ** (attempt - 1));
+      }
+    }
+    // Unreachable in practice; satisfies the type checker.
+    throw lastError;
+  }
+
+  /**
+   * Perform a single HTTP attempt. Throws a `TransientWriteError` (wrapping
+   * the typed error) when the response matches a retryable cluster condition,
+   * so the retry loop in `request` can distinguish it from a permanent error.
+   */
+  private async attempt<T>(opts: RequestOptions): Promise<T> {
     let url = `${this.baseUrl}${opts.path}`;
 
     if (opts.params) {
@@ -148,24 +222,31 @@ export class HttpClient {
         .then((t) => t.slice(0, 500))
         .catch(() => "");
 
+      let typedError: AnhurError;
       if (response.status === 401 || response.status === 403) {
-        throw new AnhurAuthError(
+        typedError = new AnhurAuthError(
           `Authentication failed (HTTP ${response.status})`,
         );
-      }
-      if (response.status === 400 || response.status === 422) {
-        throw new AnhurQueryError(
+      } else if (response.status === 400 || response.status === 422) {
+        typedError = new AnhurQueryError(
           `Invalid request (HTTP ${response.status}): ${bodyText}`,
         );
-      }
-      if (response.status === 404) {
-        throw new AnhurQueryError(
+      } else if (response.status === 404) {
+        typedError = new AnhurQueryError(
           `Resource not found (HTTP 404): ${opts.path}`,
         );
+      } else {
+        typedError = new AnhurError(
+          `Server error (HTTP ${response.status}): ${bodyText}`,
+        );
       }
-      throw new AnhurError(
-        `Server error (HTTP ${response.status}): ${bodyText}`,
-      );
+
+      // Wrap transient conditions so the retry loop can act on them while
+      // preserving the original typed error for the final throw.
+      if (isTransientWriteError(response.status, bodyText)) {
+        throw new TransientWriteError(typedError);
+      }
+      throw typedError;
     }
 
     // SECURITY: Cap response size to prevent memory exhaustion.
@@ -184,5 +265,19 @@ export class HttpClient {
     } catch {
       return { message: text.slice(0, 1000) } as T;
     }
+  }
+}
+
+/**
+ * Internal carrier used to flag a retryable transient cluster error between
+ * `attempt` and the retry loop in `request`. Never surfaces to callers — the
+ * loop always unwraps `cause` (the real typed AnhurError) before throwing.
+ */
+class TransientWriteError extends Error {
+  readonly cause: AnhurError;
+  constructor(cause: AnhurError) {
+    super(cause.message);
+    this.name = "TransientWriteError";
+    this.cause = cause;
   }
 }
