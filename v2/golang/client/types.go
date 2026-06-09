@@ -118,18 +118,18 @@ type Entity struct {
 // EntityResult is returned by UpsertEntity — contains the created/updated
 // entity's ID.
 type EntityResult struct {
-	ID      int64  `json:"id"`
-	Name    string `json:"name,omitempty"`
-	Status  string `json:"status,omitempty"`
+	ID     int64  `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // EntityGraphResult contains the BFS traversal output from the entity
 // graph endpoint. Nodes are entities, edges are typed relationships.
 type EntityGraphResult struct {
-	EntityID  int64              `json:"entity_id"`
-	Depth     int                `json:"depth"`
-	Nodes     []EntityGraphNode  `json:"nodes"`
-	NodeCount int                `json:"node_count"`
+	EntityID  int64             `json:"entity_id"`
+	Depth     int               `json:"depth"`
+	Nodes     []EntityGraphNode `json:"nodes"`
+	NodeCount int               `json:"node_count"`
 }
 
 // EntityGraphNode is a single entity node in a graph traversal result.
@@ -152,9 +152,9 @@ type EntityEdge struct {
 // EntityTimelineResult contains the full temporal history of an entity's
 // relationships, including invalidated edges ordered by event time.
 type EntityTimelineResult struct {
-	Entity    Entity         `json:"entity"`
-	Timeline  []EntityEdge   `json:"timeline"`
-	RecordIDs []int64        `json:"record_ids,omitempty"`
+	Entity    Entity       `json:"entity"`
+	Timeline  []EntityEdge `json:"timeline"`
+	RecordIDs []int64      `json:"record_ids,omitempty"`
 }
 
 // EntityEdgeOption configures optional fields on UpsertEntityEdge.
@@ -223,10 +223,10 @@ type UploadResult struct {
 
 // UploadStatusResult describes the processing status of a file upload.
 type UploadStatusResult struct {
-	ID        int64  `json:"id"`
-	Status    string `json:"status"`    // "processing", "completed", "failed"
-	Filename  string `json:"filename,omitempty"`
-	Error     string `json:"error,omitempty"`
+	ID        int64   `json:"id"`
+	Status    string  `json:"status"` // "processing", "completed", "failed"
+	Filename  string  `json:"filename,omitempty"`
+	Error     string  `json:"error,omitempty"`
 	RecordIDs []int64 `json:"record_ids,omitempty"`
 }
 
@@ -273,6 +273,67 @@ func WithTenantID(id string) Option {
 func WithTimeout(d time.Duration) Option {
 	return func(cfg *memoryConfig) {
 		cfg.timeout = d
+	}
+}
+
+// AddOption configures a single Memory.Add call.
+//
+// Junior Tip [SDK parity 2026-06 — the 516-record incident]: the three SDKs
+// (Go/Python/TS) must accept the SAME capabilities on Add — caller-supplied
+// score, type, and metadata — or a record written by one SDK and read by
+// another carries different defaults, which is exactly how the 2026-05-22
+// metadata-corruption incident slipped past review. The idiomatic surface
+// differs per language (functional options here, keyword args in Python, an
+// options object in TS) but the CAPABILITY is identical. Add(ctx, text) with
+// zero options stays byte-for-byte backward compatible with the old call.
+type AddOption func(*addConfig)
+
+// addConfig holds the per-call overrides for Memory.Add. A nil pointer field
+// means "caller did not specify — use the server/SDK default", which is how we
+// keep score/type from being silently forced when the caller omits them.
+//
+// Junior Tip [why pointers, not bare values]: score 0 and "" type are both
+// LEGAL values the caller might intend, so we cannot use the zero value as the
+// "unset" sentinel — we must distinguish "score not provided" from "score
+// explicitly 0". Pointers give us that three-state (nil / set-to-zero / set).
+type addConfig struct {
+	score    *int
+	memType  *string
+	metadata map[string]interface{}
+}
+
+// WithScore sets the salience score (typically 0-10) on the record being added.
+// When omitted, the SDK falls back to the historical default of 5.
+func WithScore(score int) AddOption {
+	return func(cfg *addConfig) {
+		cfg.score = &score
+	}
+}
+
+// WithType sets the memory type (e.g. "episodic", "semantic", "procedural").
+// When omitted, the SDK falls back to the historical default of "episodic".
+//
+// Junior Tip [server invariant]: the server rejects a "semantic" (or other
+// non-episodic) record created in a session that has no episodic anchor yet,
+// with HTTP 422 "without an episodic anchor". Add's retry logic treats that
+// rejection as transient (the anchor may be landing concurrently) — see
+// isTransientWriteError.
+func WithType(memType string) AddOption {
+	return func(cfg *addConfig) {
+		cfg.memType = &memType
+	}
+}
+
+// WithMetadata merges caller-supplied keys into the record metadata. The SDK
+// always sets container_tag; caller keys are layered on top (caller wins on a
+// key collision, except container_tag which the SDK owns).
+//
+// Junior Tip [bug it prevents]: the previous Add hardcoded metadata to just
+// {"container_tag": tag} and dropped any caller intent on the floor. Python/TS
+// had the same silent drop — this is the WRITE-path half of the parity fix.
+func WithMetadata(metadata map[string]interface{}) AddOption {
+	return func(cfg *addConfig) {
+		cfg.metadata = metadata
 	}
 }
 
@@ -350,4 +411,3 @@ type manifestRecord struct {
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
 }
-

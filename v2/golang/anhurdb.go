@@ -51,3 +51,15 @@ var WithTypeFilter = client.WithTypeFilter
 
 // WithTimeout sets the HTTP client timeout.
 var WithTimeout = client.WithTimeout
+
+// Add-call options (SDK-parity write path): control the score, type, and
+// metadata of a record stored via Memory.Add without breaking Add(ctx, text).
+
+// WithScore sets the salience score (typically 0-10) on the added record.
+var WithScore = client.WithScore
+
+// WithType sets the memory type (e.g. "episodic", "semantic") on the record.
+var WithType = client.WithType
+
+// WithMetadata merges caller-supplied keys into the added record's metadata.
+var WithMetadata = client.WithMetadata

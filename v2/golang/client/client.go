@@ -155,12 +155,67 @@ func buildMetadataJSON(containerTag string) string {
 	return string(encoded)
 }
 
+// buildMetadataJSONWith merges caller-supplied metadata keys on top of the
+// canonical {"container_tag": tag} envelope and returns the JSON string for the
+// `metadata` column.
+//
+// Junior Tip [container_tag is SDK-owned]: container_tag is set LAST so a
+// caller cannot accidentally (or maliciously) clobber the tenant routing key
+// via WithMetadata. Every other key the caller supplies is preserved verbatim,
+// which is the WRITE-path half of the SDK-parity fix (the old Add silently
+// dropped all caller metadata).
+func buildMetadataJSONWith(containerTag string, extra map[string]interface{}) string {
+	if len(extra) == 0 {
+		return buildMetadataJSON(containerTag)
+	}
+	merged := make(map[string]interface{}, len(extra)+1)
+	for key, value := range extra {
+		merged[key] = value
+	}
+	if containerTag != "" {
+		merged["container_tag"] = containerTag
+	}
+	encoded, marshalErr := json.Marshal(merged)
+	if marshalErr != nil {
+		// Caller metadata may contain an unmarshalable value (e.g. a channel);
+		// fall back to the safe canonical envelope rather than writing garbage.
+		return buildMetadataJSON(containerTag)
+	}
+	return string(encoded)
+}
+
 // Add stores a memory. This is the simplest way to save information.
 //
 // It tries the cloud /api/v1/ingest endpoint first (which handles
 // embedding + extraction automatically). If that returns 404, it
 // falls back to /api/v1/records (OSS mode, stores as text).
-func (m *Memory) Add(ctx context.Context, text string) (*AddResult, error) {
+//
+// Optional functional options let the caller control the record's score,
+// type, and metadata while keeping Add(ctx, text) — with no options —
+// fully backward compatible:
+//
+//	mem.Add(ctx, "plain text")                                  // defaults
+//	mem.Add(ctx, "fact", client.WithScore(9), client.WithType("semantic"))
+//	mem.Add(ctx, "x", client.WithMetadata(map[string]any{"source": "import"}))
+//
+// Junior Tip [why explicit score/type bypasses ingest — verified 2026-06-09
+// against the live cluster]: the /api/v1/ingest worker owns its own salience
+// scoring and type classification. When probed, it ACCEPTS a "score" field in
+// the body but stores the record with its OWN computed score (observed: a
+// supplied score=8 landed as score=0). Routing WithScore/WithType through
+// ingest would therefore SILENTLY DROP them — the exact bug class this
+// hardening pass exists to kill. So when the caller explicitly sets score OR
+// type, Add takes the SYNCHRONOUS /api/v1/records path, which writes the
+// supplied values verbatim and returns the real DB id. WithMetadata alone does
+// NOT force the records path, because ingest preserves caller metadata.
+//
+// Junior Tip [retry semantics]: this is a WRITE, so Add transparently retries
+// a small set of TRANSIENT failures (Raft not_leader during a leadership flap,
+// and the episodic-anchor 422 that resolves once a concurrent anchor lands)
+// with exponential backoff. Permanent validation errors (empty input, bad
+// score, 401) are returned immediately — retrying those just wastes time and
+// can amplify load. See isTransientWriteError + withWriteRetry.
+func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
@@ -168,30 +223,50 @@ func (m *Memory) Add(ctx context.Context, text string) (*AddResult, error) {
 		return nil, ErrEmptyInput
 	}
 
-	// Try cloud ingest first (has auto-embedding).
-	// Once we know ingest is unavailable (404), we skip it on subsequent
-	// calls to avoid unnecessary round-trips.
-	if m.ingestAvailable == nil || *m.ingestAvailable {
-		result, err := m.tryIngest(ctx, text)
-		if result != nil {
-			return result, nil
-		}
-		// Only propagate non-404 errors.
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return nil, err
-		}
+	cfg := &addConfig{}
+	for _, opt := range opts {
+		opt(cfg)
 	}
 
-	// Fallback: direct record creation (OSS / self-hosted mode).
-	return m.createRecord(ctx, text)
+	// When the caller pins score or type, the cloud ingest worker would
+	// override them — so go straight to the synchronous records path that
+	// honours them. See the doc-comment Junior Tip above.
+	forceRecordsPath := cfg.score != nil || cfg.memType != nil
+
+	return withWriteRetry(ctx, func() (*AddResult, error) {
+		// Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
+		// score/type. Once we know ingest is unavailable (404), we skip it on
+		// subsequent calls to avoid unnecessary round-trips.
+		if !forceRecordsPath && (m.ingestAvailable == nil || *m.ingestAvailable) {
+			result, err := m.tryIngest(ctx, text, cfg)
+			if result != nil {
+				return result, nil
+			}
+			// Only propagate non-404 errors.
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return nil, err
+			}
+		}
+
+		// Synchronous record creation: OSS/self-hosted fallback, OR the
+		// score/type-pinned path that ingest cannot honour.
+		return m.createRecord(ctx, text, cfg)
+	})
 }
 
 // tryIngest attempts the cloud ingest endpoint.
 // Returns (nil, ErrNotFound) if the endpoint doesn't exist.
-func (m *Memory) tryIngest(ctx context.Context, text string) (*AddResult, error) {
-	payload := map[string]string{
+func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*AddResult, error) {
+	payload := map[string]interface{}{
 		"content":       text,
 		"container_tag": m.containerTag,
+	}
+	// Forward caller metadata only. score/type are NOT forwarded here: Add
+	// routes any score/type-pinned call to the synchronous records path
+	// (see Add's doc comment) precisely because the ingest worker overrides
+	// them. tryIngest is therefore only ever reached when score/type are unset.
+	if cfg != nil && len(cfg.metadata) > 0 {
+		payload["metadata"] = cfg.metadata
 	}
 
 	respBytes, err := m.conn.Post(ctx, "/api/v1/ingest", payload)
@@ -346,24 +421,43 @@ func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolid
 // Without server-side embedding, we store the text in both summary
 // (for FTS5 search) and content (for full retrieval). The vector is
 // empty — the server handles records without vectors via text search.
-func (m *Memory) createRecord(ctx context.Context, text string) (*AddResult, error) {
+//
+// Caller-supplied score/type/metadata (via AddOption) override the historical
+// defaults of score=5, type="episodic", and the bare container_tag envelope.
+func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) (*AddResult, error) {
 	summary := text
 	if len(text) > 200 {
 		summary = text[:200] + "..."
 	}
 
+	// Apply defaults, then let caller overrides win. score 0 and type "" are
+	// legal explicit values, so we only override when the option was actually
+	// supplied (cfg field non-nil) — see addConfig's pointer rationale.
+	score := 5
+	recordType := "episodic"
+	var extraMetadata map[string]interface{}
+	if cfg != nil {
+		if cfg.score != nil {
+			score = *cfg.score
+		}
+		if cfg.memType != nil {
+			recordType = *cfg.memType
+		}
+		extraMetadata = cfg.metadata
+	}
+
 	payload := map[string]interface{}{
 		"uuid":           m.sessionUUID,
-		"type":           "episodic",
+		"type":           recordType,
 		"dimension":      0,
 		"prefix":         "",
 		"weight":         0.5,
-		"score":          5,
+		"score":          score,
 		"vector":         "",
 		"related_ids":    []int{},
 		"main_ids":       []int{},
 		"consolidate_id": 0,
-		"metadata":       buildMetadataJSON(m.containerTag),
+		"metadata":       buildMetadataJSONWith(m.containerTag, extraMetadata),
 		"summary":        summary,
 		"content":        text,
 		"consolidated":   false,
@@ -382,7 +476,7 @@ func (m *Memory) createRecord(ctx context.Context, text string) (*AddResult, err
 
 	return &AddResult{
 		ID:      resp.ID,
-		Records: []RecordSummary{{ID: resp.ID, Type: "episodic", Summary: summary}},
+		Records: []RecordSummary{{ID: resp.ID, Type: recordType, Summary: summary}},
 		Status:  "ok",
 		Mode:    "oss",
 	}, nil
@@ -708,30 +802,65 @@ func (m *Memory) RecentMemories(ctx context.Context, limit int) ([]models.Record
 		return nil, err
 	}
 
-	// The manifest endpoint may return {"records": [...]} or a bare array.
-	var wrapped manifestResponse
-	if err := json.Unmarshal(respBytes, &wrapped); err == nil && len(wrapped.Records) > 0 {
+	// The manifest endpoint may return either of two shapes:
+	//   1. An envelope object: {"records": [...], "count": N, ...}
+	//   2. A bare JSON array:  [...]
+	//
+	// Junior Tip [Bug — empty-manifest crash]: the previous code decided which
+	// shape it had by checking len(wrapped.Records) > 0. That is WRONG for an
+	// EMPTY manifest, which the live server returns as {"records": []} (an
+	// OBJECT). With len == 0 the code fell through to json.Unmarshal(bytes,
+	// &[]Record) and crashed with "cannot unmarshal object into Go value of
+	// type []models.Record". We now branch on the actual JSON kind (first
+	// non-whitespace byte) so an empty envelope correctly yields an empty
+	// slice instead of an error.
+	firstToken := firstJSONToken(respBytes)
+	switch firstToken {
+	case '[':
+		// Bare array of records.
+		var records []models.Record
+		if parseErr := json.Unmarshal(respBytes, &records); parseErr != nil {
+			return nil, fmt.Errorf("parsing manifest response (array): %w", parseErr)
+		}
+		return records, nil
+	case '{':
+		// Envelope object — valid whether or not records is empty.
+		var wrapped manifestResponse
+		if parseErr := json.Unmarshal(respBytes, &wrapped); parseErr != nil {
+			return nil, fmt.Errorf("parsing manifest response (object): %w", parseErr)
+		}
 		records := make([]models.Record, 0, len(wrapped.Records))
-		for _, mr := range wrapped.Records {
+		for _, manifestRow := range wrapped.Records {
 			records = append(records, models.Record{
-				ID:       int(mr.ID),
-				UUID:     mr.UUID,
-				Type:     models.MemoryType(mr.Type),
-				Summary:  mr.Summary,
-				Metadata: mr.Metadata,
-				Status:   models.MemoryStatus(mr.Status),
+				ID:       int(manifestRow.ID),
+				UUID:     manifestRow.UUID,
+				Type:     models.MemoryType(manifestRow.Type),
+				Summary:  manifestRow.Summary,
+				Metadata: manifestRow.Metadata,
+				Status:   models.MemoryStatus(manifestRow.Status),
 			})
 		}
 		return records, nil
+	default:
+		// Empty body or unexpected shape (e.g. "null"): treat as no records
+		// rather than erroring, matching the "manifest can be empty" contract.
+		return []models.Record{}, nil
 	}
+}
 
-	// Try bare array of records.
-	var records []models.Record
-	if err := json.Unmarshal(respBytes, &records); err != nil {
-		return nil, fmt.Errorf("parsing manifest response: %w", err)
+// firstJSONToken returns the first non-whitespace byte of a JSON payload, or 0
+// if the payload is empty/whitespace-only. Used to distinguish an object
+// envelope ('{') from a bare array ('[') without a speculative Unmarshal.
+func firstJSONToken(raw []byte) byte {
+	for _, currentByte := range raw {
+		switch currentByte {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return currentByte
+		}
 	}
-
-	return records, nil
+	return 0
 }
 
 // Update partially updates a record by ID.
