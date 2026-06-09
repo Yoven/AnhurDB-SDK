@@ -87,7 +87,10 @@ def _derive_container_tag(api_key: str) -> str:
     return f"mem-{digest[:12]}"
 
 
-def _build_metadata_json(container_tag: str) -> str:
+def _build_metadata_json(
+    container_tag: str,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Wrap ``container_tag`` into the canonical metadata JSON envelope
     ``{"container_tag": "<tag>"}``.
@@ -104,10 +107,21 @@ def _build_metadata_json(container_tag: str) -> str:
 
     Returns ``"{}"`` when container_tag is empty so the column always holds a
     parseable JSON object.
+
+    Junior Tip [caller metadata merge, 2026-06-08]: ``extra_metadata`` lets
+    ``add()`` carry user-supplied metadata WITHOUT clobbering the
+    ``container_tag`` envelope key the agents rely on. The container_tag is
+    written last so it always wins over a colliding caller key — losing the
+    tag would re-break the entity taggers (the 2026-05-22 corruption mode).
     """
-    if not container_tag:
+    envelope: Dict[str, Any] = {}
+    if extra_metadata:
+        envelope.update(extra_metadata)
+    if container_tag:
+        envelope["container_tag"] = container_tag
+    if not envelope:
         return "{}"
-    return json.dumps({"container_tag": container_tag})
+    return json.dumps(envelope)
 
 
 def _utc_timestamp() -> str:
@@ -199,6 +213,16 @@ class Memory:
         # Cloud ingest availability (None = untested).
         self._ingest_available: Optional[bool] = None
 
+        # ID of the episodic anchor created for the current session, if any.
+        # Junior Tip [session anchor invariant, 2026-06-08]: the server rejects
+        # a derived record (fact/preference/task/…) when the session has no
+        # episodic anchor yet ("cannot create preference without an episodic
+        # anchor"). The ingest path creates that anchor implicitly; the direct
+        # records path does not, so when add() routes a typed record straight
+        # to /api/v1/records we lazily create the anchor once per session and
+        # cache its ID here so subsequent typed adds auto-link to it.
+        self._session_anchor_id: Optional[int] = None
+
     # -- Lifecycle ----------------------------------------------------------
 
     async def connect(self) -> None:
@@ -234,20 +258,29 @@ class Memory:
         self,
         text: str,
         *,
-        score: int = 5,
-        type: MemoryType = MemoryType.EPISODIC,
+        score: Optional[int] = None,
+        type: Optional[MemoryType] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Store a memory. Simplest way to save information.
 
-        Tries the enriched ``/api/v1/ingest`` endpoint first (full processing
-        pipeline). If that returns 404, falls back to direct record creation
-        via ``/api/v1/records`` (minimal mode).
+        Routing (Junior Tip [score/type drop, 2026-06-08]): the cloud
+        ``/api/v1/ingest`` endpoint accepts ONLY ``content`` + ``container_tag``
+        — it hardcodes ``type=episodic`` and never reads score/type/metadata
+        (see server handler ``record_ingest.go``). Sending them there drops
+        them silently. So when the caller explicitly sets ``score``, ``type``,
+        or ``metadata`` we MUST go straight to ``/api/v1/records``, which is the
+        only write path that persists those columns. Plain ``add(text)`` with no
+        options still prefers the ingest pipeline (auto-embedding + extraction).
 
         Args:
-            text:  The text to remember (required, non-empty).
-            score: Importance rating 1-10 (default 5).
-            type:  Memory type (default ``episodic``).
+            text:     The text to remember (required, non-empty).
+            score:    Importance rating 1-10. ``None`` = let the server/pipeline
+                      decide (defaults to 5 on the direct path).
+            type:     Memory type. ``None`` = ``episodic``.
+            metadata: Optional caller metadata merged into the record's
+                      metadata JSON alongside the ``container_tag`` envelope.
 
         Returns:
             Dict with ``session_id``, ``records``, and ``mode``
@@ -264,14 +297,20 @@ class Memory:
         if not text:
             raise ValueError("text cannot be empty")
 
-        # Try cloud ingest (has auto-embedding + extraction).
-        if self._ingest_available is not False:
-            result = await self._try_ingest(text, score, type)
+        # When score/type/metadata are explicitly requested, the ingest endpoint
+        # cannot honour them — go directly to the records path which persists
+        # all three. This is the parity contract shared with the Go/TS SDKs.
+        wants_explicit_fields = (
+            score is not None or type is not None or metadata is not None
+        )
+
+        if not wants_explicit_fields and self._ingest_available is not False:
+            result = await self._try_ingest(text, score, type, metadata)
             if result is not None:
                 return result
 
-        # Fallback: direct record creation (OSS / self-hosted).
-        return await self._create_record(text, score, type)
+        # Direct record creation — honours score, type, and metadata.
+        return await self._create_record(text, score, type, metadata)
 
     # -- Core: search() -----------------------------------------------------
 
@@ -513,6 +552,8 @@ class Memory:
             The new session UUID.
         """
         self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}"
+        # New session → no anchor yet; force re-creation on the next typed add.
+        self._session_anchor_id = None
         return self._session_uuid
 
     # -- Extended: smart_search() -------------------------------------------
@@ -848,14 +889,21 @@ class Memory:
     async def _try_ingest(
         self,
         text: str,
-        score: int,
-        mem_type: MemoryType,
+        score: Optional[int],
+        mem_type: Optional[MemoryType],
+        metadata: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """
         Attempt cloud ingest at ``/api/v1/ingest``.
 
         Returns None if the endpoint doesn't exist (404), allowing the
         caller to fall back to direct record creation.
+
+        Junior Tip [ingest field set, 2026-06-08]: the server ingest handler
+        only reads ``content`` + ``container_tag`` and hardcodes the episodic
+        type. ``add()`` therefore never routes here when score/type/metadata
+        are set — they would be dropped. The extra parameters are accepted only
+        to keep a uniform internal signature.
         """
         payload = {"content": text, "container_tag": self._container_tag}
 
@@ -880,25 +928,47 @@ class Memory:
     async def _create_record(
         self,
         text: str,
-        score: int,
-        mem_type: MemoryType,
+        score: Optional[int],
+        mem_type: Optional[MemoryType],
+        metadata: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Create a record directly via ``POST /api/v1/records`` (OSS mode).
+        Create a record directly via ``POST /api/v1/records``.
 
-        Without server-side embedding, text is stored in both ``summary``
-        (for keyword search) and ``content`` (for full retrieval).
+        This is the only write path that persists ``score`` and ``type``
+        (the ingest endpoint drops them — see ``add()``). Without server-side
+        embedding, text is stored in both ``summary`` (for keyword search) and
+        ``content`` (for full retrieval).
+
+        Junior Tip [score/type defaults, 2026-06-08]: ``None`` score/type mean
+        "caller didn't care" — we apply the historical defaults (5 / episodic)
+        so the record is always well-formed, while still letting an explicit
+        ``score=8`` or ``type=preference`` flow through to the DB columns.
         """
         summary = text[:200] + "..." if len(text) > 200 else text
 
+        effective_score = 5 if score is None else score
+        effective_type = MemoryType.EPISODIC if mem_type is None else mem_type
+
+        # Ensure the session has an episodic anchor before writing a derived
+        # type. The server rejects orphan derived records (see the
+        # ``_session_anchor_id`` Junior Tip on __init__). Episodic records are
+        # themselves the anchor, so they skip this step.
+        related_ids: List[int] = []
+        if effective_type != MemoryType.EPISODIC:
+            anchor_id = await self._ensure_session_anchor()
+            if anchor_id:
+                related_ids = [anchor_id]
+
         req = CreateRequest(
             uuid=self._session_uuid,
-            type=mem_type,
+            type=effective_type,
             summary=summary,
             content=text,
-            score=score,
-            weight=score / 10,
-            metadata=_build_metadata_json(self._container_tag),
+            score=effective_score,
+            weight=effective_score / 10,
+            related_ids=related_ids,
+            metadata=_build_metadata_json(self._container_tag, metadata),
         )
 
         data = await self._connection.post(
@@ -906,12 +976,47 @@ class Memory:
             req.model_dump(exclude_none=True),
         )
 
+        # If this add itself created the episodic anchor, remember its ID so
+        # later typed adds in the same session can link to it without a probe.
+        if effective_type == MemoryType.EPISODIC and self._session_anchor_id is None:
+            self._session_anchor_id = data.get("id")
+
         return {
             "session_id": self._session_uuid,
-            "records": [{"id": data.get("id", 0), "type": mem_type.value,
+            "records": [{"id": data.get("id", 0), "type": effective_type.value,
                           "summary": summary}],
             "mode": "oss",
         }
+
+    async def _ensure_session_anchor(self) -> Optional[int]:
+        """
+        Return the episodic anchor ID for the current session, creating one if
+        none exists yet.
+
+        Junior Tip [anchor caching, 2026-06-08]: cached per session in
+        ``_session_anchor_id`` so a burst of typed adds creates exactly one
+        anchor, not one per call. The anchor is a minimal episodic record — the
+        same shape the ingest endpoint produces — so downstream agents treat
+        these sessions identically whether they arrived via ingest or direct.
+        """
+        if self._session_anchor_id is not None:
+            return self._session_anchor_id
+
+        anchor_req = CreateRequest(
+            uuid=self._session_uuid,
+            type=MemoryType.EPISODIC,
+            summary="session start",
+            content="session start",
+            score=5,
+            weight=0.5,
+            metadata=_build_metadata_json(self._container_tag),
+        )
+        anchor_data = await self._connection.post(
+            "/api/v1/records",
+            anchor_req.model_dump(exclude_none=True),
+        )
+        self._session_anchor_id = anchor_data.get("id")
+        return self._session_anchor_id
 
     @staticmethod
     def _flatten_search_results(data: Any) -> List[Dict[str, Any]]:
@@ -1050,9 +1155,17 @@ class AnhurClient:
         Returns:
             The content payload. Type depends on what was stored:
             a dict for structured records, a string for plain text.
+
+        Junior Tip [plain-text unwrap, 2026-06-08]: the server returns the raw
+        content body (often plain text, not JSON) for this endpoint. Passing
+        ``raw_text=True`` makes a non-JSON body come back as the verbatim
+        string instead of being wrapped in ``{"message": <text[:1000]>}`` —
+        the old behaviour both mislabelled the payload AND silently truncated
+        it at 1000 chars.
         """
         return await self._connection.get(
-            f"/api/v1/records/{record_id}/content"
+            f"/api/v1/records/{record_id}/content",
+            raw_text=True,
         )
 
     async def get_context(self, record_id: int) -> Dict[str, Any]:
