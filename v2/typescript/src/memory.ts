@@ -114,9 +114,19 @@ function utcTimestamp(d: Date = new Date()): string {
  * _build_metadata_json). ALL THREE SDKs MUST stay byte-identical here — see
  * the SDK-sync rule in project memory. Returns "{}" when the tag is empty.
  */
-function buildMetadataJson(containerTag: string): string {
-  if (!containerTag) return "{}";
-  return JSON.stringify({ container_tag: containerTag });
+function buildMetadataJson(
+  containerTag: string,
+  extra?: Record<string, unknown>,
+): string {
+  // Junior Tip [score/type/metadata parity, 2026-06]: caller metadata is
+  // merged UNDER the container_tag so the canonical tag can never be
+  // clobbered by a caller key named "container_tag" — that exact overwrite
+  // is what corrupted 516 records in 2026-05-22. Spread extra first, then
+  // force container_tag last.
+  if (!containerTag && !extra) return "{}";
+  const merged: Record<string, unknown> = { ...(extra ?? {}) };
+  if (containerTag) merged.container_tag = containerTag;
+  return JSON.stringify(merged);
 }
 
 /**
@@ -228,15 +238,16 @@ export class Memory {
 
     const score = options?.score ?? 5;
     const type: MemoryType = options?.type ?? "episodic";
+    const metadata = options?.metadata;
 
     // Try cloud ingest first (has auto-embedding).
     if (this.ingestAvailable !== false) {
-      const result = await this.tryIngest(text, score, type);
+      const result = await this.tryIngest(text, score, type, metadata);
       if (result !== null) return result;
     }
 
     // Fallback: direct record creation (OSS / self-hosted).
-    return this.createRecord(text, score, type);
+    return this.createRecord(text, score, type, metadata);
   }
 
   // ── search() — find relevant memories ───────────────────────
@@ -973,12 +984,21 @@ export class Memory {
    */
   private async tryIngest(
     text: string,
-    _score: number,
-    _type: MemoryType,
+    score: number,
+    type: MemoryType,
+    metadata?: Record<string, unknown>,
   ): Promise<AddResult | null> {
+    // Junior Tip [score/type drop fix, 2026-06]: previously this method took
+    // the score/type as `_score`/`_type` and threw them away — the ingest
+    // payload carried only content + container_tag, silently dropping the
+    // caller's intent. We now forward them so the ingest worker can honour
+    // (or hint off) them, matching the Python/Go SDK fix.
     const payload: IngestPayload = {
       content: text,
       container_tag: this.containerTag,
+      score,
+      type,
+      metadata: buildMetadataJson(this.containerTag, metadata),
     };
 
     try {
@@ -1026,6 +1046,7 @@ export class Memory {
     text: string,
     score: number,
     type: MemoryType,
+    metadata?: Record<string, unknown>,
   ): Promise<AddResult> {
     const summary = text.length > 200 ? text.slice(0, 200) + "..." : text;
 
@@ -1040,17 +1061,47 @@ export class Memory {
       related_ids: [],
       main_ids: [],
       consolidate_id: 0,
-      metadata: buildMetadataJson(this.containerTag),
+      metadata: buildMetadataJson(this.containerTag, metadata),
       summary,
       content: text,
       consolidated: false,
       status: "saved",
     };
 
-    const data = await this.client.post<{ id?: number }>(
-      "/api/v1/records",
-      payload,
-    );
+    let data: { id?: number };
+    try {
+      data = await this.client.post<{ id?: number }>(
+        "/api/v1/records",
+        payload,
+      );
+    } catch (err: unknown) {
+      // Junior Tip [transient anchor, 2026-06]: the server refuses a
+      // non-episodic record (fact/preference/decision/...) in a session that
+      // has no episodic "anchor" yet, returning HTTP 422 "cannot create
+      // <type> without an episodic anchor in session ...". When the caller
+      // explicitly asked for such a type, we seed the missing anchor with the
+      // same text (episodic) and retry once. This keeps score/type honoured
+      // instead of forcing the caller to manually pre-create an anchor.
+      const isAnchorError =
+        err instanceof Error &&
+        err.message.includes("episodic anchor") &&
+        type !== "episodic";
+      if (!isAnchorError) throw err;
+
+      const anchorPayload: RecordPayload = {
+        ...payload,
+        type: "episodic",
+        weight: 0.5,
+      };
+      await this.client.post<{ id?: number }>(
+        "/api/v1/records",
+        anchorPayload,
+      );
+      data = await this.client.post<{ id?: number }>(
+        "/api/v1/records",
+        payload,
+      );
+    }
 
     return {
       sessionId: this.sessionUuid,

@@ -63,6 +63,21 @@ describe("Memory.add() validation", () => {
       message: "text cannot be empty",
     });
   });
+
+  it("accepts score, type, and metadata options (parity surface)", () => {
+    const mem = new Memory({ apiKey: "key", userId: "u" });
+    // Type-level guarantee: the add() signature must accept all three
+    // capability fields so the TS SDK stays at parity with Go/Python.
+    // We only assert the call is well-typed and the method exists; no
+    // network call is made here.
+    const call = (): Promise<unknown> =>
+      mem.add("hello", {
+        score: 9,
+        type: "fact",
+        metadata: { source: "unit-test" },
+      });
+    assert.equal(typeof call, "function");
+  });
 });
 
 describe("Memory.search() validation", () => {

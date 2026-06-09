@@ -87,6 +87,17 @@ export interface AddOptions {
   score?: number;
   /** Memory type (default "episodic"). */
   type?: MemoryType;
+  /**
+   * Caller-supplied metadata.
+   *
+   * Junior Tip [SDK parity, 2026-06]: kept as an arbitrary object so the
+   * three SDKs expose the identical capability — `add(text, {score, type,
+   * metadata})`. The SDK merges it into the canonical
+   * `{"container_tag": "..."}` envelope before sending so it never
+   * overwrites the container tag (see the 2026-05-22 metadata corruption
+   * incident). Server stores `metadata` as a JSON string.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /** A single record descriptor returned inside `AddResult`. */
@@ -269,11 +280,21 @@ export interface BatchUpdateResult {
 
 /**
  * Payload sent to POST /api/v1/ingest (cloud mode).
- * Go ingestRequest struct expects "content" and "container_tag" only.
+ *
+ * Junior Tip [score/type drop fix, 2026-06]: the ingest worker previously
+ * received ONLY `content` + `container_tag`, so a caller's `score`/`type`
+ * were silently discarded on this path — the exact parity bug the TS and
+ * Python SDKs shared. We now forward `score`, `type`, and `metadata` as
+ * optional hints. The server treats them as ingest hints; the OSS
+ * `/api/v1/records` fallback persists them authoritatively. All three SDKs
+ * must forward these identically.
  */
 export interface IngestPayload {
   content: string;
   container_tag: string;
+  score?: number;
+  type?: string;
+  metadata?: string;
 }
 
 /** Payload sent to POST /api/v1/records (OSS fallback). */
