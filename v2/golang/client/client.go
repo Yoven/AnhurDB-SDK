@@ -717,19 +717,37 @@ func (m *Memory) ListSessions(ctx context.Context) ([]SessionStats, error) {
 		return nil, err
 	}
 
-	// The server wraps sessions in {"sessions": [...]}.
-	var wrapped sessionsWrapper
-	if err := json.Unmarshal(respBytes, &wrapped); err == nil && len(wrapped.Sessions) > 0 {
+	// The endpoint returns either an envelope {"sessions": [...], "count": N, ...}
+	// or (legacy) a bare array [...].
+	//
+	// Junior Tip [Bug — empty-sessions crash, 2026-06-11]: the previous code
+	// branched on `len(wrapped.Sessions) > 0`, so a tenant with ZERO sessions —
+	// which the live server returns as {"sessions": []} (an OBJECT) — fell
+	// through to the bare-array fallback and crashed with "cannot unmarshal
+	// object into []SessionStats". That silently broke the RunCycle of EVERY
+	// pipeline agent (judge, entity_tagger, consolidation, decay, linker,
+	// back_tagger) on any empty or brand-new tenant — exactly the state of a
+	// tenant right after a fresh data load. We now branch on the actual JSON
+	// kind (first token), mirroring RecentMemories, so an empty envelope yields
+	// an empty slice instead of an error. NUNCA fazer fallback de shape por
+	// "está vazio" — vazio é resultado válido, não sinal de formato.
+	switch firstJSONToken(respBytes) {
+	case '[':
+		var stats []SessionStats
+		if parseErr := json.Unmarshal(respBytes, &stats); parseErr != nil {
+			return nil, fmt.Errorf("parsing sessions response (array): %w", parseErr)
+		}
+		return stats, nil
+	case '{':
+		var wrapped sessionsWrapper
+		if parseErr := json.Unmarshal(respBytes, &wrapped); parseErr != nil {
+			return nil, fmt.Errorf("parsing sessions response (object): %w", parseErr)
+		}
 		return wrapped.Sessions, nil
+	default:
+		// Empty body or "null": no sessions, not an error.
+		return []SessionStats{}, nil
 	}
-
-	// Fallback: try bare array (in case server format changes).
-	var stats []SessionStats
-	if err := json.Unmarshal(respBytes, &stats); err != nil {
-		return nil, fmt.Errorf("parsing sessions response: %w", err)
-	}
-
-	return stats, nil
 }
 
 // GetContext retrieves the topological context around a record.
