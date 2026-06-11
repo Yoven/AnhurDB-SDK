@@ -29,6 +29,17 @@ interface RequestOptions {
   path: string;
   body?: unknown;
   params?: Record<string, string>;
+  /**
+   * When true, the raw response body is returned verbatim as a string instead
+   * of being JSON-parsed. Mirrors the Python SDK's `raw_text=True`.
+   *
+   * Junior Tip [parity-fix 2026-06-11]: endpoints como GET /records/{id}/content
+   * respondem text/plain (não JSON). Sem isto, JSON.parse falhava e o fallback
+   * embrulhava em `{message: text.slice(0,1000)}`, então readContent extraía
+   * `data.content` (undefined) e devolvia "" — PERDA TOTAL do conteúdo no TS,
+   * enquanto Go e Python devolviam o corpo cru.
+   */
+  rawText?: boolean;
 }
 
 /** Maximum response body size: 100 MB. */
@@ -126,6 +137,18 @@ export class HttpClient {
     params?: Record<string, string>,
   ): Promise<T> {
     return this.request<T>({ method: "GET", path, params });
+  }
+
+  /**
+   * Send a GET request and return the RAW response body as a string, without
+   * JSON parsing. Use for text/plain endpoints (e.g. record content).
+   * Mirrors the Python SDK's `raw_text=True` and the Go SDK's raw-bytes read.
+   */
+  async getText(
+    path: string,
+    params?: Record<string, string>,
+  ): Promise<string> {
+    return this.request<string>({ method: "GET", path, params, rawText: true });
   }
 
   /** Send a POST request with a JSON body. */
@@ -255,6 +278,13 @@ export class HttpClient {
       throw new AnhurError(
         `Response exceeds maximum size (${MAX_RESPONSE_SIZE / (1024 * 1024)} MB)`,
       );
+    }
+
+    // Raw-text mode: return the verbatim body (e.g. record content is
+    // text/plain). Must come BEFORE the empty-body and JSON.parse branches so
+    // content is never wrapped/truncated. Empty body → empty string.
+    if (opts.rawText) {
+      return (text ?? "") as unknown as T;
     }
 
     // 204 No Content or empty body — return empty object.

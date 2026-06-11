@@ -154,3 +154,40 @@ describe("Memory.toString()", () => {
     assert.ok(str.includes("Memory("));
   });
 });
+
+// ── readContent rawText parity (2026-06-11) ───────────────────
+// GET /records/{id}/content responde text/plain cru. Antes, readContent fazia
+// get<{content}> → JSON.parse falhava → {message} → data.content undefined → ""
+// (perda total do conteúdo). getText devolve o corpo verbatim, alinhando com
+// Go (raw bytes) e Python (raw_text=True).
+describe("Memory.readContent (rawText parity)", () => {
+  it("returns raw text/plain content verbatim, not empty string", async () => {
+    const originalFetch = globalThis.fetch;
+    const rawContent = "O usuário validou acentuação (ção, ã) e emoji 🧠 sem corromper.";
+    globalThis.fetch = (async () =>
+      new Response(rawContent, {
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      })) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const content = await mem.readContent(123);
+      assert.equal(content, rawContent);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns empty string on empty body (no throw)", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("", { status: 200 })) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const content = await mem.readContent(404);
+      assert.equal(content, "");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

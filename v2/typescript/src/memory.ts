@@ -484,10 +484,11 @@ export class Memory {
    * @param recordId - The record ID whose content to retrieve.
    */
   async readContent(recordId: number): Promise<string> {
-    const data = await this.client.get<{ content?: string }>(
-      `/api/v1/records/${recordId}/content`,
-    );
-    return data.content ?? "";
+    // Junior Tip [parity-fix 2026-06-11]: GET /content responde text/plain cru
+    // (não JSON). getText devolve o corpo verbatim — antes, get<{content}> via
+    // JSON.parse falhava, embrulhava em {message} e isto retornava "" (perda
+    // total do conteúdo). Agora alinhado com Go (raw bytes) e Python (raw_text).
+    return this.client.getText(`/api/v1/records/${recordId}/content`);
   }
 
   // ══════════════════════════════════════════════════════════════
