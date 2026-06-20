@@ -4,8 +4,10 @@ Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB
 
 - **Auto-recall** — at the start of every session, your AnhurDB profile (decisions, facts,
   preferences, recent topics) is injected into Claude's context. It wakes up remembering.
-- **Auto-persist** — after every turn (and at session end) the new conversation is ingested into
-  AnhurDB, where the cognitive pipeline extracts facts/entities/relations automatically.
+- **Auto-persist** — after every turn (and at session end) the new conversation is saved to AnhurDB
+  (one memory per turn). AnhurDB's **Smart Units** then distill it into typed memories —
+  `fact` / `preference` / `decision` / `risk` / `task` / `emotion` — whenever Smart Units are enabled
+  on your AnhurDB (see [Structured memory](#structured-memory-smart-units) below).
 - **No silent loss at the boundary** — if AnhurDB is unreachable when a turn ends, the turn is
   queued to disk and retried on the next session start. A crash risks at most the in-flight turn.
 - **The key never touches the transcript** — it lives only in `ANHUR_API_KEY` (env), sent as the
@@ -36,6 +38,10 @@ plugins/claude/
 - A running AnhurDB stack reachable at `ANHUR_URL` (the local docker-compose, or your deployment).
 - **Go 1.24+** to build the binary once (the built binary itself needs nothing at runtime).
 - A **per-tenant** AnhurDB API key (not the master key) — the same key the MCP tools accept.
+- For **structured memory** (decisions/facts/emotions — not just raw turns), your AnhurDB must have
+  **Smart Units** enabled (its cognitive layer; on by default on the hosted plans). Without them,
+  every turn is still saved, but nothing is distilled from it. See
+  [Structured memory](#structured-memory-smart-units).
 
 ## Install
 
@@ -51,7 +57,14 @@ plugins/claude/
    export ANHUR_CONTAINER="claude-ltm"
    ```
    Put these where they reach the Claude Code process (shell profile, or a gitignored file you
-   `source`). **Never commit the key.**
+   `source`). **Never commit the key.** The hooks `source $HOME/.anhur-claude-memory/env` before
+   running the binary, so that 0600 file (outside the repo) is the canonical place for these vars.
+
+   > **`ANHUR_CONTAINER` is your memory profile — choose it once and keep it stable.** The API key
+   > selects your *tenant*; `ANHUR_CONTAINER` names the memory profile **within** it that recall
+   > reads from. If you change it later, recall stops surfacing what was saved under the old name —
+   > nothing is lost (it's still there under the old name), it just isn't re-surfaced. So pick a
+   > stable value now.
 
 3. **Enable the plugin.** Register this directory as a Claude Code plugin. The hooks reference the
    binary via `${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory`; if your Claude Code build exposes the
@@ -73,20 +86,52 @@ echo '{"session_id":"test","transcript_path":"/path/to/a.jsonl"}' | ./bin/anhur-
 
 Diagnostics (never the key) go to `$ANHUR_STATE_DIR/plugin.log` (default `~/.anhur-claude-memory/plugin.log`).
 
+**Verify the *full* loop — not just storage.** `recall`/`persist` only prove the turn is being saved.
+To confirm AnhurDB is also distilling it into typed memories, save a sentence with a clear
+decision/fact, wait a few seconds (Smart Units work asynchronously), then recall:
+
+```bash
+# 1. save one memory (the same way the plugin does)
+curl -s -X POST "$ANHUR_URL/api/v1/ingest" -H "X-API-Key: $ANHUR_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"content":"Decision: we will ship in June. Fact: the build uses Go 1.24.","container_tag":"'"$ANHUR_CONTAINER"'"}'
+
+# 2. wait a few seconds, then recall — the decision/fact should now be in the <anhur-memory> block:
+./bin/anhur-claude-memory recall </dev/null
+```
+
+If step 2 stays empty, Smart Units aren't enabled on your AnhurDB — see
+[Structured memory](#structured-memory-smart-units).
+
 ## How the memory loop works
 
 ```
-SessionStart ─▶ recall  ─▶ flush any queued chunks (retry)  ─▶ SDK Profile(container)
-                                                             └▶ print <anhur-memory> to stdout (injected)
+SessionStart ─▶ recall  ─▶ flush any turns queued from a previous offline moment
+                        └▶ read your profile, inject the <anhur-memory> block
    …turns…
-Stop (each)  ─▶ persist ─▶ read transcript lines since cursor ─▶ SDK Add(excerpt)  [→ /api/v1/ingest]
-                                                              └▶ on failure: queue to disk, advance cursor
-SessionEnd   ─▶ persist ─▶ final flush of any remaining lines
+Stop (each)  ─▶ persist ─▶ save the new turn  (on failure: queue to disk, retry next start)
+SessionEnd   ─▶ persist ─▶ final flush of any remaining turns
 ```
 
-`Add` (no pinned score/type) routes to AnhurDB's ingest path, so the cognitive pipeline then
-extracts entities/relations, consolidates, decays, and (via `supersede`) keeps contradicted facts
-out of recall — the memory stays accurate over time.
+Each saved turn becomes a memory in AnhurDB. From there AnhurDB's **Smart Units** distill it into
+typed memories, keep them current, and retire contradicted facts so recall stays accurate over time —
+see [Structured memory](#structured-memory-smart-units).
+
+## Structured memory (Smart Units)
+
+Saving your turns is only half of it. Turning them into typed memories you can recall — `fact`,
+`preference`, `decision`, `risk`, `task`, `emotion` — is done by AnhurDB's **Smart Units (SUs)**, its
+cognitive layer. The plugin saves every turn no matter what; the Smart Units distill it.
+
+**This is the most common "why is my memory empty?" surprise.** If Smart Units aren't enabled on your
+AnhurDB, your turns are still saved safely, but recall stays thin — you'll see few or no
+Decisions/Facts in the `<anhur-memory>` block, because nothing has been distilled yet.
+
+- Enable Smart Units on your AnhurDB (see your AnhurDB setup guide; hosted plans have them on by
+  default).
+- Distillation is **asynchronous** — a saved turn becomes typed memories a short while later, not
+  instantly. Recall right after saving may not show them yet; check again shortly.
+- **Nothing is lost while you wait** — your raw turns are durable in AnhurDB, and the Smart Units
+  catch up.
 
 ## Honest limitations
 
@@ -94,8 +139,8 @@ out of recall — the memory stays accurate over time.
   durable path; `SessionEnd` is only a final flush. Worst-case loss is the single in-flight turn.
 - **`SessionEnd` may not provide the transcript path.** `Stop` does; `SessionEnd` falls back to the
   documented transcript location, best-effort. Rely on `Stop` for durability.
-- **Extracted facts have the freshness of the pipeline.** Text you state is ingested immediately;
-  the structured facts appear after the (async, LLM-bound) extraction runs.
+- **Structured memories aren't instant.** Your turns are saved immediately; the typed
+  facts/decisions appear a short while later, after the Smart Units distill them.
 - **Hooks aren't retried by Claude Code.** That's why persistence is queued to disk and retried by
   `recall` on the next start, rather than relying on the hook to retry.
 
