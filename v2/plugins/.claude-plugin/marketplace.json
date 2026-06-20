@@ -1,0 +1,14 @@
+{
+  "name": "anhur",
+  "owner": {
+    "name": "Anhur",
+    "url": "https://anhur.cloud"
+  },
+  "plugins": [
+    {
+      "name": "anhurdb-memory",
+      "source": "./claude",
+      "description": "AnhurDB as Claude Code's persistent, sovereign long-term memory: auto-recall at session start, deterministic auto-persist each turn and at session end, no-silent-loss disk queue + retry. Bundles the AnhurDB MCP tools for explicit recall/store during a session."
+    }
+  ]
+}

@@ -8,6 +8,8 @@
  *   - ``X-API-Key`` header for auth (matches server middleware).
  *   - Redirect following disabled to prevent credential leakage
  *     (mitigates CVE-2026-34518 class of attacks).
+ *   - 30s per-request timeout so a stalled server can never hang the caller
+ *     (parity with the Python/Go SDKs).
  *   - Response body capped at 100 MB to prevent memory exhaustion.
  *   - Header injection protection: tenant_id validated against CRLF.
  *   - Error messages never include the full API key.
@@ -40,10 +42,41 @@ interface RequestOptions {
    * enquanto Go e Python devolviam o corpo cru.
    */
   rawText?: boolean;
+  /**
+   * Optional read-your-writes (RYW) barrier. When set to a positive Raft index
+   * (the `raftIndex` a caller received from its own prior write), the
+   * `X-Anhur-Min-Index` request header is sent so the server blocks this read
+   * until the contacted node has applied that index for the tenant.
+   *
+   * Junior Tip [parity 2026-06-17, verified against server/middleware/min_index.go]:
+   * this is an HTTP request HEADER, not a query param or body field. Reads
+   * WITHOUT it keep the default eventually-consistent, load-balanced behaviour
+   * at zero cost. The Go SDK exposes the same capability via WithMinIndex, the
+   * Python SDK via `min_index=`. Undefined / 0 → header omitted.
+   */
+  minIndex?: number;
 }
 
 /** Maximum response body size: 100 MB. */
 const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
+
+/**
+ * Request header that opts a single read into read-your-writes consistency.
+ * The server's MinIndexBarrier middleware blocks the read until the node's
+ * local applied Raft index for the tenant reaches the supplied value. Kept in
+ * one place so it matches the Go/Python SDKs and the server byte-for-byte.
+ */
+const HEADER_MIN_INDEX = "X-Anhur-Min-Index";
+
+/**
+ * Per-request timeout in milliseconds.
+ *
+ * Junior Tip [security/availability, parity 2026-06]: native fetch() has NO
+ * default timeout, so a stalled server would hang the caller's promise forever.
+ * 30_000ms (30s) matches the Python SDK (requests timeout=30) and the Go SDK
+ * (http.Client.Timeout = 30s) so all three SDKs fail at the same boundary.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Number of attempts (initial + retries) for idempotent writes that hit a
@@ -131,29 +164,65 @@ export class HttpClient {
 
   // ── Public helpers ───────────────────────────────────────────
 
-  /** Send a GET request. */
+  /**
+   * Send a GET request.
+   *
+   * `minIndex`, when set to a positive Raft index (the `raftIndex` from a prior
+   * write), adds the read-your-writes barrier header so the server blocks until
+   * the node has applied that index. Omit / 0 for the default eventually-
+   * consistent read.
+   */
   async get<T = unknown>(
     path: string,
     params?: Record<string, string>,
+    minIndex?: number,
   ): Promise<T> {
-    return this.request<T>({ method: "GET", path, params });
+    return this.request<T>({ method: "GET", path, params, minIndex });
   }
 
   /**
    * Send a GET request and return the RAW response body as a string, without
    * JSON parsing. Use for text/plain endpoints (e.g. record content).
    * Mirrors the Python SDK's `raw_text=True` and the Go SDK's raw-bytes read.
+   *
+   * `minIndex` works exactly as in {@link get} — optional read-your-writes.
    */
   async getText(
     path: string,
     params?: Record<string, string>,
+    minIndex?: number,
   ): Promise<string> {
-    return this.request<string>({ method: "GET", path, params, rawText: true });
+    return this.request<string>({
+      method: "GET",
+      path,
+      params,
+      rawText: true,
+      minIndex,
+    });
   }
 
-  /** Send a POST request with a JSON body. */
+  /**
+   * Send a POST request with a JSON body. This is the WRITE entry point — it
+   * never sends the RYW barrier (a write PRODUCES the raft index, it does not
+   * consume one). Read-shaped POST endpoints use {@link postRead} instead.
+   */
   async post<T = unknown>(path: string, body: unknown): Promise<T> {
     return this.request<T>({ method: "POST", path, body });
+  }
+
+  /**
+   * Send a POST request for a READ-shaped endpoint (global search, graph walk,
+   * batch-content) with an optional `minIndex` read-your-writes barrier. The
+   * server's MinIndexBarrier middleware wraps the whole API, so it honours
+   * `X-Anhur-Min-Index` on POST reads too. Kept distinct from {@link post} so a
+   * write can never accidentally send a barrier.
+   */
+  async postRead<T = unknown>(
+    path: string,
+    body: unknown,
+    minIndex?: number,
+  ): Promise<T> {
+    return this.request<T>({ method: "POST", path, body, minIndex });
   }
 
   /** Send a PATCH request with a JSON body. */
@@ -213,12 +282,27 @@ export class HttpClient {
       if (qs) url += `?${qs}`;
     }
 
+    // Per-request headers: clone the session defaults, then add the optional
+    // RYW barrier. A falsy minIndex (undefined / 0) leaves the header off so
+    // the default eventually-consistent read is preserved.
+    const headers: Record<string, string> = { ...this.headers };
+    if (opts.minIndex) {
+      headers[HEADER_MIN_INDEX] = String(opts.minIndex);
+    }
+
     const init: RequestInit = {
       method: opts.method,
-      headers: { ...this.headers },
+      headers,
       // SECURITY: Disable redirects to prevent X-API-Key header
       // leaking to external origins on 3xx (CVE-2026-34518 class).
       redirect: "error",
+      // SECURITY / AVAILABILITY: abort the request after 30s so a stalled
+      // server can never hang the caller forever. fetch() has NO default
+      // timeout. 30s matches the Python SDK (timeout=30) and the Go SDK
+      // (http.Client{Timeout: 30 * time.Second}) so all three behave
+      // identically. On timeout the promise rejects with an AbortError, which
+      // we translate to AnhurConnectionError below.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     };
 
     if (opts.body !== undefined) {
@@ -229,9 +313,21 @@ export class HttpClient {
     try {
       response = await fetch(url, init);
     } catch (err: unknown) {
-      // SECURITY: Do not include full URL in error (could be logged).
-      const message =
-        err instanceof Error ? err.message : String(err);
+      // A 30s timeout surfaces as a DOMException with name "TimeoutError"
+      // (some runtimes use "AbortError"). Map both to a clear connection error
+      // so callers get a precise, actionable message instead of a generic
+      // abort. SECURITY: never include the full URL (could be logged).
+      if (
+        err instanceof Error &&
+        (err.name === "TimeoutError" || err.name === "AbortError")
+      ) {
+        throw new AnhurConnectionError(
+          `Failed to connect to AnhurDB: request timeout (${
+            REQUEST_TIMEOUT_MS / 1000
+          }s)`,
+        );
+      }
+      const message = err instanceof Error ? err.message : String(err);
       throw new AnhurConnectionError(
         `Failed to connect to AnhurDB: ${message}`,
       );

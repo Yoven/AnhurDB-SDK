@@ -49,6 +49,12 @@ var WithLimit = client.WithLimit
 // WithTypeFilter restricts search results to a specific memory type.
 var WithTypeFilter = client.WithTypeFilter
 
+// WithMinIndex requests read-your-writes consistency on a single read: the
+// server blocks the read until the node's applied Raft index for the tenant
+// reaches the supplied value. Pass the RaftIndex returned by a prior write
+// (AddResult.RaftIndex). A value of 0 is a no-op (default eventual read).
+var WithMinIndex = client.WithMinIndex
+
 // WithTimeout sets the HTTP client timeout.
 var WithTimeout = client.WithTimeout
 

@@ -4,7 +4,7 @@ Official async Python client for [AnhurDB](https://anhurdb.com) — cognitive me
 
 ## Features
 
-- **Two client levels**: `Memory` (simple 3-method API) and `AnhurClient` (full 40+ endpoint surface)
+- **One client class**: `Memory` — dead-simple to start (`add`/`search`/`profile`) and carries the full 40+ endpoint surface. (`AnhurClient` remains as a deprecated alias for back-compat.)
 - Full async support (aiohttp)
 - Type-safe models (Pydantic v2)
 - Fluent Query Builder (AST-based DSL for advanced filtering)
@@ -133,7 +133,8 @@ Memory(
 | Method | Description |
 |--------|-------------|
 | `batch_read_content(ids)` | Fetch content for up to 100 records |
-| `mark_consolidated(ids)` | Mark records as consolidated |
+| `batch_update_status(ids)` | Mark records as consolidated (was `mark_consolidated`, now a deprecated alias) |
+| `link_consolidated(ids, consolidate_id)` | Link children to a consolidated star (was `link_to_consolidated`/`update_consolidate_ids`, now deprecated aliases) |
 
 ### File Upload
 
@@ -171,15 +172,16 @@ Memory(
 | `session_id` | Current session UUID |
 | `container_tag` | User/agent identifier |
 
-## API Reference — AnhurClient Class
+## API Reference — full surface (on `Memory`)
 
-AnhurClient exposes the full AnhurDB surface (40+ endpoints):
+`Memory` exposes the full AnhurDB surface (40+ endpoints) directly:
 
-- **CRUD**: `create`, `get`, `read_content`, `get_context`, `update`, `delete`, `explain`
+- **CRUD**: `create`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `delete`, `explain`
 - **Diagnostics**: `access_stats`, `get_engine_config`
-- **Search**: `search`, `search_by_type`, `smart_search`, `recall`, `search_with_ast`
-- **Batch**: `batch_read_content`, `mark_consolidated`, `link_to_consolidated`, `append_main_links`, `decay`
-- **Graph**: `walk`, `walk_semantic`
+- **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `search_with_ast`
+- **Manifests / taxonomy**: `manifest_global`, `manifest_session`, `list_chat`, `count_by_type`, `list_types`, `recent`
+- **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_main_links`, `decay`
+- **Graph**: `walk`, `walk_semantic`, `graph`
 - **Entity**: `search_entities`, `upsert_entity`, `get_entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
 - **Upload**: `upload_file`, `upload_status`
 - **Temporal**: `supersede`

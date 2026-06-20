@@ -36,20 +36,31 @@ import { HttpClient } from "./client.js";
 import type {
   AddOptions,
   AddResult,
+  AstQuery,
   BatchUpdateResult,
   ContextResult,
+  CreateOptions,
   EntityGraphResult,
   EntityRecord,
   EntityTimelineResult,
+  GroundingResult,
   IngestPayload,
+  ListChatOptions,
+  ListChatResult,
+  ManifestGlobalOptions,
+  ManifestResult,
+  ManifestSessionOptions,
   MemoryOptions,
   MemoryRecord,
   MemoryType,
   ProfileResult,
+  QueryResult,
+  ReadOptions,
   RecordPayload,
   SearchOptions,
   SearchPayload,
   SearchResult,
+  SearchSessionPayload,
   SessionStats,
   UploadResult,
   UploadStatusResult,
@@ -220,6 +231,17 @@ export class Memory {
    * embedding + extraction automatically). If that returns 404,
    * falls back to `/api/v1/records` (OSS mode, stores as text).
    *
+   * Junior Tip [score/type drop fix, 2026-06 — parity with Go/Python]: the
+   * cloud `/api/v1/ingest` worker owns its OWN salience scoring and type
+   * classification — it hardcodes `type=episodic` and stores its own computed
+   * score, SILENTLY DROPPING any caller-supplied score/type (observed on the
+   * live cluster: a supplied score=8 landed as score=0). So when the caller
+   * explicitly pins `score` OR `type`, we skip ingest entirely and take the
+   * synchronous `/api/v1/records` path, which writes those values verbatim.
+   * Plain `add(text)` with no score/type still prefers ingest (auto-embedding +
+   * extraction). `metadata` alone does NOT force the records path, because
+   * ingest preserves caller metadata — this mirrors the Go SDK condition.
+   *
    * @param text    - The text to remember.
    * @param options - Optional score (1-10) and memory type.
    * @returns A result containing the session ID and created records.
@@ -236,17 +258,35 @@ export class Memory {
     }
     await this.tagReady;
 
+    // Junior Tip [why compute forceRecordsPath BEFORE defaulting]: we must
+    // read the RAW caller intent (`!== undefined`) before `?? 5` / `??
+    // "episodic"` collapse the unset-ness — otherwise every add would look
+    // "pinned" and never use the ingest pipeline. See the doc-comment above.
+    //
+    // Junior Tip [metadata silent-drop parity, 2026-06-18]: metadata must ALSO
+    // force the records path. The ingest endpoint's request body is only
+    // {content, container_tag} (server handler/ingest.go) and silently drops
+    // metadata, so a metadata-only add routed to /ingest would lose it. Go and
+    // Python route metadata to /records for the same reason — the three agree.
+    const forceRecordsPath =
+      options?.score !== undefined ||
+      options?.type !== undefined ||
+      options?.metadata !== undefined;
+
     const score = options?.score ?? 5;
     const type: MemoryType = options?.type ?? "episodic";
     const metadata = options?.metadata;
 
-    // Try cloud ingest first (has auto-embedding).
-    if (this.ingestAvailable !== false) {
+    // Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
+    // score/type — the ingest worker cannot honour those, so route straight to
+    // the records path that persists them verbatim.
+    if (!forceRecordsPath && this.ingestAvailable !== false) {
       const result = await this.tryIngest(text, score, type, metadata);
       if (result !== null) return result;
     }
 
-    // Fallback: direct record creation (OSS / self-hosted).
+    // Fallback: direct record creation (OSS / self-hosted), OR the
+    // score/type-pinned path that ingest cannot honour.
     return this.createRecord(text, score, type, metadata);
   }
 
@@ -271,6 +311,7 @@ export class Memory {
   async search(
     query: string,
     options?: SearchOptions,
+    readOptions?: ReadOptions,
   ): Promise<SearchResult[]> {
     if (!query) {
       throw new Error("query cannot be empty");
@@ -278,7 +319,6 @@ export class Memory {
     await this.tagReady;
 
     const payload: SearchPayload = {
-      query: query,
       text: query,
       limit: options?.limit ?? 10,
     };
@@ -286,12 +326,66 @@ export class Memory {
       payload.type_filter = options.typeFilter;
     }
 
-    const data = await this.client.post<{
+    // Search is a read behind POST; postRead carries the optional RYW barrier.
+    const data = await this.client.postRead<{
       results?: Array<{
         record?: Record<string, unknown>;
         similarity?: number;
       }>;
-    }>("/api/v1/search/global", payload);
+    }>("/api/v1/search/global", payload, readOptions?.minIndex);
+
+    return this.flattenSearchResults(data.results);
+  }
+
+  // ── searchSession() — session-scoped hybrid search ──────────
+
+  /**
+   * Search for relevant memories WITHIN a single chat/session (scoped).
+   *
+   * Unlike {@link search} (which fans out across every session via
+   * `/search/global`), this hits the session `POST /api/v1/search` endpoint with
+   * a `uuid`, so results come only from that one chat.
+   *
+   * Junior Tip [contract, verified against server/handler/record_search.go]: the
+   * Search handler requires EITHER `text` OR `vector` (HTTP 400 otherwise) and
+   * has NO `mode` field — the vector/text/hybrid mode is implicit (text-only =
+   * FTS5, vector-only = semantic, both = hybrid) and json.Decode silently drops
+   * unknown keys. We send `text` (the natural-language query) plus the scoping
+   * `uuid`; the optional `typeFilter` and RFC3339 temporal bounds map to
+   * `type_filter`/`as_of`/`since`/`until`. Mirrors Python `search_session` and
+   * Go `SearchSession`.
+   *
+   * @param query       - Natural language query (sent as `text`).
+   * @param sessionUuid - Session UUID to scope to. Empty/omitted = tenant-wide.
+   * @param options     - Optional limit and type filter.
+   */
+  async searchSession(
+    query: string,
+    sessionUuid?: string,
+    options?: SearchOptions,
+    readOptions?: ReadOptions,
+  ): Promise<SearchResult[]> {
+    if (!query) {
+      throw new Error("query cannot be empty");
+    }
+    await this.tagReady;
+
+    const payload: SearchSessionPayload = {
+      uuid: sessionUuid ?? this.sessionUuid,
+      text: query,
+      limit: options?.limit ?? 10,
+    };
+    if (options?.typeFilter) {
+      payload.type_filter = options.typeFilter;
+    }
+
+    // Search is a read behind POST; postRead carries the optional RYW barrier.
+    const data = await this.client.postRead<{
+      results?: Array<{
+        record?: Record<string, unknown>;
+        similarity?: number;
+      }>;
+    }>("/api/v1/search", payload, readOptions?.minIndex);
 
     return this.flattenSearchResults(data.results);
   }
@@ -311,13 +405,15 @@ export class Memory {
    * console.log(profile.static, profile.stats);
    * ```
    */
-  async profile(): Promise<ProfileResult> {
+  async profile(readOptions?: ReadOptions): Promise<ProfileResult> {
     await this.tagReady;
 
     try {
-      const data = await this.client.get<ProfileResult>("/api/v1/profile", {
-        tag: this.containerTag,
-      });
+      const data = await this.client.get<ProfileResult>(
+        "/api/v1/profile",
+        { tag: this.containerTag },
+        readOptions?.minIndex,
+      );
       return {
         static: data.static ?? {},
         dynamic: data.dynamic ?? {},
@@ -353,6 +449,7 @@ export class Memory {
   async searchByType(
     type: MemoryType,
     limit?: number,
+    readOptions?: ReadOptions,
   ): Promise<SearchResult[]> {
     const params: Record<string, string> = { type };
     if (limit !== undefined) params.limit = String(limit);
@@ -360,6 +457,7 @@ export class Memory {
     const data = await this.client.get<{ results?: SearchResult[] }>(
       "/api/v1/search/type",
       params,
+      readOptions?.minIndex,
     );
     return data.results ?? [];
   }
@@ -378,6 +476,7 @@ export class Memory {
     query: string,
     limit?: number,
     type?: MemoryType,
+    readOptions?: ReadOptions,
   ): Promise<unknown> {
     const params: Record<string, string> = {
       q: query,
@@ -385,7 +484,11 @@ export class Memory {
     };
     if (type) params.type = type;
 
-    return this.client.get("/api/v1/search/smart", params);
+    return this.client.get(
+      "/api/v1/search/smart",
+      params,
+      readOptions?.minIndex,
+    );
   }
 
   /**
@@ -397,22 +500,26 @@ export class Memory {
    * @param query - Natural language query.
    * @param limit - Maximum results (default 10).
    */
-  async recall(query: string, limit?: number): Promise<SearchResult[]> {
+  async recall(
+    query: string,
+    limit?: number,
+    readOptions?: ReadOptions,
+  ): Promise<SearchResult[]> {
     if (!query) {
       throw new Error("query cannot be empty");
     }
 
     const payload: SearchPayload = {
-      query: query,
       text: query,
       limit: limit ?? 10,
     };
-    const data = await this.client.post<{
+    // Read behind POST — postRead carries the optional RYW barrier.
+    const data = await this.client.postRead<{
       results?: Array<{
         record?: Record<string, unknown>;
         similarity?: number;
       }>;
-    }>("/api/v1/search/global", payload);
+    }>("/api/v1/search/global", payload, readOptions?.minIndex);
 
     return this.flattenSearchResults(data.results);
   }
@@ -422,15 +529,270 @@ export class Memory {
    *
    * @param limit - Maximum records to return (default 20).
    */
-  async recent(limit?: number): Promise<MemoryRecord[]> {
+  async recent(
+    limit?: number,
+    readOptions?: ReadOptions,
+  ): Promise<MemoryRecord[]> {
     const params: Record<string, string> = {};
     if (limit !== undefined) params.limit = String(limit);
 
     const data = await this.client.get<{ records?: MemoryRecord[] }>(
       "/api/v1/manifest",
       params,
+      readOptions?.minIndex,
     );
     return data.records ?? [];
+  }
+
+  /**
+   * Run a structured AST query against `POST /api/v1/query`.
+   *
+   * This is the precise, SQL-like counterpart to the fuzzy `search()` — you
+   * filter on exact columns (type/weight/status/...), sort, and paginate. Build
+   * the AST by hand or fluently via {@link QueryBuilder}.
+   *
+   * Junior Tip [contract, verified against server/handler/record_query.go]: the
+   * AST fields (`filters`, `sort`, `pagination`, `select`) are sent FLAT at the
+   * top level of the body — NOT wrapped in `{"query": ...}` (this is the exact
+   * note the Python QueryExecutor carries). Filter/sort column names are
+   * whitelist-validated server-side (HTTP 400 'invalid filter field' / 'invalid
+   * sort field'); `select` is parsed but ignored (the SELECT list is fixed).
+   * The response `records` is a FLAT array (NOT `{record, similarity}`) and is
+   * `null` on an empty set, so we default to `[]`. Mirrors Python `query()` /
+   * `QueryExecutor.execute_query` and the Go `Query` fluent surface.
+   *
+   * Junior Tip [read-your-writes]: `/query` is a read behind POST, so it goes
+   * through `postRead` and honours the optional `{ minIndex }` barrier.
+   *
+   * @param ast - The compiled AST (see {@link QueryBuilder} to build fluently).
+   * @returns The matching records plus a count.
+   */
+  async query(
+    ast: AstQuery,
+    readOptions?: ReadOptions,
+  ): Promise<QueryResult> {
+    const data = await this.client.postRead<{
+      records?: MemoryRecord[] | null;
+      count?: number;
+    }>("/api/v1/query", ast, readOptions?.minIndex);
+    const records = data.records ?? [];
+    return {
+      records,
+      count: data.count ?? records.length,
+    };
+  }
+
+  /**
+   * List the tenant-wide manifest (every record, paginated) via
+   * `GET /api/v1/manifest`.
+   *
+   * Returns the full pagination envelope (limit/offset/has_more), unlike
+   * {@link recent} which only returns the bare records array. Use this to walk
+   * the whole tenant by paging on `offset` until `has_more` is false.
+   *
+   * Junior Tip [contract, verified against server/handler/record_search.go]: the
+   * keyword filter is the `q` query param (the handler also accepts `query` as an
+   * alias, with `q` winning — we send `q`). When `q` is set the server IGNORES
+   * `offset` (the search path does not paginate). `has_more = len(records) ==
+   * limit`, a heuristic that can false-positive on an exactly-full last page.
+   * `as_of` is mutually exclusive with `since`/`until` (HTTP 400 otherwise).
+   * Mirrors Python `manifest_global` and Go `ManifestGlobal`.
+   *
+   * @param options - Optional keyword, pagination, and temporal bounds.
+   */
+  async manifestGlobal(
+    options?: ManifestGlobalOptions,
+    readOptions?: ReadOptions,
+  ): Promise<ManifestResult> {
+    const params = this.buildManifestParams(options);
+    return this.client.get<ManifestResult>(
+      "/api/v1/manifest",
+      Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
+    );
+  }
+
+  /**
+   * List a single session's manifest (paginated) via
+   * `GET /api/v1/chats/{uuid}/manifest`.
+   *
+   * Same envelope as {@link manifestGlobal} but scoped to one chat.
+   *
+   * Junior Tip [contract, verified against server/handler/record_session.go]:
+   * the session endpoint reads ONLY `q` (there is NO `query` alias here, unlike
+   * the global manifest). Default limit is 500 (capped 2000). Setting any
+   * temporal param bypasses the response cache. Mirrors Python
+   * `manifest_session` and Go `ManifestSession`.
+   *
+   * @param sessionUuid - The session/chat UUID (required).
+   * @param options     - Optional keyword, pagination, and temporal bounds.
+   */
+  async manifestSession(
+    sessionUuid: string,
+    options?: ManifestSessionOptions,
+    readOptions?: ReadOptions,
+  ): Promise<ManifestResult> {
+    if (!sessionUuid) {
+      throw new Error("manifestSession: sessionUuid is required");
+    }
+    const params = this.buildManifestParams(options);
+    return this.client.get<ManifestResult>(
+      `/api/v1/chats/${encodeURIComponent(sessionUuid)}/manifest`,
+      Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
+    );
+  }
+
+  /**
+   * List every record in a single chat via `GET /api/v1/chats/{uuid}`.
+   *
+   * Returns the entire matching set for the session (no pagination), with an
+   * optional tri-state `consolidated` filter and an exact `status` filter.
+   *
+   * Junior Tip [contract, verified against server/handler/record_session.go]:
+   * the `consolidated` filter is tri-state — omit for ALL, `true` for only
+   * consolidated, and ANY other value (including `false`) for only
+   * non-consolidated (the server parses `val == "true"`). We therefore send the
+   * literal string `"true"`/`"false"`. `content` is omitted (metadata only).
+   * Mirrors Python `list_chat` and Go `ListChat`.
+   *
+   * @param sessionUuid - The session/chat UUID (required).
+   * @param options     - Optional consolidated and status filters.
+   */
+  async listChat(
+    sessionUuid: string,
+    options?: ListChatOptions,
+    readOptions?: ReadOptions,
+  ): Promise<ListChatResult> {
+    if (!sessionUuid) {
+      throw new Error("listChat: sessionUuid is required");
+    }
+    const params: Record<string, string> = {};
+    if (options?.consolidated !== undefined) {
+      params.consolidated = options.consolidated ? "true" : "false";
+    }
+    if (options?.status) params.status = options.status;
+
+    const data = await this.client.get<ListChatResult>(
+      `/api/v1/chats/${encodeURIComponent(sessionUuid)}`,
+      Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
+    );
+    return {
+      records: data.records ?? [],
+      count: data.count ?? (data.records ?? []).length,
+    };
+  }
+
+  /**
+   * Aggregate the tenant's record counts by cognitive type.
+   *
+   * Junior Tip [contract, verified against server/handler/record_search.go]:
+   * there is NO server-side aggregation endpoint — `count_by_type` is a CLIENT
+   * roll-up. We page the global manifest (`GET /api/v1/manifest`) and tally
+   * `records[].type`. The handler's `limit=0` does NOT return zero rows (the
+   * `limit > 0` guard makes it fall back to the default 100-row page), so the
+   * ONLY correct way to count ALL types is to page via `offset` until
+   * `has_more` is false — never rely on `limit=0`. We page at 1000/req (the
+   * server hard cap) and stop on a short/empty page (defensive against the
+   * exactly-full-last-page `has_more` false-positive). Mirrors Python
+   * `count_by_type` and Go `CountByType`.
+   *
+   * @returns A map of `type → count` over the full tenant manifest.
+   */
+  async countByType(
+    readOptions?: ReadOptions,
+  ): Promise<Record<string, number>> {
+    // Junior Tip [page size]: 1000 is the server hard cap for /manifest limit.
+    // Paging at the cap minimises round-trips while staying within bounds.
+    const pageSize = 1000;
+    const counts: Record<string, number> = {};
+    let offset = 0;
+
+    // Junior Tip [why a hard page ceiling]: bound the loop so a server bug
+    // (e.g. has_more stuck true) can never spin forever — fail-loud-ish by
+    // stopping after a generous ceiling rather than hanging the caller.
+    const maxPages = 10_000;
+    for (let page = 0; page < maxPages; page++) {
+      const result = await this.manifestGlobal(
+        { limit: pageSize, offset },
+        readOptions,
+      );
+      const records = result.records ?? [];
+      for (const record of records) {
+        const recordType = record.type ?? "unknown";
+        counts[recordType] = (counts[recordType] ?? 0) + 1;
+      }
+      // Stop on a short/empty page — robust against the has_more
+      // exactly-full-last-page false-positive.
+      if (records.length < pageSize) break;
+      offset += records.length;
+    }
+
+    return counts;
+  }
+
+  /**
+   * List the known cognitive memory types (LOCAL — no network call).
+   *
+   * Junior Tip [contract]: this is a STATIC taxonomy with no REST route — every
+   * SDK returns it from its local enum so the value is identical and offline.
+   * The list is the {@link MemoryType} union, kept byte-identical to the Go
+   * `ListTypes` slice and the Python `list_types` list.
+   *
+   * @returns The cognitive type names.
+   */
+  listTypes(): MemoryType[] {
+    return [
+      "episodic",
+      "fact",
+      "preference",
+      "decision",
+      "task",
+      "risk",
+      "reasoning",
+      "idea",
+      "emotion",
+      "consolidated",
+      "hub",
+      "file",
+    ];
+  }
+
+  /**
+   * Build the provenance grounding of a record via
+   * `GET /api/v1/records/{id}/grounding`.
+   *
+   * Walks the graph (BFS) back to the source episodic anchors and the
+   * consolidations that summarise the record — the "why does the DB believe
+   * this" trail.
+   *
+   * Junior Tip [contract, verified against server/handler/record_grounding.go]:
+   * the ONLY query param is `max_depth`, an integer 1..5 inclusive (default 3);
+   * anything outside that range is HTTP 400 server-side. `anchors`/
+   * `consolidations` are always present arrays (may be empty). A missing/
+   * archived/superseded target is HTTP 404. Mirrors Python `get_grounding` and
+   * Go `GetGrounding`.
+   *
+   * @param recordId - The target record ID (must be > 0).
+   * @param maxDepth - BFS depth budget 1..5 (default server-side: 3).
+   */
+  async getGrounding(
+    recordId: number,
+    maxDepth?: number,
+    readOptions?: ReadOptions,
+  ): Promise<GroundingResult> {
+    if (recordId <= 0) {
+      throw new Error("getGrounding: recordId must be > 0");
+    }
+    const params: Record<string, string> = {};
+    if (maxDepth !== undefined) params.max_depth = String(maxDepth);
+
+    return this.client.get<GroundingResult>(
+      `/api/v1/records/${recordId}/grounding`,
+      Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
+    );
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -443,13 +805,21 @@ export class Memory {
    * @param startId - The record ID to start the walk from.
    * @param depth   - How many hops to traverse (default 3).
    */
-  async walk(startId: number, depth?: number): Promise<WalkResult> {
+  async walk(
+    startId: number,
+    depth?: number,
+    readOptions?: ReadOptions,
+  ): Promise<WalkResult> {
     const payload = {
       seed_id: startId,
       depth: depth ?? 3,
       direction: "both",
     };
-    return this.client.post<WalkResult>("/api/v1/walk", payload);
+    return this.client.postRead<WalkResult>(
+      "/api/v1/walk",
+      payload,
+      readOptions?.minIndex,
+    );
   }
 
   /**
@@ -459,12 +829,20 @@ export class Memory {
    * @param startId - The record ID to start from.
    * @param depth   - How many hops (default 3).
    */
-  async walkSemantic(startId: number, depth?: number): Promise<WalkResult> {
+  async walkSemantic(
+    startId: number,
+    depth?: number,
+    readOptions?: ReadOptions,
+  ): Promise<WalkResult> {
     const payload = {
       seed_id: startId,
       depth: depth ?? 3,
     };
-    return this.client.post<WalkResult>("/api/v1/walk/semantic", payload);
+    return this.client.postRead<WalkResult>(
+      "/api/v1/walk/semantic",
+      payload,
+      readOptions?.minIndex,
+    );
   }
 
   /**
@@ -472,9 +850,14 @@ export class Memory {
    *
    * @param recordId - The record ID to inspect.
    */
-  async getContext(recordId: number): Promise<ContextResult> {
+  async getContext(
+    recordId: number,
+    readOptions?: ReadOptions,
+  ): Promise<ContextResult> {
     return this.client.get<ContextResult>(
       `/api/v1/records/${recordId}/topology`,
+      undefined,
+      readOptions?.minIndex,
     );
   }
 
@@ -483,12 +866,23 @@ export class Memory {
    *
    * @param recordId - The record ID whose content to retrieve.
    */
-  async readContent(recordId: number): Promise<string> {
+  async readContent(
+    recordId: number,
+    readOptions?: ReadOptions,
+  ): Promise<string> {
     // Junior Tip [parity-fix 2026-06-11]: GET /content responde text/plain cru
     // (não JSON). getText devolve o corpo verbatim — antes, get<{content}> via
     // JSON.parse falhava, embrulhava em {message} e isto retornava "" (perda
     // total do conteúdo). Agora alinhado com Go (raw bytes) e Python (raw_text).
-    return this.client.getText(`/api/v1/records/${recordId}/content`);
+    //
+    // Junior Tip [RYW]: pass { minIndex: result.raftIndex } from a prior write
+    // so a read issued right after the write cannot miss it on a lagging
+    // follower — the core read-your-writes fix.
+    return this.client.getText(
+      `/api/v1/records/${recordId}/content`,
+      undefined,
+      readOptions?.minIndex,
+    );
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -509,10 +903,10 @@ export class Memory {
   /**
    * List all sessions with aggregate statistics.
    */
-  async listSessions(): Promise<SessionStats[]> {
+  async listSessions(readOptions?: ReadOptions): Promise<SessionStats[]> {
     const data = await this.client.get<{
       sessions?: SessionStats[];
-    }>("/api/v1/sessions/stats");
+    }>("/api/v1/sessions/stats", undefined, readOptions?.minIndex);
     return data.sessions ?? [];
   }
 
@@ -530,6 +924,7 @@ export class Memory {
     sessionUuid: string,
     limit?: number,
     offset?: number,
+    readOptions?: ReadOptions,
   ): Promise<unknown> {
     const params: Record<string, string> = {};
     if (limit !== undefined) params.limit = String(limit);
@@ -538,6 +933,7 @@ export class Memory {
     return this.client.get(
       `/api/v1/sessions/${sessionUuid}/history`,
       Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
     );
   }
 
@@ -548,8 +944,15 @@ export class Memory {
    *
    * @param sessionUuid - The session UUID.
    */
-  async getSessionClusters(sessionUuid: string): Promise<unknown> {
-    return this.client.get(`/api/v1/sessions/${sessionUuid}/clusters`);
+  async getSessionClusters(
+    sessionUuid: string,
+    readOptions?: ReadOptions,
+  ): Promise<unknown> {
+    return this.client.get(
+      `/api/v1/sessions/${sessionUuid}/clusters`,
+      undefined,
+      readOptions?.minIndex,
+    );
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -600,10 +1003,13 @@ export class Memory {
    */
   async batchReadContent(
     ids: number[],
+    readOptions?: ReadOptions,
   ): Promise<Record<string, unknown>> {
-    return this.client.post<Record<string, unknown>>(
+    // Read behind POST — postRead carries the optional RYW barrier.
+    return this.client.postRead<Record<string, unknown>>(
       "/api/v1/records/batch-content",
       { ids },
+      readOptions?.minIndex,
     );
   }
 
@@ -676,9 +1082,14 @@ export class Memory {
    *
    * @param uploadId - The upload ID returned by `uploadFile()`.
    */
-  async uploadStatus(uploadId: number): Promise<UploadStatusResult> {
+  async uploadStatus(
+    uploadId: number,
+    readOptions?: ReadOptions,
+  ): Promise<UploadStatusResult> {
     return this.client.get<UploadStatusResult>(
       `/api/v1/upload/${uploadId}/status`,
+      undefined,
+      readOptions?.minIndex,
     );
   }
 
@@ -697,6 +1108,7 @@ export class Memory {
     query?: string,
     entityType?: string,
     limit?: number,
+    readOptions?: ReadOptions,
   ): Promise<EntityRecord[]> {
     const params: Record<string, string> = {};
     if (query) params.query = query;
@@ -706,6 +1118,7 @@ export class Memory {
     const data = await this.client.get<{ entities?: EntityRecord[] }>(
       "/api/v1/entities",
       Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
     );
     return data.entities ?? [];
   }
@@ -726,6 +1139,7 @@ export class Memory {
   async listEntities(
     limit = 200,
     offset = 0,
+    readOptions?: ReadOptions,
   ): Promise<{
     entities: EntityRecord[];
     count: number;
@@ -738,10 +1152,69 @@ export class Memory {
     if (limit <= 0) limit = 200;
     if (limit > 500) limit = 500;
     if (offset < 0) offset = 0;
-    return this.client.get("/api/v1/entities/list", {
-      limit: String(limit),
-      offset: String(offset),
+    return this.client.get(
+      "/api/v1/entities/list",
+      {
+        limit: String(limit),
+        offset: String(offset),
+      },
+      readOptions?.minIndex,
+    );
+  }
+
+  /**
+   * Create a record with FULL fidelity via `POST /api/v1/records`.
+   *
+   * Unlike {@link add} (whose cloud-ingest path owns its own type/score and
+   * silently drops caller-pinned values), `create()` always takes the
+   * synchronous records path, so every supplied field — type, score,
+   * related_ids, valid_from/valid_until, metadata — is persisted verbatim.
+   *
+   * Junior Tip [SDK parity, 2026-06-18]: this is the full-fidelity create the
+   * parity spec asks for (type/score/related_ids/valid_from via the options
+   * object), mirroring Go `Create(text, opts...)` and Python `create(req)`.
+   * `createInSession` is kept as the text-only convenience wrapper. Metadata is
+   * routed through the canonical JSON envelope ({@link buildMetadataJson}) so a
+   * caller key can never clobber `container_tag` — the 2026-05-22 corruption
+   * bug. `weight` is derived from `score/10` to match {@link createRecord}.
+   *
+   * Junior Tip [anchor]: a non-episodic type in a session with no episodic
+   * anchor is HTTP 422 server-side; we reuse {@link createRecord}'s seed-and-
+   * retry so a `create(text, { type: "fact" })` into a fresh session still
+   * succeeds instead of failing on the missing anchor.
+   *
+   * @param text    - Record text (stored in summary + content).
+   * @param options - Full-fidelity fields (all optional).
+   */
+  async create(text: string, options?: CreateOptions): Promise<AddResult> {
+    if (!text) {
+      throw new Error("text cannot be empty");
+    }
+    await this.tagReady;
+
+    const type: MemoryType = options?.type ?? "episodic";
+    const score = options?.score ?? 5;
+    return this.createRecord(text, score, type, options?.metadata, {
+      sessionUuid: options?.sessionUuid,
+      relatedIds: options?.relatedIds,
+      validFrom: options?.validFrom,
+      validUntil: options?.validUntil,
     });
+  }
+
+  /**
+   * Truncate `text` to 200 Unicode code points, with an ellipsis when cut.
+   *
+   * Junior Tip [codepoint-safe parity, 2026-06-18]: `.slice(0, 200)` cuts by
+   * UTF-16 code unit and can split a surrogate pair (astral emoji / CJK ext),
+   * emitting a lone surrogate. `Array.from` iterates by code point, so the three
+   * SDKs (Python str[:200], Go []rune, TS Array.from) truncate at the SAME point.
+   */
+  private truncateSummary(text: string): string {
+    const codePoints = Array.from(text);
+    return codePoints.length > 200
+      ? codePoints.slice(0, 200).join("") + "..."
+      : text;
   }
 
   /**
@@ -750,7 +1223,8 @@ export class Memory {
    *
    * Junior Tip [SDK parity, 2026-05-22]: mirrors Go `CreateInSession` and
    * Python `create_in_session`. Metadata is wrapped through the canonical
-   * JSON envelope to avoid the container_tag corruption bug.
+   * JSON envelope to avoid the container_tag corruption bug. For full-fidelity
+   * type/score/related_ids/valid_from, use {@link create} instead.
    *
    * @param text        - Record text (stored in summary + content).
    * @param sessionUuid - Session UUID to place the record under (required).
@@ -759,7 +1233,7 @@ export class Memory {
     if (!sessionUuid) {
       throw new Error("createInSession: sessionUuid is required");
     }
-    const summary = text.length > 200 ? text.slice(0, 200) + "..." : text;
+    const summary = this.truncateSummary(text);
     const payload: RecordPayload = {
       uuid: sessionUuid,
       type: "episodic" as MemoryType,
@@ -777,7 +1251,7 @@ export class Memory {
       consolidated: false,
       status: "saved",
     };
-    const data = await this.client.post<{ id?: number }>(
+    const data = await this.client.post<{ id?: number; raft_index?: number }>(
       "/api/v1/records",
       payload,
     );
@@ -785,6 +1259,8 @@ export class Memory {
       sessionId: sessionUuid,
       records: [{ id: data.id ?? 0, type: "episodic", summary }],
       mode: "oss",
+      // raft_index for read-your-writes — pass as { minIndex } on a read.
+      raftIndex: data.raft_index ?? 0,
     };
   }
 
@@ -816,8 +1292,36 @@ export class Memory {
    * Set `consolidate_id` on a batch of child records (judge → star link).
    * Batched so N children pointing at one star cost ONE Raft round-trip.
    *
-   * Junior Tip [SDK parity]: mirrors Go `UpdateConsolidateIDs` and Python
-   * `update_consolidate_ids`.
+   * Junior Tip [SDK parity, 2026-06-18 rename]: this is the canonical name
+   * (matches the MCP `link_consolidated` tool and the Go `LinkConsolidated` /
+   * Python `link_consolidated` methods). The old `updateConsolidateIds` name is
+   * kept as a deprecated forwarding alias because AnhurAgents and existing
+   * callers import it — see {@link updateConsolidateIds}.
+   *
+   * @param ids           - Child record IDs.
+   * @param consolidateId - The consolidated star's ID.
+   */
+  async linkConsolidated(
+    ids: number[],
+    consolidateId: number,
+  ): Promise<Record<string, unknown>> {
+    if (ids.length === 0) return {};
+    if (consolidateId <= 0) {
+      throw new Error("linkConsolidated: consolidateId must be > 0");
+    }
+    return this.client.patch<Record<string, unknown>>(
+      "/api/v1/records/consolidate-ids",
+      { ids, consolidate_id: consolidateId },
+    );
+  }
+
+  /**
+   * Set `consolidate_id` on a batch of child records.
+   *
+   * @deprecated Use {@link linkConsolidated} instead — renamed 2026-06-18 to
+   * match the canonical MCP `link_consolidated` tool name and the Go/Python
+   * SDKs. This alias forwards verbatim and will be removed in a future major
+   * version; kept now because AnhurAgents and existing callers import it.
    *
    * @param ids           - Child record IDs.
    * @param consolidateId - The consolidated star's ID.
@@ -826,14 +1330,7 @@ export class Memory {
     ids: number[],
     consolidateId: number,
   ): Promise<Record<string, unknown>> {
-    if (ids.length === 0) return {};
-    if (consolidateId <= 0) {
-      throw new Error("updateConsolidateIds: consolidateId must be > 0");
-    }
-    return this.client.patch<Record<string, unknown>>(
-      "/api/v1/records/consolidate-ids",
-      { ids, consolidate_id: consolidateId },
-    );
+    return this.linkConsolidated(ids, consolidateId);
   }
 
   /**
@@ -867,6 +1364,7 @@ export class Memory {
   async entityGraph(
     entityId: number,
     depth?: number,
+    readOptions?: ReadOptions,
   ): Promise<EntityGraphResult> {
     const params: Record<string, string> = {};
     if (depth !== undefined) params.depth = String(depth);
@@ -874,6 +1372,7 @@ export class Memory {
     return this.client.get<EntityGraphResult>(
       `/api/v1/entities/${entityId}/graph`,
       Object.keys(params).length > 0 ? params : undefined,
+      readOptions?.minIndex,
     );
   }
 
@@ -885,9 +1384,14 @@ export class Memory {
    *
    * @param entityId - The entity ID.
    */
-  async entityTimeline(entityId: number): Promise<EntityTimelineResult> {
+  async entityTimeline(
+    entityId: number,
+    readOptions?: ReadOptions,
+  ): Promise<EntityTimelineResult> {
     return this.client.get<EntityTimelineResult>(
       `/api/v1/entities/${entityId}/timeline`,
+      undefined,
+      readOptions?.minIndex,
     );
   }
 
@@ -945,9 +1449,14 @@ export class Memory {
    *
    * @param recordId - The record ID.
    */
-  async getRecordEntities(recordId: number): Promise<EntityRecord[]> {
+  async getRecordEntities(
+    recordId: number,
+    readOptions?: ReadOptions,
+  ): Promise<EntityRecord[]> {
     const data = await this.client.get<{ entities?: EntityRecord[] }>(
       `/api/v1/records/${recordId}/entities`,
+      undefined,
+      readOptions?.minIndex,
     );
     return data.entities ?? [];
   }
@@ -1006,6 +1515,7 @@ export class Memory {
       const data = await this.client.post<{
         id?: number;
         records?: Array<{ id: number; type: string; summary: string }>;
+        raft_index?: number;
       }>("/api/v1/ingest", payload);
 
       this.ingestAvailable = true;
@@ -1014,7 +1524,7 @@ export class Memory {
         {
           id: data.id ?? 0,
           type: "episodic" as string,
-          summary: text.slice(0, 200),
+          summary: this.truncateSummary(text),
         },
       ];
 
@@ -1023,9 +1533,13 @@ export class Memory {
         records: records.map((r) => ({
           id: r.id,
           type: (r.type ?? "episodic") as MemoryType,
-          summary: r.summary ?? text.slice(0, 200),
+          summary: r.summary ?? this.truncateSummary(text),
         })),
         mode: "cloud",
+        // Junior Tip [RYW parity, 2026-06-17]: surface raft_index so a caller
+        // can pass it as { minIndex } on a following read. Usually 0/absent on
+        // the async ingest path; defaults to 0 so threading it is safe.
+        raftIndex: data.raft_index ?? 0,
       };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes("404")) {
@@ -1042,24 +1556,37 @@ export class Memory {
    * In OSS mode there is no server-side embedding, so we store text
    * in both `summary` (for FTS5 search) and `content` (for full
    * retrieval).
+   *
+   * Junior Tip [full-fidelity create, 2026-06-18]: the optional `extra` block
+   * lets `create()` thread session-uuid override, related_ids, and the
+   * valid_from/valid_until temporal window through verbatim. `add()` calls this
+   * WITHOUT `extra`, so its behaviour is byte-for-byte unchanged (defaults:
+   * current session, no related_ids, no validity window).
    */
   private async createRecord(
     text: string,
     score: number,
     type: MemoryType,
     metadata?: Record<string, unknown>,
+    extra?: {
+      sessionUuid?: string;
+      relatedIds?: number[];
+      validFrom?: string;
+      validUntil?: string;
+    },
   ): Promise<AddResult> {
-    const summary = text.length > 200 ? text.slice(0, 200) + "..." : text;
+    const summary = this.truncateSummary(text);
+    const sessionUuid = extra?.sessionUuid ?? this.sessionUuid;
 
     const payload: RecordPayload = {
-      uuid: this.sessionUuid,
+      uuid: sessionUuid,
       type,
       dimension: 0,
       prefix: "",
       weight: score / 10,
       score,
       vector: "",
-      related_ids: [],
+      related_ids: extra?.relatedIds ?? [],
       main_ids: [],
       consolidate_id: 0,
       metadata: buildMetadataJson(this.containerTag, metadata),
@@ -1068,10 +1595,15 @@ export class Memory {
       consolidated: false,
       status: "saved",
     };
+    // Only attach temporal fields when supplied — the server treats absent
+    // valid_from/valid_until as "no window", so omitting keeps the wire payload
+    // identical to the pre-existing add() path.
+    if (extra?.validFrom) payload.valid_from = extra.validFrom;
+    if (extra?.validUntil) payload.valid_until = extra.validUntil;
 
-    let data: { id?: number };
+    let data: { id?: number; raft_index?: number };
     try {
-      data = await this.client.post<{ id?: number }>(
+      data = await this.client.post<{ id?: number; raft_index?: number }>(
         "/api/v1/records",
         payload,
       );
@@ -1094,18 +1626,21 @@ export class Memory {
         type: "episodic",
         weight: 0.5,
       };
-      await this.client.post<{ id?: number }>(
+      await this.client.post<{ id?: number; raft_index?: number }>(
         "/api/v1/records",
         anchorPayload,
       );
-      data = await this.client.post<{ id?: number }>(
+      data = await this.client.post<{ id?: number; raft_index?: number }>(
         "/api/v1/records",
         payload,
       );
     }
 
     return {
-      sessionId: this.sessionUuid,
+      // Junior Tip [full-fidelity create]: report the session the record
+      // actually landed in (a create() may override it), not the instance
+      // default — so the caller's AddResult.sessionId is truthful.
+      sessionId: sessionUuid,
       records: [
         {
           id: data.id ?? 0,
@@ -1114,7 +1649,38 @@ export class Memory {
         },
       ],
       mode: "oss",
+      // raft_index of the synchronous /api/v1/records write — pass as
+      // { minIndex } on a subsequent read for read-your-writes consistency.
+      raftIndex: data.raft_index ?? 0,
     };
+  }
+
+  /**
+   * Build the shared query-param map for the manifest endpoints.
+   *
+   * Junior Tip [contract]: both `GET /api/v1/manifest` and
+   * `GET /api/v1/chats/{uuid}/manifest` accept the same `q`/`limit`/`offset`/
+   * `as_of`/`since`/`until` query params. The keyword is sent as `q` (the only
+   * key the session endpoint reads; the global endpoint also takes `query` but
+   * `q` wins there too). `asOf` maps to the server key `as_of`. Centralised here
+   * so the two public methods stay byte-identical and DRY.
+   */
+  private buildManifestParams(options?: {
+    q?: string;
+    limit?: number;
+    offset?: number;
+    asOf?: string;
+    since?: string;
+    until?: string;
+  }): Record<string, string> {
+    const params: Record<string, string> = {};
+    if (options?.q) params.q = options.q;
+    if (options?.limit !== undefined) params.limit = String(options.limit);
+    if (options?.offset !== undefined) params.offset = String(options.offset);
+    if (options?.asOf) params.as_of = options.asOf;
+    if (options?.since) params.since = options.since;
+    if (options?.until) params.until = options.until;
+    return params;
   }
 
   /**

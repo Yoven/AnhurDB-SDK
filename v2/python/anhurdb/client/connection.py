@@ -40,6 +40,21 @@ from .exceptions import (
 # Prevents memory exhaustion from malicious or misconfigured servers.
 _MAX_RESPONSE_SIZE = 100 * 1024 * 1024
 
+# Request header that opts a single read into read-your-writes (RYW)
+# consistency: "do not serve this read until this node's local applied Raft
+# index for the tenant has reached N". The value is the ``raft_index`` a caller
+# received from its own prior write. The AnhurDB server's MinIndexBarrier
+# middleware blocks the read until the node has replicated up to that index.
+#
+# Junior Tip [parity with Go/TS SDKs, 2026-06-17]: this is an HTTP request
+# HEADER (verified against server/middleware/min_index.go), not a query
+# parameter or body field. Reads WITHOUT it keep their default eventually-
+# consistent, load-balanced behaviour at zero cost — only the caller that
+# actually needs RYW (e.g. an ACK-first pipeline agent reading its own
+# just-written record) sets it. The Go SDK calls the same header
+# ``X-Anhur-Min-Index`` via WithMinIndex; the TS SDK via ``{ minIndex }``.
+_HEADER_MIN_INDEX = "X-Anhur-Min-Index"
+
 # Regex for validating header values — rejects CRLF injection attempts.
 _HEADER_SAFE = re.compile(r"^[\x20-\x7E]+$")
 
@@ -203,37 +218,56 @@ class HTTPConnection:
         path: str,
         params: Optional[Dict[str, str]] = None,
         raw_text: bool = False,
+        min_index: Optional[int] = None,
     ) -> Any:
         """
         Send a GET request.
 
         Args:
-            path:     API path (e.g. ``/api/v1/manifest``).
-            params:   Optional query-string parameters.
-            raw_text: When True, a non-JSON body is returned as the decoded
-                      string instead of being wrapped in ``{"message": ...}``.
-                      Used by ``read_content`` for plain-text records.
+            path:      API path (e.g. ``/api/v1/manifest``).
+            params:    Optional query-string parameters.
+            raw_text:  When True, a non-JSON body is returned as the decoded
+                       string instead of being wrapped in ``{"message": ...}``.
+                       Used by ``read_content`` for plain-text records.
+            min_index: Optional read-your-writes barrier. When set to a positive
+                       Raft index (the ``raft_index`` from a prior write), the
+                       ``X-Anhur-Min-Index`` header is sent so the server blocks
+                       this read until the node has applied that index. ``None``
+                       or ``0`` keeps the default eventually-consistent read.
 
         Returns:
             Parsed JSON response body, or the raw string when ``raw_text`` is
             set and the body is not JSON.
         """
-        return await self._request("GET", path, params=params, raw_text=raw_text)
+        return await self._request(
+            "GET", path, params=params, raw_text=raw_text, min_index=min_index
+        )
 
-    async def post(self, path: str, json_data: Any = None) -> Any:
+    async def post(
+        self,
+        path: str,
+        json_data: Any = None,
+        min_index: Optional[int] = None,
+    ) -> Any:
         """
         Send a POST request with a JSON body.
 
         Args:
             path:      API path (e.g. ``/api/v1/records``).
             json_data: Request body (dict or Pydantic-serialisable object).
+            min_index: Optional read-your-writes barrier for READ-shaped POST
+                       endpoints (global search, graph walk, batch-content). The
+                       server's MinIndexBarrier middleware wraps the whole API,
+                       so it honours ``X-Anhur-Min-Index`` on POST reads too.
+                       Plain writes leave this ``None`` (they PRODUCE the index,
+                       not consume one).
 
         Returns:
             Parsed JSON response body.
         """
         if self.mode == "mcp" and path in self._MCP_TOOL_MAP:
             return await self._mcp_tunnel(path, json_data or {})
-        return await self._request("POST", path, body=json_data)
+        return await self._request("POST", path, body=json_data, min_index=min_index)
 
     async def patch(self, path: str, json_data: Any = None) -> Any:
         """
@@ -357,6 +391,7 @@ class HTTPConnection:
         body: Any = None,
         params: Optional[Dict[str, str]] = None,
         raw_text: bool = False,
+        min_index: Optional[int] = None,
     ) -> Any:
         """
         Execute an HTTP request and return parsed JSON.
@@ -373,8 +408,12 @@ class HTTPConnection:
           - Redirects are disabled (header leak protection).
 
         Args:
-            raw_text: When True, a non-JSON 2xx body is returned as the decoded
-                      string rather than wrapped in ``{"message": ...}``.
+            raw_text:  When True, a non-JSON 2xx body is returned as the decoded
+                       string rather than wrapped in ``{"message": ...}``.
+            min_index: When a positive int, adds the ``X-Anhur-Min-Index`` read
+                       barrier header (read-your-writes). ``None`` or ``0``
+                       omits it, preserving the default eventually-consistent,
+                       load-balanced read.
 
         Raises:
             AnhurAuthError: On 401/403.
@@ -394,6 +433,14 @@ class HTTPConnection:
         if params:
             url += "?" + urlencode(params)
 
+        # Per-request headers: only the RYW barrier is set here; auth/tenant
+        # headers live on the session. aiohttp merges these over the session
+        # defaults. We render the index in base-10 to match the server's
+        # strconv.ParseUint decode. ``min_index`` falsy (None/0) → header off.
+        request_headers: Optional[Dict[str, str]] = None
+        if min_index:
+            request_headers = {_HEADER_MIN_INDEX: str(min_index)}
+
         retryable = method.upper() in _RETRYABLE_METHODS
 
         last_transient_error: Optional[AnhurError] = None
@@ -403,6 +450,7 @@ class HTTPConnection:
                     method,
                     url,
                     json=body,
+                    headers=request_headers,
                     allow_redirects=False,
                 ) as response:
                     # SECURITY: Cap response size to prevent memory exhaustion.

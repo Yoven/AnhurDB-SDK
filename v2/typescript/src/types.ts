@@ -115,6 +115,37 @@ export interface AddResult {
   records: AddRecordSummary[];
   /** Whether the cloud ingest or OSS fallback was used. */
   mode: "cloud" | "oss";
+  /**
+   * Raft log index at which this write was applied, reported by the server in
+   * the write response (`raft_index`). Enables read-your-writes: pass it as
+   * `{ minIndex }` (see {@link ReadOptions}) on a subsequent read and the
+   * server blocks that read until the contacted node has replicated up to this
+   * index, so the just-written record is visible even on a lagging follower.
+   *
+   * Junior Tip [RYW, 2026-06-17]: 0 (or undefined) when the server did not
+   * report one — e.g. the async cloud `/api/v1/ingest` path or an older
+   * server. A 0 passed as `minIndex` is treated as "no barrier", so threading
+   * it through is always safe. Mirrors Go `AddResult.RaftIndex` and the Python
+   * `add()` result's `raft_index`.
+   */
+  raftIndex?: number;
+}
+
+/**
+ * Per-call read options shared by every read method. Today it carries only the
+ * optional read-your-writes barrier, but using an options object (rather than a
+ * positional parameter) keeps the read API extensible without future breaking
+ * changes — the idiomatic TypeScript shape, matching the Go SDK's
+ * `WithMinIndex` option and the Python SDK's `min_index=` keyword.
+ */
+export interface ReadOptions {
+  /**
+   * Read-your-writes barrier: the `raftIndex` returned by a prior write. When
+   * set to a positive value, the read blocks until the contacted node has
+   * applied that Raft index for the tenant. Omit / 0 → default eventually-
+   * consistent, load-balanced read.
+   */
+  minIndex?: number;
 }
 
 // ── search() ─────────────────────────────────────────────────
@@ -154,7 +185,16 @@ export interface ProfileResult {
 
 // ── Extended Memory types ────────────────────────────────────
 
-/** A full record as returned by the AnhurDB API. */
+/**
+ * A full record as returned by the AnhurDB API.
+ *
+ * Junior Tip [contract, verified against model.Record JSON tags]: these are the
+ * exact JSON keys the server serialises (internal fields are `json:"-"` and
+ * never appear). The optional fields are omitempty server-side: `content` only
+ * appears on history endpoints; `superseded_by`/`valid_from`/`valid_until`
+ * only when set; `raft_index` only on write responses. Kept optional so the one
+ * interface can model every read endpoint (search/query/manifest/list_chat).
+ */
 export interface MemoryRecord {
   id: number;
   uuid: string;
@@ -165,6 +205,19 @@ export interface MemoryRecord {
   score: number;
   created_at: string;
   updated_at: string;
+  /** Raw JSON-as-string metadata envelope (e.g. `{"container_tag":"..."}`). */
+  metadata?: string;
+  related_ids?: number[];
+  main_ids?: number[];
+  consolidated?: boolean;
+  archived?: boolean;
+  /** Present only on history endpoints (the .gz body); omitted elsewhere. */
+  content?: string;
+  superseded_by?: number;
+  valid_from?: string;
+  valid_until?: string;
+  /** Raft log index; present only on write responses. */
+  raft_index?: number;
 }
 
 /** Result of a graph walk starting from a given record. */
@@ -297,7 +350,7 @@ export interface IngestPayload {
   metadata?: string;
 }
 
-/** Payload sent to POST /api/v1/records (OSS fallback). */
+/** Payload sent to POST /api/v1/records (OSS fallback + full-fidelity create). */
 export interface RecordPayload {
   uuid: string;
   type: string;
@@ -314,14 +367,274 @@ export interface RecordPayload {
   content: string;
   consolidated: boolean;
   status: string;
+  /**
+   * RFC3339 UTC start of the temporal validity window. Omitted when unset.
+   * Junior Tip [full-fidelity create, 2026-06-18]: surfaced so `create()` can
+   * persist a bitemporal window verbatim, matching Go/Python `create`.
+   */
+  valid_from?: string;
+  /** RFC3339 UTC end of the temporal validity window. Omitted when unset. */
+  valid_until?: string;
 }
 
 /** Payload sent to POST /api/v1/search/global (cross-session search). */
 export interface SearchPayload {
-  query: string;
+  // Junior Tip [no phantom fields, 2026-06-18]: the global-search handler reads
+  // ONLY `text` (json:"text", server handler/record_search.go) — a `query` key
+  // was being sent alongside and silently ignored. Removed so the wire payload
+  // is exactly what the handler consumes, matching Go/Python.
   text: string;
   limit: number;
   type_filter?: string;
+}
+
+/**
+ * Payload sent to POST /api/v1/search (session-scoped hybrid search).
+ *
+ * Junior Tip [contract, verified against server/handler/record_search.go]: the
+ * session Search handler decodes ONLY into model.SearchRequest — EITHER `text`
+ * (FTS5) OR `vector` (base64 BSQ) is required, else HTTP 400. There is NO
+ * `mode` field (the vector/text/hybrid mode is implicit and json.Decode
+ * silently drops unknown keys). `uuid` scopes the search to a single chat; an
+ * empty uuid is tenant-wide. Temporal `as_of`/`since`/`until` are RFC3339 UTC
+ * and `as_of` is mutually exclusive with since/until. All three SDKs must send
+ * these exact field names.
+ */
+export interface SearchSessionPayload {
+  uuid?: string;
+  text?: string;
+  vector?: string;
+  type_filter?: string;
+  limit?: number;
+  as_of?: string;
+  since?: string;
+  until?: string;
+}
+
+// ── query() — AST query engine ───────────────────────────────
+
+/**
+ * Comparison operators supported by the AST query engine.
+ *
+ * Junior Tip [contract, verified against server/handler/record_query.go]: the
+ * server implements EXACTLY these six operators. `$neq`/`$nin`/`$like` were
+ * deliberately omitted — the server silently ignores them, so exposing them
+ * would be a silent-loss bug. `$in` takes an array value; the rest take a
+ * scalar. Mirrors the Python QueryBuilder `_OP_MAP`.
+ */
+export type QueryOperator = "$eq" | "$gt" | "$gte" | "$lt" | "$lte" | "$in";
+
+/**
+ * A single column's filter condition: a map of operator → value.
+ *
+ * Example: `{ "$gt": 0.8 }` or `{ "$in": ["risk", "decision"] }`.
+ */
+export type QueryFilterCondition = Partial<Record<QueryOperator, unknown>>;
+
+/**
+ * One sort clause for the AST query. `field` MUST be in the server column
+ * whitelist (else HTTP 400 'invalid sort field'); `order` falls back to DESC
+ * when absent or invalid.
+ */
+export interface QuerySortClause {
+  field: string;
+  order: "asc" | "desc";
+}
+
+/**
+ * Pagination block of the AST query. `limit` defaults to 50 and is hard-capped
+ * at 1000 server-side; `offset` defaults to 0 and must be >= 0.
+ */
+export interface QueryPagination {
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * The compiled JSON Abstract Syntax Tree sent flat as the body of
+ * POST /api/v1/query.
+ *
+ * Junior Tip [contract, verified against server/handler/record_query.go]: the
+ * server deserialises this directly into its `AstQuery` struct, so the fields
+ * are sent FLAT at the top level — NOT wrapped in `{"query": ...}` (mirrors the
+ * Python QueryExecutor note). `select` is parsed but ignored (the SQL SELECT
+ * list is fixed). Filter/sort column names are whitelist-validated server-side.
+ */
+export interface AstQuery {
+  filters?: Record<string, QueryFilterCondition>;
+  sort?: QuerySortClause[];
+  pagination?: QueryPagination;
+  /** Parsed but ignored by the server; included for forward-compat. */
+  select?: string[];
+}
+
+/**
+ * Response from POST /api/v1/query.
+ *
+ * Junior Tip [contract]: `records` is a FLAT array of model.Record (NOT wrapped
+ * in `{record, similarity}` like /search). An empty result set serialises as
+ * `records: null` with `count: 0`, so callers must default to `[]`.
+ */
+export interface QueryResult {
+  records: MemoryRecord[];
+  count: number;
+}
+
+// ── manifest / list_chat / count_by_type ─────────────────────
+
+/**
+ * Paginated manifest envelope returned by GET /api/v1/manifest and
+ * GET /api/v1/chats/{uuid}/manifest.
+ *
+ * Junior Tip [contract]: `has_more = (len(records) == limit)` is a server-side
+ * heuristic that can false-positive on an exactly-full last page — page until
+ * an empty/short page to be certain, do not trust a single `has_more: true`.
+ */
+export interface ManifestResult {
+  records: MemoryRecord[];
+  count: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+/**
+ * Envelope returned by GET /api/v1/chats/{uuid} (list_chat).
+ *
+ * Junior Tip [contract]: unlike the manifest endpoints this has NO
+ * limit/offset/has_more — the entire matching set for the session is returned.
+ * `content` is omitted (metadata only, not the .gz body).
+ */
+export interface ListChatResult {
+  records: MemoryRecord[];
+  count: number;
+}
+
+/** Options for `Memory.manifestGlobal()`. */
+export interface ManifestGlobalOptions {
+  /** Keyword filter (FTS5). Sent as the `q` query param. */
+  q?: string;
+  /** Max records (default 100, server-capped at 1000). */
+  limit?: number;
+  /** Pagination offset (default 0). Ignored when `q` is set. */
+  offset?: number;
+  /** RFC3339 UTC snapshot instant. Mutually exclusive with since/until. */
+  asOf?: string;
+  /** RFC3339 UTC lower bound (created_at >= since). */
+  since?: string;
+  /** RFC3339 UTC upper bound (created_at <= until). */
+  until?: string;
+}
+
+/** Options for `Memory.manifestSession()`. */
+export interface ManifestSessionOptions {
+  /** Keyword filter (FTS5) scoped to the session. Sent as `q`. */
+  q?: string;
+  /** Max records (default 500, server-capped at 2000). */
+  limit?: number;
+  /** Pagination offset (default 0). */
+  offset?: number;
+  /** RFC3339 UTC snapshot instant. Mutually exclusive with since/until. */
+  asOf?: string;
+  /** RFC3339 UTC lower bound (created_at >= since). */
+  since?: string;
+  /** RFC3339 UTC upper bound (created_at <= until). */
+  until?: string;
+}
+
+/** Options for `Memory.listChat()`. */
+export interface ListChatOptions {
+  /**
+   * Tri-state consolidation filter. `true` returns only consolidated records;
+   * `false` returns only non-consolidated; omitted returns all.
+   */
+  consolidated?: boolean;
+  /** Exact status filter (e.g. "saved", "processing", "failed"). */
+  status?: string;
+}
+
+// ── get_grounding ────────────────────────────────────────────
+
+/** The target record of a grounding lookup. */
+export interface GroundingTarget {
+  id: number;
+  type: string;
+  summary: string;
+  uuid: string;
+}
+
+/**
+ * An anchor (source episodic record) discovered during grounding BFS.
+ *
+ * Junior Tip [contract, verified against server/handler/record_grounding.go]:
+ * `content` is omitempty and holds ONLY whitelisted keys
+ * ("user"/"assistant"/"full_text"); it is null/absent when the .gz is missing
+ * or unparseable. `session_position` is omitempty (absent when unknown).
+ */
+export interface GroundingAnchor {
+  id: number;
+  type: string;
+  uuid: string;
+  summary: string;
+  content?: Record<string, string>;
+  hops_from_target: number;
+  session_position?: number;
+}
+
+/** A consolidation node discovered during grounding BFS. */
+export interface GroundingConsolidation {
+  id: number;
+  uuid: string;
+  summary: string;
+  hops_from_target: number;
+}
+
+/**
+ * Response from GET /api/v1/records/{id}/grounding.
+ *
+ * Junior Tip [contract]: `anchors` and `consolidations` are ALWAYS present
+ * arrays (may be empty []). `found_count = len(anchors) + len(consolidations)`.
+ * The cap flags are omitempty and use the JSON keys `anchors_capped` /
+ * `consolidations_capped`.
+ */
+export interface GroundingResult {
+  target: GroundingTarget;
+  anchors: GroundingAnchor[];
+  consolidations: GroundingConsolidation[];
+  depth_used: number;
+  max_depth: number;
+  found_count: number;
+  anchors_capped?: boolean;
+  consolidations_capped?: boolean;
+}
+
+// ── create() full-fidelity ───────────────────────────────────
+
+/**
+ * Options for `Memory.create()` — the full-fidelity record-create surface.
+ *
+ * Junior Tip [SDK parity, 2026-06-18]: `create()` writes verbatim to
+ * POST /api/v1/records (NOT the ingest pipeline), so every field is persisted
+ * exactly as supplied — unlike `add()`, whose cloud-ingest path owns its own
+ * type/score. Mirrors the Go `Create` opts (type/score/related_ids/valid_from)
+ * and the Python `create(req)`. All optional; `type` defaults to "episodic"
+ * and `score` to 5, matching the other two SDKs.
+ */
+export interface CreateOptions {
+  /** Session UUID to place the record under. Defaults to the current session. */
+  sessionUuid?: string;
+  /** Memory type (default "episodic"). Written verbatim. */
+  type?: MemoryType;
+  /** Importance rating 1-10 (default 5). Written verbatim. */
+  score?: number;
+  /** Parent/sibling record IDs to attach as `related_ids`. */
+  relatedIds?: number[];
+  /** RFC3339 UTC start of the record's validity window (`valid_from`). */
+  validFrom?: string;
+  /** RFC3339 UTC end of the record's validity window (`valid_until`). */
+  validUntil?: string;
+  /** Caller-supplied metadata, merged under the canonical container_tag. */
+  metadata?: Record<string, unknown>;
 }
 
 // ── Error types ──────────────────────────────────────────────

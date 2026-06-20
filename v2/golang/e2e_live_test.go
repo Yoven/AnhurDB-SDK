@@ -20,10 +20,11 @@ import (
 	"github.com/anhurdb/sdk-go/v2/models"
 )
 
-const (
-	liveURL    = "http://localhost:8000"
-	liveAPIKey = "019c9f5b-d3cb-74af-9f01-5b761aaf7245"
-)
+const liveURL = "http://localhost:8000"
+
+// liveAPIKey is read from the environment — never hardcode the master key in a
+// tracked test file. Export ANHUR_API_KEY before running this live e2e test.
+var liveAPIKey = os.Getenv("ANHUR_API_KEY")
 
 // step logs a PASS/FAIL line in a grep-friendly format.
 func step(testHandle *testing.T, operation string, opErr error, detail string) {

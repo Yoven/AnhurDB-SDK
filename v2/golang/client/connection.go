@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,24 @@ import (
 // maxResponseSize is the maximum response body size (100 MB).
 // Prevents memory exhaustion from malicious or misconfigured servers.
 const maxResponseSize = 100 * 1024 * 1024
+
+// headerMinIndex is the request header that opts a single read into
+// read-your-writes (RYW) consistency: "do not serve this read until the
+// node's local applied Raft index for the tenant has reached N". The value
+// is the raft_index a caller received from its own prior write
+// (AddResult.RaftIndex). The server's MinIndexBarrier middleware blocks the
+// read until the local node has replicated up to that index, then serves it.
+//
+// Junior Tip [why a header, not a query param — verified against
+// server/middleware/min_index.go, 2026-06-17]: the AnhurDB server reads
+// X-Anhur-Min-Index from the HTTP request header (and the equivalent
+// x-anhur-min-index gRPC metadata key on the gRPC handlers). It is NOT a
+// query parameter. Sending it any other way is a silent no-op — the read
+// stays eventually consistent and the just-written record can be missed on a
+// lagging follower. Reads WITHOUT this header keep their load-balanced,
+// eventually-consistent behaviour (zero overhead), so only the caller that
+// actually needs RYW pays for it.
+const headerMinIndex = "X-Anhur-Min-Index"
 
 // HTTPConnection manages network requests to AnhurDB using pure REST.
 //
@@ -90,7 +109,13 @@ func NewConnection(baseURL, apiKey string, timeout time.Duration) *HTTPConnectio
 //
 // X-API-Key is the primary auth mechanism. X-Tenant-ID is only set
 // when explicitly configured (multi-tenant deployments).
-func (c *HTTPConnection) setHeaders(req *http.Request) {
+//
+// minIndex, when greater than zero, adds the X-Anhur-Min-Index read-barrier
+// header (see headerMinIndex). A value of 0 means "not requested" and leaves
+// the header off entirely, preserving the default eventually-consistent,
+// load-balanced read. The value is rendered in base-10 to match the
+// strconv.ParseUint the server uses to decode it.
+func (c *HTTPConnection) setHeaders(req *http.Request, minIndex uint64) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", c.APIKey)
 	req.Header.Set("User-Agent", "AnhurSDK-Golang/2.1")
@@ -99,6 +124,9 @@ func (c *HTTPConnection) setHeaders(req *http.Request) {
 		if err := validateHeaderValue(c.TenantID, "TenantID"); err == nil {
 			req.Header.Set("X-Tenant-ID", c.TenantID)
 		}
+	}
+	if minIndex > 0 {
+		req.Header.Set(headerMinIndex, strconv.FormatUint(minIndex, 10))
 	}
 }
 
@@ -153,7 +181,12 @@ func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
 }
 
 // Get sends a GET request to the given path with optional query parameters.
-func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values) ([]byte, error) {
+//
+// minIndex, when greater than zero, sets the X-Anhur-Min-Index read-barrier
+// header so the server blocks until the node has applied that Raft index for
+// the tenant (read-your-writes). Pass 0 for the default eventually-consistent
+// read. See headerMinIndex and the WithMinIndex read option.
+func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values, minIndex uint64) ([]byte, error) {
 	fullURL := c.BaseURL + path
 	if len(params) > 0 {
 		fullURL += "?" + params.Encode()
@@ -163,7 +196,7 @@ func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values
 	if err != nil {
 		return nil, fmt.Errorf("creating GET request: %w", err)
 	}
-	c.setHeaders(req)
+	c.setHeaders(req, minIndex)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -174,7 +207,32 @@ func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values
 }
 
 // Post sends a POST request with a JSON-encoded body.
+//
+// This is the WRITE entry point: it never sets the min-index barrier header,
+// because a write PRODUCES the raft_index (returned in the response body)
+// rather than consuming one. Read-shaped POST endpoints (global search, graph
+// walk) use PostRead instead so they can opt into read-your-writes.
 func (c *HTTPConnection) Post(ctx context.Context, path string, body interface{}) ([]byte, error) {
+	return c.post(ctx, path, body, 0)
+}
+
+// PostRead sends a POST request for a READ-shaped endpoint (e.g.
+// /api/v1/search/global, /api/v1/walk) with an optional X-Anhur-Min-Index
+// read barrier. minIndex 0 leaves the header off (default eventually-
+// consistent read); a non-zero value blocks the read until the node has
+// applied that Raft index for the tenant.
+//
+// Junior Tip [why a separate method, verified against server/app.go:383]: the
+// server's MinIndexBarrier middleware wraps the WHOLE apiMux, so it honours
+// the header on POST routes too (search/walk are reads behind POST). Keeping
+// this distinct from Post means write call sites can never accidentally send
+// a barrier, while POST-backed reads gain the same RYW opt-in as GET reads.
+func (c *HTTPConnection) PostRead(ctx context.Context, path string, body interface{}, minIndex uint64) ([]byte, error) {
+	return c.post(ctx, path, body, minIndex)
+}
+
+// post is the shared POST implementation. minIndex 0 means "no RYW barrier".
+func (c *HTTPConnection) post(ctx context.Context, path string, body interface{}, minIndex uint64) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		jsonBytes, err := json.Marshal(body)
@@ -188,7 +246,7 @@ func (c *HTTPConnection) Post(ctx context.Context, path string, body interface{}
 	if err != nil {
 		return nil, fmt.Errorf("creating POST request: %w", err)
 	}
-	c.setHeaders(req)
+	c.setHeaders(req, minIndex)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -213,7 +271,8 @@ func (c *HTTPConnection) Patch(ctx context.Context, path string, body interface{
 	if err != nil {
 		return nil, fmt.Errorf("creating PATCH request: %w", err)
 	}
-	c.setHeaders(req)
+	// PATCH is a write — it produces a raft_index, not consumes one. Header off.
+	c.setHeaders(req, 0)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -229,7 +288,8 @@ func (c *HTTPConnection) Delete(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("creating DELETE request: %w", err)
 	}
-	c.setHeaders(req)
+	// DELETE is a write — header off.
+	c.setHeaders(req, 0)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {

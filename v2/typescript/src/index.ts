@@ -29,6 +29,7 @@
 
 export { Memory } from "./memory.js";
 export { HttpClient } from "./client.js";
+export { QueryBuilder } from "./query.js";
 export type {
   // Constructor
   MemoryOptions,
@@ -38,14 +39,35 @@ export type {
   AddOptions,
   AddResult,
   AddRecordSummary,
+  CreateOptions,
   SearchOptions,
   SearchResult,
   ProfileResult,
+  // Read-your-writes (per-call read barrier)
+  ReadOptions,
   // Extended
   MemoryRecord,
   WalkResult,
   ContextResult,
   SessionStats,
+  // AST query engine
+  AstQuery,
+  QueryOperator,
+  QueryFilterCondition,
+  QuerySortClause,
+  QueryPagination,
+  QueryResult,
+  // Manifest / list_chat / count_by_type
+  ManifestResult,
+  ManifestGlobalOptions,
+  ManifestSessionOptions,
+  ListChatResult,
+  ListChatOptions,
+  // Grounding
+  GroundingResult,
+  GroundingTarget,
+  GroundingAnchor,
+  GroundingConsolidation,
   // Entity knowledge graph
   EntityRecord,
   EntityEdge,

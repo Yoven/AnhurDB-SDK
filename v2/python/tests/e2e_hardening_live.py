@@ -3,7 +3,7 @@ Live e2e proof for the 2026-06 SDK hardening fixes (Python).
 
 Run against the live AnhurDB at http://localhost:8000:
 
-    ANHUR_API_KEY=019c9f5b-d3cb-74af-9f01-5b761aaf7245 \
+    ANHUR_API_KEY=$YOUR_MASTER_KEY \
         /tmp/anhur_sdk_venv/bin/python tests/e2e_hardening_live.py
 
 Proves, with real DB readbacks:
@@ -24,7 +24,8 @@ import sys
 from anhurdb import Memory, AnhurClient, MemoryType
 
 
-API_KEY = os.environ.get("ANHUR_API_KEY", "019c9f5b-d3cb-74af-9f01-5b761aaf7245")
+# Read the master key from the env — never hardcode it in a tracked test file.
+API_KEY = os.environ.get("ANHUR_API_KEY", "")
 BASE_URL = os.environ.get("ANHUR_URL", "http://localhost:8000")
 
 

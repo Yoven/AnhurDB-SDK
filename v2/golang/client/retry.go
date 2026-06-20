@@ -83,6 +83,26 @@ func messageMatchesTransientMarker(message string) bool {
 	return false
 }
 
+// isEpisodicAnchorError reports whether err is specifically the server's "no
+// episodic anchor in this session yet" 422 — the ONE write rejection the SDK
+// self-heals by seeding an episodic anchor and retrying (see
+// postRecordSeedingAnchor). It is narrower than isTransientWriteError, which also
+// matches not_leader; here we must NOT seed for a leadership flap.
+//
+// Junior Tip [anchor-seed parity, 2026-06-18]: matched on message text because
+// this 422 shares its status with permanent validation errors (bad enum/missing
+// field) that must surface to the caller, not be papered over with a seed+retry.
+func isEpisodicAnchorError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return strings.Contains(strings.ToLower(apiErr.Body), "without an episodic anchor")
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "without an episodic anchor")
+}
+
 // withWriteRetry runs the supplied idempotent write operation, retrying ONLY on
 // transient cluster errors with exponential backoff. It is generic over the
 // result type so every write path (Add, and any future create) can share one

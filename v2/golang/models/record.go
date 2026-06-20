@@ -29,9 +29,15 @@ type Record struct {
 	UUID string     `json:"uuid"`
 	Type MemoryType `json:"type"`
 
-	// Graph edges (JSON arrays in the database, hence the alias).
-	RelatedIDs []int `json:"related_json,omitempty"`
-	MainIDs    []int `json:"main_json,omitempty"`
+	// Graph edges. Junior Tip [read-tag fix, 2026-06-18]: the server serializes
+	// these as related_ids / main_ids on every READ response (search, manifest,
+	// query, chats). The tags previously read related_json / main_json — which the
+	// server never emits on reads — so RelatedIDs/MainIDs silently decoded to nil
+	// and the graph edges were dropped on the new Query/ListChat/Manifest read
+	// paths. The SDK never marshals Record for writes (verified), so correcting
+	// the read tags is safe and stops the silent edge loss.
+	RelatedIDs []int `json:"related_ids,omitempty"`
+	MainIDs    []int `json:"main_ids,omitempty"`
 
 	// Consolidation pointers.
 	ConsolidateID int          `json:"consolidate_id"`

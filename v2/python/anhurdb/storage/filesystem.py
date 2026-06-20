@@ -180,7 +180,23 @@ class FileStorage:
 
         # Validate record_id is numeric to prevent injection in URL.
         url = f"{api_url.rstrip('/')}/api/v1/records/{int(record_id)}/content"
-        resp = requests.get(url, headers=headers, timeout=30)
+        # Junior Tip [security]: allow_redirects=False stops requests from
+        # transparently following a 3xx Location and RE-SENDING our headers —
+        # including the X-API-Key credential — to a possibly different
+        # (attacker-controlled) origin. A redirect on a content endpoint is not
+        # expected, so we fail LOUD instead of silently chasing it. This matches
+        # the Go SDK (CheckRedirect -> ErrUseLastResponse) and the TypeScript
+        # SDK (redirect: "error"): no SDK follows redirects, so credentials can
+        # never leak cross-origin.
+        resp = requests.get(
+            url, headers=headers, timeout=30, allow_redirects=False
+        )
+        if resp.is_redirect or 300 <= resp.status_code < 400:
+            raise FileNotFoundError(
+                f"Record not found locally and API fallback returned a "
+                f"redirect (HTTP {resp.status_code}); redirects are refused to "
+                f"prevent the X-API-Key credential leaking cross-origin"
+            )
         if not resp.ok:
             raise FileNotFoundError(
                 f"Record not found locally and API fallback returned "

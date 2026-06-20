@@ -228,10 +228,17 @@ func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddR
 		opt(cfg)
 	}
 
-	// When the caller pins score or type, the cloud ingest worker would
-	// override them — so go straight to the synchronous records path that
-	// honours them. See the doc-comment Junior Tip above.
-	forceRecordsPath := cfg.score != nil || cfg.memType != nil
+	// When the caller pins score, type, OR metadata, the cloud ingest endpoint
+	// would silently drop them — its request struct is exactly {content,
+	// container_tag} (server handler/ingest.go) — so go straight to the
+	// synchronous records path that persists all three.
+	//
+	// Junior Tip [metadata silent-drop parity, 2026-06-18]: metadata was missing
+	// from this condition, so a metadata-only Add was routed to /ingest and the
+	// caller's metadata vanished. The Python SDK already routed metadata to
+	// /records for exactly this reason; the three SDKs now agree — any pinned
+	// score/type/metadata forces the records path.
+	forceRecordsPath := cfg.score != nil || cfg.memType != nil || len(cfg.metadata) > 0
 
 	return withWriteRetry(ctx, func() (*AddResult, error) {
 		// Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
@@ -261,13 +268,13 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 		"content":       text,
 		"container_tag": m.containerTag,
 	}
-	// Forward caller metadata only. score/type are NOT forwarded here: Add
-	// routes any score/type-pinned call to the synchronous records path
-	// (see Add's doc comment) precisely because the ingest worker overrides
-	// them. tryIngest is therefore only ever reached when score/type are unset.
-	if cfg != nil && len(cfg.metadata) > 0 {
-		payload["metadata"] = cfg.metadata
-	}
+	// Junior Tip [ingest ignores metadata, 2026-06-18]: the server's ingest
+	// request struct is exactly {content, container_tag} (handler/ingest.go), so
+	// score/type/metadata would all be silently dropped here. Add routes any
+	// pinned score/type/metadata to the synchronous records path precisely so they
+	// are NOT lost — tryIngest is therefore only reached for a plain add(text),
+	// and we deliberately forward nothing beyond content + container_tag.
+	_ = cfg // no addConfig field is honoured by the ingest endpoint
 
 	respBytes, err := m.conn.Post(ctx, "/api/v1/ingest", payload)
 	if err != nil {
@@ -298,6 +305,9 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 		Records: records,
 		Status:  "ok",
 		Mode:    "cloud",
+		// Usually 0 on the ingest path (async pipeline reports no synchronous
+		// Raft index); surfaced for parity in case the server starts returning one.
+		RaftIndex: resp.RaftIndex,
 	}, nil
 }
 
@@ -317,47 +327,15 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 // /api/v1/records as part of the public surface for application use; this
 // method is an agent-internal write path.
 func (m *Memory) CreateInSession(ctx context.Context, text string, sessionUUID string) (*AddResult, error) {
-	if m.conn == nil {
-		return nil, ErrEmptyAPIKey
-	}
-	if sessionUUID == "" {
-		return nil, fmt.Errorf("CreateInSession: sessionUUID is required")
-	}
-	summary := text
-	if len(text) > 200 {
-		summary = text[:200] + "..."
-	}
-	payload := map[string]interface{}{
-		"uuid":           sessionUUID,
-		"type":           "episodic",
-		"dimension":      0,
-		"prefix":         "",
-		"weight":         0.5,
-		"score":          5,
-		"vector":         "",
-		"related_ids":    []int{},
-		"main_ids":       []int{},
-		"consolidate_id": 0,
-		"metadata":       buildMetadataJSON(m.containerTag),
-		"summary":        summary,
-		"content":        text,
-		"consolidated":   false,
-		"status":         "saved",
-	}
-	respBytes, postErr := m.conn.Post(ctx, "/api/v1/records", payload)
-	if postErr != nil {
-		return nil, postErr
-	}
-	var resp recordCreateResponse
-	if decodeErr := json.Unmarshal(respBytes, &resp); decodeErr != nil {
-		return nil, fmt.Errorf("parsing record response: %w", decodeErr)
-	}
-	return &AddResult{
-		ID:      resp.ID,
-		Records: []RecordSummary{{ID: resp.ID, Type: "episodic", Summary: summary}},
-		Status:  "ok",
-		Mode:    "oss",
-	}, nil
+	// Junior Tip [thin wrapper over Create — 2026-06-18 parity pass]: this is now
+	// exactly Create(ctx, sessionUUID, text) with the default options (episodic /
+	// score 5 / status "saved" / no related_ids), which is byte-for-byte the
+	// payload this method built inline before. The full-fidelity logic (type /
+	// score / related_ids / valid_from / metadata) lives in Create so there is a
+	// SINGLE create code path — agents that need a non-default field call Create
+	// directly. CreateInSession stays as the named convenience the consolidation
+	// and judge agents already import.
+	return m.Create(ctx, sessionUUID, text)
 }
 
 // AppendMainIDs appends parent record IDs to the main_ids array of a single
@@ -389,7 +367,7 @@ func (m *Memory) AppendMainIDs(ctx context.Context, recordID int64, mainIDs []in
 	return patchErr
 }
 
-// UpdateConsolidateIDs sets the consolidate_id column on a batch of children
+// LinkConsolidated sets the consolidate_id column on a batch of children
 // records via PATCH /api/v1/records/consolidate-ids. Used by the judge agent
 // after a consolidated star is approved: every source record gets its
 // consolidate_id pointed at the star so subsequent queries can navigate
@@ -398,7 +376,13 @@ func (m *Memory) AppendMainIDs(ctx context.Context, recordID int64, mainIDs []in
 // Junior Tip [why batch, not per-child]: the typical session has 5-15
 // children pointing at the same star. Looping per-id would cost N Raft
 // round-trips; the batch endpoint compresses to one log entry.
-func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolidateID int64) error {
+//
+// Junior Tip [name parity 2026-06-18]: this method is the canonical name for
+// the MCP `link_consolidated` tool, aligned across Go/Python/TS. It was renamed
+// from UpdateConsolidateIDs; the old name survives as a Deprecated alias below
+// (AnhurAgents' judge still imports it) — never delete the alias, only the call
+// sites migrate over time.
+func (m *Memory) LinkConsolidated(ctx context.Context, ids []int64, consolidateID int64) error {
 	if m.conn == nil {
 		return ErrEmptyAPIKey
 	}
@@ -406,7 +390,7 @@ func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolid
 		return nil
 	}
 	if consolidateID <= 0 {
-		return fmt.Errorf("UpdateConsolidateIDs: consolidateID must be > 0")
+		return fmt.Errorf("LinkConsolidated: consolidateID must be > 0")
 	}
 	payload := map[string]interface{}{
 		"ids":            ids,
@@ -414,6 +398,15 @@ func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolid
 	}
 	_, patchErr := m.conn.Patch(ctx, "/api/v1/records/consolidate-ids", payload)
 	return patchErr
+}
+
+// UpdateConsolidateIDs is the pre-2026-06-18 name for LinkConsolidated.
+//
+// Deprecated: use LinkConsolidated. This alias forwards verbatim and is kept
+// only so existing callers (AnhurAgents' judge at cmd/judge/main.go) keep
+// compiling. New code MUST call LinkConsolidated.
+func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolidateID int64) error {
+	return m.LinkConsolidated(ctx, ids, consolidateID)
 }
 
 // createRecord stores text directly via POST /api/v1/records.
@@ -425,10 +418,7 @@ func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolid
 // Caller-supplied score/type/metadata (via AddOption) override the historical
 // defaults of score=5, type="episodic", and the bare container_tag envelope.
 func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) (*AddResult, error) {
-	summary := text
-	if len(text) > 200 {
-		summary = text[:200] + "..."
-	}
+	summary := truncateSummary(text)
 
 	// Apply defaults, then let caller overrides win. score 0 and type "" are
 	// legal explicit values, so we only override when the option was actually
@@ -451,7 +441,7 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 		"type":           recordType,
 		"dimension":      0,
 		"prefix":         "",
-		"weight":         0.5,
+		"weight":         float64(score) / 10,
 		"score":          score,
 		"vector":         "",
 		"related_ids":    []int{},
@@ -464,7 +454,7 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 		"status":         "saved",
 	}
 
-	respBytes, err := m.conn.Post(ctx, "/api/v1/records", payload)
+	respBytes, err := m.postRecordSeedingAnchor(ctx, payload, recordType)
 	if err != nil {
 		return nil, err
 	}
@@ -475,10 +465,11 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 	}
 
 	return &AddResult{
-		ID:      resp.ID,
-		Records: []RecordSummary{{ID: resp.ID, Type: recordType, Summary: summary}},
-		Status:  "ok",
-		Mode:    "oss",
+		ID:        resp.ID,
+		Records:   []RecordSummary{{ID: resp.ID, Type: recordType, Summary: summary}},
+		Status:    "ok",
+		Mode:      "oss",
+		RaftIndex: resp.RaftIndex,
 	}, nil
 }
 
@@ -486,6 +477,11 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 //
 // Uses global search (not session-scoped) so Memory finds facts across
 // ALL sessions for this user, not just the current one.
+//
+// Junior Tip [RYW]: WithMinIndex is accepted alongside the search options so a
+// caller can require its own just-written record to be visible. Search is a
+// read behind POST; PostRead carries the X-Anhur-Min-Index barrier the same
+// way Get does for GET reads (server middleware honours both — see app.go).
 func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -507,7 +503,7 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 		payload["type_filter"] = cfg.typeFilter
 	}
 
-	respBytes, err := m.conn.Post(ctx, "/api/v1/search/global", payload)
+	respBytes, err := m.conn.PostRead(ctx, "/api/v1/search/global", payload, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -539,15 +535,17 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 // If the server doesn't have a profile endpoint yet (OSS without agents),
 // it returns an empty profile rather than failing — matching the Python
 // SDK behaviour.
-func (m *Memory) Profile(ctx context.Context) (*ProfileResult, error) {
+func (m *Memory) Profile(ctx context.Context, opts ...ReadOption) (*ProfileResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	params := url.Values{}
 	params.Set("tag", m.containerTag)
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/profile", params)
+	respBytes, err := m.conn.Get(ctx, "/api/v1/profile", params, cfg.minIndex)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return &ProfileResult{
@@ -588,7 +586,7 @@ func (m *Memory) Profile(ctx context.Context) (*ProfileResult, error) {
 //
 // Hits GET /api/v1/search/type which is a simple type-based index lookup —
 // much faster than semantic search when you know the exact type you want.
-func (m *Memory) SearchByType(ctx context.Context, memType string, limit int) ([]SearchResult, error) {
+func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, opts ...ReadOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
@@ -596,11 +594,13 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int) ([
 		return nil, ErrEmptyInput
 	}
 
+	cfg := applyReadOptions(opts)
+
 	params := url.Values{}
 	params.Set("type", memType)
 	params.Set("limit", strconv.Itoa(limit))
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/search/type", params)
+	respBytes, err := m.conn.Get(ctx, "/api/v1/search/type", params, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +629,7 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int) ([
 //
 // Uses the DuckDB-backed smart search engine that ranks results by a
 // combination of text relevance and cognitive importance (score).
-func (m *Memory) SmartSearch(ctx context.Context, query string, limit int) ([]byte, error) {
+func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts ...ReadOption) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
@@ -637,28 +637,32 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, limit int) ([]by
 		return nil, ErrEmptyInput
 	}
 
+	cfg := applyReadOptions(opts)
+
 	params := url.Values{}
 	params.Set("q", query)
 	params.Set("limit", strconv.Itoa(limit))
 
-	return m.conn.Get(ctx, "/api/v1/search/smart", params)
+	return m.conn.Get(ctx, "/api/v1/search/smart", params, cfg.minIndex)
 }
 
 // Recall searches for memories using global search with a wider scope.
 // Functionally identical to Search but named "Recall" to match the MCP
-// tool set naming.
-func (m *Memory) Recall(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	return m.Search(ctx, query, WithLimit(limit))
+// tool set naming. Extra read options (e.g. WithMinIndex) are forwarded.
+func (m *Memory) Recall(ctx context.Context, query string, limit int, opts ...ReadOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, append([]ReadOption{WithLimit(limit)}, opts...)...)
 }
 
 // Walk performs a BFS graph traversal starting from a given record.
 //
 // direction:"both" means traverse both incoming and outgoing edges.
 // The server returns nodes and edges up to the specified depth.
-func (m *Memory) Walk(ctx context.Context, startID int64, depth int) (*WalkResult, error) {
+func (m *Memory) Walk(ctx context.Context, startID int64, depth int, opts ...ReadOption) (*WalkResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
+
+	cfg := applyReadOptions(opts)
 
 	payload := map[string]interface{}{
 		"seed_id":   startID,
@@ -666,7 +670,7 @@ func (m *Memory) Walk(ctx context.Context, startID int64, depth int) (*WalkResul
 		"direction": "both",
 	}
 
-	respBytes, err := m.conn.Post(ctx, "/api/v1/walk", payload)
+	respBytes, err := m.conn.PostRead(ctx, "/api/v1/walk", payload, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -681,17 +685,19 @@ func (m *Memory) Walk(ctx context.Context, startID int64, depth int) (*WalkResul
 
 // WalkSemantic performs a semantic graph walk that follows edges weighted
 // by vector similarity rather than just structural edges.
-func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int) (*WalkResult, error) {
+func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int, opts ...ReadOption) (*WalkResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
+
+	cfg := applyReadOptions(opts)
 
 	payload := map[string]interface{}{
 		"seed_id": startID,
 		"depth":   depth,
 	}
 
-	respBytes, err := m.conn.Post(ctx, "/api/v1/walk/semantic", payload)
+	respBytes, err := m.conn.PostRead(ctx, "/api/v1/walk/semantic", payload, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -707,12 +713,14 @@ func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int) (*W
 // ListSessions returns aggregate statistics for all sessions.
 //
 // The server returns {"sessions": [...]} so we unwrap the wrapper.
-func (m *Memory) ListSessions(ctx context.Context) ([]SessionStats, error) {
+func (m *Memory) ListSessions(ctx context.Context, opts ...ReadOption) ([]SessionStats, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/sessions/stats", nil)
+	cfg := applyReadOptions(opts)
+
+	respBytes, err := m.conn.Get(ctx, "/api/v1/sessions/stats", nil, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -754,13 +762,15 @@ func (m *Memory) ListSessions(ctx context.Context) ([]SessionStats, error) {
 //
 // Returns parent, child, and sibling records — useful for understanding
 // how a memory fits into the knowledge graph.
-func (m *Memory) GetContext(ctx context.Context, recordID int64) (*ContextResult, error) {
+func (m *Memory) GetContext(ctx context.Context, recordID int64, opts ...ReadOption) (*ContextResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	path := fmt.Sprintf("/api/v1/records/%d/topology", recordID)
-	respBytes, err := m.conn.Get(ctx, path, nil)
+	respBytes, err := m.conn.Get(ctx, path, nil, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -790,32 +800,42 @@ func (m *Memory) GetContext(ctx context.Context, recordID int64) (*ContextResult
 // subsequent checksum verification and extractor input. The wrapper
 // is gone; bytes round-trip verbatim. Discovered while wiring
 // the file_ingestor agent to use this method for chat-mode uploads.
-func (m *Memory) ReadContent(ctx context.Context, recordID int64) (string, error) {
+func (m *Memory) ReadContent(ctx context.Context, recordID int64, opts ...ReadOption) (string, error) {
 	if m.conn == nil {
 		return "", ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	path := fmt.Sprintf("/api/v1/records/%d/content", recordID)
-	respBytes, err := m.conn.Get(ctx, path, nil)
+	respBytes, err := m.conn.Get(ctx, path, nil, cfg.minIndex)
 	if err != nil {
 		return "", err
 	}
 	return string(respBytes), nil
 }
 
-// RecentMemories retrieves the most recent records from the manifest.
+// Recent retrieves the most recent records from the manifest.
 //
 // GET /api/v1/manifest returns records ordered by creation time
 // (newest first).
-func (m *Memory) RecentMemories(ctx context.Context, limit int) ([]models.Record, error) {
+//
+// Junior Tip [name parity 2026-06-18]: this is the canonical name for the MCP
+// `recent_memories` tool, aligned across Go/Python/TS. It was renamed from
+// RecentMemories; the old name survives as a Deprecated alias below — many
+// AnhurAgents binaries (validator, file_ingestor, recovery, pkg/db) still call
+// the old name, so the alias MUST stay until they migrate.
+func (m *Memory) Recent(ctx context.Context, limit int, opts ...ReadOption) ([]models.Record, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	params := url.Values{}
 	params.Set("limit", strconv.Itoa(limit))
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/manifest", params)
+	respBytes, err := m.conn.Get(ctx, "/api/v1/manifest", params, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -866,6 +886,15 @@ func (m *Memory) RecentMemories(ctx context.Context, limit int) ([]models.Record
 	}
 }
 
+// RecentMemories is the pre-2026-06-18 name for Recent.
+//
+// Deprecated: use Recent. This alias forwards verbatim and is kept only so the
+// many AnhurAgents call sites (validator, file_ingestor, pkg/recovery, pkg/db)
+// keep compiling. New code MUST call Recent.
+func (m *Memory) RecentMemories(ctx context.Context, limit int, opts ...ReadOption) ([]models.Record, error) {
+	return m.Recent(ctx, limit, opts...)
+}
+
 // firstJSONToken returns the first non-whitespace byte of a JSON payload, or 0
 // if the payload is empty/whitespace-only. Used to distinguish an object
 // envelope ('{') from a bare array ('[') without a speculative Unmarshal.
@@ -879,6 +908,23 @@ func firstJSONToken(raw []byte) byte {
 		}
 	}
 	return 0
+}
+
+// truncateSummary returns text capped at 200 Unicode code points (runes) with an
+// ellipsis when truncated.
+//
+// Junior Tip [codepoint-safe parity, 2026-06-18]: a byte slice text[:200] can
+// split a multibyte UTF-8 rune and emit an invalid summary for non-ASCII content.
+// Slicing []rune keeps the cut on a code-point boundary, so the three SDKs
+// (Python str[:200], TS Array.from, Go runes) truncate at the SAME point and
+// never corrupt a rune.
+func truncateSummary(text string) string {
+	const maxSummaryRunes = 200
+	runes := []rune(text)
+	if len(runes) <= maxSummaryRunes {
+		return text
+	}
+	return string(runes[:maxSummaryRunes]) + "..."
 }
 
 // Update partially updates a record by ID.
@@ -914,13 +960,16 @@ func (m *Memory) Delete(ctx context.Context, recordID int64) error {
 // BatchReadContent fetches full content for multiple records in a single
 // call (max 100). Eliminates the N+1 pattern of calling ReadContent
 // in a loop.
-func (m *Memory) BatchReadContent(ctx context.Context, ids []int64) (map[string]json.RawMessage, error) {
+func (m *Memory) BatchReadContent(ctx context.Context, ids []int64, opts ...ReadOption) (map[string]json.RawMessage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	payload := map[string]interface{}{"ids": ids}
-	respBytes, err := m.conn.Post(ctx, "/api/v1/records/batch-content", payload)
+	// Read behind POST — PostRead carries the optional X-Anhur-Min-Index barrier.
+	respBytes, err := m.conn.PostRead(ctx, "/api/v1/records/batch-content", payload, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1000,13 +1049,15 @@ func (m *Memory) UploadFile(ctx context.Context, filename, content string, sessi
 }
 
 // UploadStatus checks the processing status of a file upload.
-func (m *Memory) UploadStatus(ctx context.Context, uploadID int64) (*UploadStatusResult, error) {
+func (m *Memory) UploadStatus(ctx context.Context, uploadID int64, opts ...ReadOption) (*UploadStatusResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	path := fmt.Sprintf("/api/v1/upload/%d/status", uploadID)
-	respBytes, err := m.conn.Get(ctx, path, nil)
+	respBytes, err := m.conn.Get(ctx, path, nil, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,10 +1098,12 @@ func (m *Memory) UploadStatus(ctx context.Context, uploadID int64) (*UploadStatu
 // name" call. Even though LIKE %% would match every entity, that contract
 // could change (e.g. minimum query length added) and silently break the
 // caller. ListEntities has a hard guarantee: deterministic full-set walk.
-func (m *Memory) ListEntities(ctx context.Context, limit, offset int) (*EntitiesPage, error) {
+func (m *Memory) ListEntities(ctx context.Context, limit, offset int, opts ...ReadOption) (*EntitiesPage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
+
+	cfg := applyReadOptions(opts)
 
 	if limit <= 0 {
 		limit = 200
@@ -1066,7 +1119,7 @@ func (m *Memory) ListEntities(ctx context.Context, limit, offset int) (*Entities
 	params.Set("limit", strconv.Itoa(limit))
 	params.Set("offset", strconv.Itoa(offset))
 
-	respBytes, getErr := m.conn.Get(ctx, "/api/v1/entities/list", params)
+	respBytes, getErr := m.conn.Get(ctx, "/api/v1/entities/list", params, cfg.minIndex)
 	if getErr != nil {
 		return nil, getErr
 	}
@@ -1079,10 +1132,12 @@ func (m *Memory) ListEntities(ctx context.Context, limit, offset int) (*Entities
 }
 
 // SearchEntities searches named entities (people, organisations, concepts).
-func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, limit int) ([]Entity, error) {
+func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, limit int, opts ...ReadOption) ([]Entity, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
+
+	cfg := applyReadOptions(opts)
 
 	params := url.Values{}
 	if query != "" {
@@ -1093,7 +1148,7 @@ func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, l
 	}
 	params.Set("limit", strconv.Itoa(limit))
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/entities", params)
+	respBytes, err := m.conn.Get(ctx, "/api/v1/entities", params, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1145,16 +1200,18 @@ func (m *Memory) UpsertEntity(ctx context.Context, name, entityType, summary str
 //
 // Starting from an entity, discovers connected entities through typed
 // edges (works_at, knows, part_of, etc.).
-func (m *Memory) EntityGraph(ctx context.Context, entityID int64, depth int) (*EntityGraphResult, error) {
+func (m *Memory) EntityGraph(ctx context.Context, entityID int64, depth int, opts ...ReadOption) (*EntityGraphResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
+
+	cfg := applyReadOptions(opts)
 
 	params := url.Values{}
 	params.Set("depth", strconv.Itoa(depth))
 
 	path := fmt.Sprintf("/api/v1/entities/%d/graph", entityID)
-	respBytes, err := m.conn.Get(ctx, path, params)
+	respBytes, err := m.conn.Get(ctx, path, params, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1169,13 +1226,15 @@ func (m *Memory) EntityGraph(ctx context.Context, entityID int64, depth int) (*E
 
 // EntityTimeline returns the full temporal history of an entity's
 // relationships, including invalidated edges ordered by event time.
-func (m *Memory) EntityTimeline(ctx context.Context, entityID int64) (*EntityTimelineResult, error) {
+func (m *Memory) EntityTimeline(ctx context.Context, entityID int64, opts ...ReadOption) (*EntityTimelineResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	path := fmt.Sprintf("/api/v1/entities/%d/timeline", entityID)
-	respBytes, err := m.conn.Get(ctx, path, nil)
+	respBytes, err := m.conn.Get(ctx, path, nil, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1238,13 +1297,15 @@ func (m *Memory) LinkRecordEntity(ctx context.Context, recordID, entityID int64,
 }
 
 // GetRecordEntities returns entities linked to a specific memory record.
-func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64) ([]Entity, error) {
+func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64, opts ...ReadOption) ([]Entity, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	path := fmt.Sprintf("/api/v1/records/%d/entities", recordID)
-	respBytes, err := m.conn.Get(ctx, path, nil)
+	respBytes, err := m.conn.Get(ctx, path, nil, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1269,30 +1330,34 @@ func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64) ([]Entit
 //
 // Returns actual message content, unlike ListSessions which returns
 // metadata only.
-func (m *Memory) GetSessionHistory(ctx context.Context, sessionUUID string, limit, offset int) ([]byte, error) {
+func (m *Memory) GetSessionHistory(ctx context.Context, sessionUUID string, limit, offset int, opts ...ReadOption) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
+
+	cfg := applyReadOptions(opts)
 
 	params := url.Values{}
 	params.Set("limit", strconv.Itoa(limit))
 	params.Set("offset", strconv.Itoa(offset))
 
 	path := fmt.Sprintf("/api/v1/sessions/%s/history", sessionUUID)
-	return m.conn.Get(ctx, path, params)
+	return m.conn.Get(ctx, path, params, cfg.minIndex)
 }
 
 // GetSessionClusters returns thematic clusters within a session.
 //
 // Uses BSQ vectors and DBSCAN to identify topic groups among the
 // session's records.
-func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string) ([]byte, error) {
+func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string, opts ...ReadOption) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	cfg := applyReadOptions(opts)
+
 	path := fmt.Sprintf("/api/v1/sessions/%s/clusters", sessionUUID)
-	return m.conn.Get(ctx, path, nil)
+	return m.conn.Get(ctx, path, nil, cfg.minIndex)
 }
 
 // --------------------------------------------------------------------------
