@@ -40,6 +40,7 @@ server's middleware. ``Memory`` auto-generates session UUIDs and container tags
 from the API key hash, just like the TypeScript and Go SDKs.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -1058,25 +1059,66 @@ class Memory:
         start_id: int,
         depth: int = 3,
         *,
+        target: Optional[str] = None,
+        goal_vector: Optional[bytes] = None,
+        target_tag: Optional[str] = None,
+        max_cost: Optional[float] = None,
         min_index: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Semantic graph walk — follows edges weighted by vector similarity.
 
         Unlike regular ``walk()``, this prioritises semantically related
-        records rather than just following structural edges.
+        records rather than just following structural edges. By default the
+        server runs a plain Dijkstra traversal (edge cost ``1 − similarity``).
+
+        Passing ``target`` upgrades the walk to a goal-directed A* search that
+        is steered toward the requested goal:
+
+          - ``"semantic"``: pulls toward the ``goal_vector`` guide embedding
+            (supply raw packed bytes; the SDK base64-encodes them for the wire).
+          - ``"tag"``: pulls toward records carrying ``target_tag``.
+          - ``"recency"``: pulls toward the newest records.
+
+        Junior Tip [goal-directed, 2026-07-03]: this mirrors the locked REST
+        contract of ``POST /api/v1/walk/semantic`` (fields ``target`` /
+        ``vector`` / ``target_tag``) and the Go/TS SDKs, which use the same
+        parameter names. Omitting ``target`` sends no goal field, so the server
+        degrades to the exact prior Dijkstra behaviour — backward compatible.
 
         Args:
-            start_id:  Record ID to start from.
-            depth:     Maximum hops (default 3).
-            min_index: Optional read-your-writes barrier (see ``walk``).
+            start_id:    Record ID to start from.
+            depth:       Maximum hops (default 3). Retained for backward
+                         compatibility; the semantic walk is bounded by
+                         ``max_cost``/``max_nodes`` server-side.
+            target:      Goal mode — ``"semantic"``, ``"tag"`` or ``"recency"``.
+                         ``None`` (default) → plain Dijkstra.
+            goal_vector: Guide embedding as raw bytes, required when
+                         ``target="semantic"``; sent base64-encoded.
+            target_tag:  Entity/tag name to steer toward, required when
+                         ``target="tag"``.
+            max_cost:    Optional cost budget (server default 2.0).
+            min_index:   Optional read-your-writes barrier (see ``walk``).
 
         Returns:
             Dict with ``nodes`` and ``edges``.
         """
+        # Junior Tip [minimal body, parity]: build the base body exactly as
+        # before, then attach only the goal fields the caller actually set. An
+        # unset field is never serialized, so the server sees the identical
+        # payload it received prior to the goal-directed feature.
+        body: Dict[str, Any] = {"seed_id": start_id, "depth": depth}
+        if max_cost is not None:
+            body["max_cost"] = max_cost
+        if target is not None:
+            body["target"] = target
+        if goal_vector is not None:
+            body["vector"] = base64.b64encode(goal_vector).decode("ascii")
+        if target_tag is not None:
+            body["target_tag"] = target_tag
         return await self._connection.post(
             "/api/v1/walk/semantic",
-            {"seed_id": start_id, "depth": depth},
+            body,
             min_index=min_index,
         )
 

@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -685,6 +686,23 @@ func (m *Memory) Walk(ctx context.Context, startID int64, depth int, opts ...Rea
 
 // WalkSemantic performs a semantic graph walk that follows edges weighted
 // by vector similarity rather than just structural edges.
+//
+// With no goal options it is a plain cost-first Dijkstra over 1−similarity edge
+// cost — byte-for-byte the previous behaviour. Passing WithTarget (plus its
+// companion WithGoalVector / WithTargetTag) turns it into a goal-directed walk
+// whose nodes come back ordered by proximity to the target. WithMaxCost tunes
+// the cost budget; WithMinIndex still composes for read-your-writes.
+//
+// Junior Tip [goal-directed contract, verified against
+// server/handler/record_search_graph.go on 2026-07-03]: the server reads
+// target ∈ {semantic,tag,recency} and, for semantic, a base64 "vector"; an ""
+// / "dijkstra" target yields a nil goal (plain Dijkstra). We only add a JSON
+// key when its option was set, so an option-free call sends exactly the legacy
+// {seed_id, depth} body. NOTE: the handler struct has no Depth field, so the
+// server has always IGNORED "depth" on this route — we keep sending it purely
+// so the wire body is unchanged for existing callers; max_nodes (server default
+// 50) governs breadth. Extending depth→max_nodes would be a behaviour change,
+// so it is intentionally left out of this minimal goal-target addition.
 func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int, opts ...ReadOption) (*WalkResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -695,6 +713,22 @@ func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int, opt
 	payload := map[string]interface{}{
 		"seed_id": startID,
 		"depth":   depth,
+	}
+	// Only attach a goal key when the caller actually set it, so a bare call
+	// stays identical to the historical Dijkstra request. The server supplies
+	// max_cost=2.0 / max_nodes=50 defaults when the keys are absent.
+	if cfg.walkMaxCost > 0 {
+		payload["max_cost"] = cfg.walkMaxCost
+	}
+	if cfg.walkTarget != "" {
+		payload["target"] = cfg.walkTarget
+	}
+	if len(cfg.walkGoalVector) > 0 {
+		// The SDK owns the base64 step so callers pass raw embedding bytes.
+		payload["vector"] = base64.StdEncoding.EncodeToString(cfg.walkGoalVector)
+	}
+	if cfg.walkTargetTag != "" {
+		payload["target_tag"] = cfg.walkTargetTag
 	}
 
 	respBytes, err := m.conn.PostRead(ctx, "/api/v1/walk/semantic", payload, cfg.minIndex)

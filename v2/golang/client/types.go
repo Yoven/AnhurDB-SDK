@@ -398,6 +398,24 @@ type searchConfig struct {
 	// server blocks the read until the node has applied this Raft index for
 	// the tenant. 0 = default eventually-consistent read.
 	minIndex uint64
+	// Goal-directed semantic-walk parameters (2026-07-03). These are honoured
+	// ONLY by WalkSemantic; every other read method ignores them — the exact
+	// same shared-ReadOption pattern already used by asOf/since/until (fields
+	// meaningful only to the manifest reads). The zero value of each field means
+	// "caller did not set it": walkTarget "" and walkMaxCost 0 both omit their
+	// JSON key so the server falls through to its plain-Dijkstra default,
+	// preserving the historical behaviour of an option-free WalkSemantic call.
+	//
+	// Junior Tip [why []byte, not a base64 string, for the goal vector]: callers
+	// hold the guide embedding as raw float bytes; making them pre-encode base64
+	// would leak a wire detail into every call site and invite double-encoding
+	// bugs. The SDK owns the base64 step (WalkSemantic), matching how the Python
+	// SDK takes `goal_vector: bytes` and the TS SDK takes a `Uint8Array` —
+	// identical capability, idiomatic shape per language.
+	walkTarget     string
+	walkGoalVector []byte
+	walkTargetTag  string
+	walkMaxCost    float64
 }
 
 // applyReadOptions folds a variadic ReadOption slice into a searchConfig.
@@ -463,6 +481,74 @@ func WithSince(since string) ReadOption {
 func WithUntil(until string) ReadOption {
 	return func(cfg *searchConfig) {
 		cfg.until = until
+	}
+}
+
+// --------------------------------------------------------------------------
+// Goal-directed WalkSemantic options (2026-07-03)
+//
+// These four options steer Memory.WalkSemantic from a plain cost-first
+// Dijkstra into a goal-directed traversal that is pulled toward a target. They
+// are ReadOption values (the repo's one shared read-option type), so a caller
+// can still compose WithMinIndex for read-your-writes on the same call. Only
+// WalkSemantic reads them; passing them to any other read is an inert no-op,
+// mirroring how WithAsOf/WithSince/WithUntil are honoured only by the manifest
+// reads. Calling WalkSemantic with none of them is byte-for-byte the previous
+// behaviour (Dijkstra, server defaults max_cost=2.0 / max_nodes=50).
+//
+// Junior Tip [SDK parity — option names are the contract, 2026-07-03]: the
+// three SDKs must expose the SAME knobs under predictable names so a walk
+// issued from Go, Python or TS hits the identical REST body. The names here
+// (target / goalVector / targetTag / maxCost) map 1:1 to the Python kwargs
+// (target=, goal_vector=, target_tag=, max_cost=) and the TS options object
+// ({ target, goalVector, targetTag, maxCost }). Keep them in lockstep on any
+// future change.
+// --------------------------------------------------------------------------
+
+// WithTarget selects the goal-directed heuristic that steers a WalkSemantic
+// traversal. Accepted values match the locked REST contract:
+//
+//   - "semantic" — pull toward a caller-supplied guide embedding (pair with
+//     WithGoalVector; the server returns HTTP 400 if the vector is missing or
+//     not valid base64).
+//   - "tag"      — pull toward records carrying an entity/tag name (pair with
+//     WithTargetTag; the server returns HTTP 400 if the tag is empty).
+//   - "recency"  — pull toward the newest records (no companion option needed).
+//
+// Omitting this option (or passing "" / "dijkstra") leaves the walk as a plain
+// Dijkstra over 1−similarity edge cost, exactly as before.
+func WithTarget(target string) ReadOption {
+	return func(cfg *searchConfig) {
+		cfg.walkTarget = target
+	}
+}
+
+// WithGoalVector supplies the raw guide embedding (float bytes) that a
+// target="semantic" walk is pulled toward. The SDK base64-encodes it into the
+// request body's "vector" field, so callers pass the bytes verbatim and never
+// touch base64 themselves. Has no effect unless WithTarget("semantic") is set.
+func WithGoalVector(goalVector []byte) ReadOption {
+	return func(cfg *searchConfig) {
+		cfg.walkGoalVector = goalVector
+	}
+}
+
+// WithTargetTag supplies the entity/tag name that a target="tag" walk is pulled
+// toward. It maps to the request body's "target_tag" field. Has no effect
+// unless WithTarget("tag") is set.
+func WithTargetTag(targetTag string) ReadOption {
+	return func(cfg *searchConfig) {
+		cfg.walkTargetTag = targetTag
+	}
+}
+
+// WithMaxCost overrides the semantic-walk cost budget (the request body's
+// "max_cost"). Larger budgets explore further from the seed. A value <= 0 is
+// treated as "unset": the key is omitted and the server applies its default of
+// 2.0, so this option is safe to thread through unconditionally.
+func WithMaxCost(maxCost float64) ReadOption {
+	return func(cfg *searchConfig) {
+		cfg.walkMaxCost = maxCost
 	}
 }
 

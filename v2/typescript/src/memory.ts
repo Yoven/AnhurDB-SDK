@@ -67,6 +67,7 @@ import type {
   UpsertEntityEdgeOptions,
   UpsertEntityOptions,
   WalkResult,
+  WalkSemanticOptions,
 } from "./types.js";
 
 /** Default cloud endpoint. Self-hosted users pass `url` explicitly. */
@@ -101,6 +102,26 @@ async function deriveTag(input: string): Promise<string> {
     }
     return hash.toString(16).padStart(8, "0").slice(0, 12);
   }
+}
+
+/**
+ * Base64-encode a raw byte vector for a wire `vector` field.
+ *
+ * Junior Tip [parity / no base64 in the public API]: the AnhurDB REST contract
+ * carries quantised vectors as base64 strings (search's `vector`, walk's
+ * `vector`), but the SDK's public surface takes raw `Uint8Array` bytes so
+ * callers never hand-roll base64. This mirrors Go's
+ * `base64.StdEncoding.EncodeToString` and Python's `base64.b64encode`. `btoa`
+ * is a global in Node 18+ and every browser; each element of a `Uint8Array`
+ * is already 0-255, so `String.fromCharCode` maps it to a code unit that
+ * `btoa` round-trips byte-for-byte (no UTF-8 widening).
+ */
+function encodeVectorBase64(vector: Uint8Array): string {
+  let binary = "";
+  for (let byteIndex = 0; byteIndex < vector.length; byteIndex++) {
+    binary += String.fromCharCode(vector[byteIndex]);
+  }
+  return btoa(binary);
 }
 
 /** Format a Date as `YYYYMMDD-HHMMSS` in UTC. */
@@ -826,18 +847,52 @@ export class Memory {
    * Semantic graph walk — follows edges weighted by vector similarity
    * rather than just structural edges.
    *
-   * @param startId - The record ID to start from.
-   * @param depth   - How many hops (default 3).
+   * With no `options` this is the pre-existing pure-Dijkstra walk. Passing
+   * `options.target` turns it into a goal-directed walk: `"semantic"` steers
+   * toward `options.goalVector`, `"tag"` toward `options.targetTag`,
+   * `"recency"` toward the freshest records. See {@link WalkSemanticOptions}.
+   *
+   * Junior Tip [backward-compat, verified against POST /api/v1/walk/semantic]:
+   * the goal-directed fields are added to the body ONLY when set, so an
+   * existing caller (no `options`) sends the exact same wire shape as before
+   * and the server falls back to a plain Dijkstra traversal. `goalVector` is
+   * raw bytes and is base64-encoded into the wire `vector` field here, so
+   * base64 never leaks into the public API — matching the Go and Python SDKs.
+   *
+   * @param startId     - The record ID to start from.
+   * @param depth       - How many hops (default 3).
+   * @param readOptions - Optional read-your-writes barrier (`minIndex`).
+   * @param options     - Optional goal-directed steering (target / goalVector
+   *                      / targetTag / maxCost). Omit for a pure Dijkstra walk.
    */
   async walkSemantic(
     startId: number,
     depth?: number,
     readOptions?: ReadOptions,
+    options?: WalkSemanticOptions,
   ): Promise<WalkResult> {
-    const payload = {
+    // Base body: the unchanged pure-Dijkstra request. seed_id + depth are sent
+    // exactly as before so callers that pass no `options` are byte-for-byte
+    // backward-compatible.
+    const payload: Record<string, unknown> = {
       seed_id: startId,
       depth: depth ?? 3,
     };
+
+    // Goal-directed steering: each field is attached ONLY when explicitly set,
+    // so an absent option never appears on the wire and the server applies its
+    // own default (or pure Dijkstra when `target` is absent). Mirrors the Go
+    // and Python SDKs field-by-field: target → target, maxCost → max_cost,
+    // targetTag → target_tag, goalVector → base64 → vector.
+    if (options?.target !== undefined) payload.target = options.target;
+    if (options?.maxCost !== undefined) payload.max_cost = options.maxCost;
+    if (options?.targetTag !== undefined) {
+      payload.target_tag = options.targetTag;
+    }
+    if (options?.goalVector !== undefined) {
+      payload.vector = encodeVectorBase64(options.goalVector);
+    }
+
     return this.client.postRead<WalkResult>(
       "/api/v1/walk/semantic",
       payload,

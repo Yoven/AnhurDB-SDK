@@ -191,3 +191,73 @@ describe("Memory.readContent (rawText parity)", () => {
     }
   });
 });
+
+// ── walkSemantic() goal-directed body serialization ───────────
+// Junior Tip [contract]: POST /api/v1/walk/semantic decodes seed_id/depth plus
+// the optional goal-directed keys (target, max_cost, target_tag, vector). We
+// assert (a) backward-compat — no goal-directed keys leak when no options are
+// passed — and (b) goalVector (raw bytes) is base64-encoded into wire `vector`.
+describe("Memory.walkSemantic (goal-directed body serialization)", () => {
+  // Capture the JSON body that walkSemantic serialises onto the wire by
+  // intercepting fetch and returning a well-formed (empty) WalkResult.
+  const captureBody = async (
+    run: (mem: Memory) => Promise<unknown>,
+  ): Promise<Record<string, unknown>> => {
+    const originalFetch = globalThis.fetch;
+    let captured: Record<string, unknown> = {};
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      captured = JSON.parse(init.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({ nodes: [], edges: [], count: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      await run(mem);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    return captured;
+  };
+
+  it("omits goal-directed keys with no options (pure Dijkstra, backward-compat)", async () => {
+    const body = await captureBody((mem) => mem.walkSemantic(7, 4));
+    assert.equal(body.seed_id, 7);
+    assert.equal(body.depth, 4);
+    assert.ok(!("target" in body));
+    assert.ok(!("vector" in body));
+    assert.ok(!("target_tag" in body));
+    assert.ok(!("max_cost" in body));
+  });
+
+  it("serializes semantic target with base64-encoded goalVector + maxCost", async () => {
+    const goalVector = new Uint8Array([0, 1, 2, 253, 254, 255]);
+    const expectedVector = Buffer.from(goalVector).toString("base64");
+    const body = await captureBody((mem) =>
+      mem.walkSemantic(7, undefined, undefined, {
+        target: "semantic",
+        goalVector,
+        maxCost: 3.5,
+      }),
+    );
+    assert.equal(body.seed_id, 7);
+    assert.equal(body.target, "semantic");
+    assert.equal(body.vector, expectedVector);
+    assert.equal(body.max_cost, 3.5);
+    assert.ok(!("target_tag" in body));
+  });
+
+  it("serializes tag target with target_tag and no vector", async () => {
+    const body = await captureBody((mem) =>
+      mem.walkSemantic(9, undefined, undefined, {
+        target: "tag",
+        targetTag: "project-x",
+      }),
+    );
+    assert.equal(body.target, "tag");
+    assert.equal(body.target_tag, "project-x");
+    assert.ok(!("vector" in body));
+    assert.ok(!("max_cost" in body));
+  });
+});

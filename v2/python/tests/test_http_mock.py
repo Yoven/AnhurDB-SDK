@@ -17,6 +17,7 @@ simulates AnhurDB responses. Tests cover:
 """
 
 import asyncio
+import base64
 import json
 import unittest
 from aiohttp import web
@@ -206,6 +207,21 @@ async def handle_walk(request):
     })
 
 
+async def handle_walk_semantic(request):
+    """Simulates POST /api/v1/walk/semantic.
+
+    Records the decoded request body on the app so a test can assert the
+    goal-directed serialization (target/vector/target_tag), then returns the
+    locked response shape {"nodes","edges","count"}.
+    """
+    request.app["walk_semantic_body"] = await request.json()
+    return web.json_response({
+        "nodes": [{"id": 42, "type": "fact", "summary": "Root"}],
+        "edges": [{"source": 42, "target": 43}],
+        "count": 1,
+    })
+
+
 async def handle_topology(request):
     """Simulates GET /api/v1/records/{id}/topology."""
     return web.json_response({
@@ -230,6 +246,7 @@ def create_app_cloud():
     app.router.add_post("/api/v1/query", handle_ast_query)
     app.router.add_get("/api/v1/manifest", handle_manifest)
     app.router.add_post("/api/v1/walk", handle_walk)
+    app.router.add_post("/api/v1/walk/semantic", handle_walk_semantic)
     app.router.add_get("/api/v1/records/{id}/topology", handle_topology)
     return app
 
@@ -313,6 +330,48 @@ class TestMemoryCloudMode(AioHTTPTestCase):
             result = await mem.walk(42, depth=2)
             self.assertIn("nodes", result)
             self.assertIn("edges", result)
+
+    @unittest_run_loop
+    async def test_walk_semantic_dijkstra_backward_compat(self):
+        # Without goal args the body must be the pre-existing Dijkstra payload:
+        # only seed_id + depth, no target/vector/target_tag/max_cost.
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            result = await mem.walk_semantic(42, depth=2)
+            self.assertIn("nodes", result)
+            self.assertIn("edges", result)
+        body = self.app["walk_semantic_body"]
+        self.assertEqual(body, {"seed_id": 42, "depth": 2})
+
+    @unittest_run_loop
+    async def test_walk_semantic_goal_semantic_base64(self):
+        # target="semantic" must base64-encode goal_vector into the "vector" field.
+        url = f"http://localhost:{self.server.port}"
+        raw_vector = bytes([0, 1, 2, 253, 254, 255])
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.walk_semantic(
+                7,
+                target="semantic",
+                goal_vector=raw_vector,
+                max_cost=1.5,
+            )
+        body = self.app["walk_semantic_body"]
+        self.assertEqual(body["seed_id"], 7)
+        self.assertEqual(body["target"], "semantic")
+        self.assertEqual(body["max_cost"], 1.5)
+        self.assertEqual(body["vector"], base64.b64encode(raw_vector).decode("ascii"))
+        self.assertNotIn("target_tag", body)
+
+    @unittest_run_loop
+    async def test_walk_semantic_goal_tag(self):
+        # target="tag" must forward target_tag and omit the vector field.
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.walk_semantic(9, target="tag", target_tag="Anhur")
+        body = self.app["walk_semantic_body"]
+        self.assertEqual(body["target"], "tag")
+        self.assertEqual(body["target_tag"], "Anhur")
+        self.assertNotIn("vector", body)
 
     @unittest_run_loop
     async def test_get_context(self):
