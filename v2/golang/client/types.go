@@ -600,20 +600,16 @@ type searchResponse struct {
 	Results []SearchResult `json:"results"`
 }
 
-// manifestResponse is the wire format for GET /api/v1/manifest.
+// manifestResponse is the object envelope for GET /api/v1/recent
+// ({"records":[...],"count":N}).
+//
+// Junior Tip [recent full-record parity, 2026-07-03]: Records is []models.Record (the
+// FULL record), not a lightweight subset — Recent() must return the same complete record
+// shape as Python/TS recent() and as this decoder's own bare-array branch. The old
+// manifestRecord subset silently dropped weight/score/related_ids/main_ids/content/
+// valid_from/valid_until/superseded_by from every /recent envelope result.
 type manifestResponse struct {
-	Records []manifestRecord `json:"records"`
-}
-
-// manifestRecord is a single record from the manifest endpoint.
-type manifestRecord struct {
-	ID        int64  `json:"id"`
-	UUID      string `json:"uuid"`
-	Type      string `json:"type"`
-	Summary   string `json:"summary"`
-	Metadata  string `json:"metadata"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	Records []models.Record `json:"records"`
 }
 
 // --------------------------------------------------------------------------

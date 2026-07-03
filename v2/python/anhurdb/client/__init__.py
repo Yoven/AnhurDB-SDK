@@ -1448,7 +1448,7 @@ class Memory:
         limit: int = 20,
         *,
         min_index: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Record]:
         """
         Get recently updated records.
 
@@ -1457,14 +1457,18 @@ class Memory:
             min_index: Optional read-your-writes barrier (see ``read_content``).
 
         Returns:
-            List of record dicts ordered by creation time (newest first).
+            List of typed ``Record`` objects ordered by creation time (newest first).
         """
         data = await self._connection.get(
             "/api/v1/recent",
             params={"limit": str(limit)},
             min_index=min_index,
         )
-        return data if isinstance(data, list) else data.get("records", [])
+        # Junior Tip [recent full-record parity, 2026-07-03]: parse into typed Record
+        # objects (the FULL record) instead of returning raw dicts — matches Go/TS recent()
+        # which return the full typed record, and mirrors the typed SearchResult parsing.
+        records = data if isinstance(data, list) else data.get("records", [])
+        return [Record(**rec) for rec in records if isinstance(rec, dict)]
 
     # ── Taxonomy (local, no REST round-trip) ───────────────────────
 

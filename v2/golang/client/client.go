@@ -926,18 +926,14 @@ func (m *Memory) Recent(ctx context.Context, limit int, opts ...ReadOption) ([]m
 		if parseErr := json.Unmarshal(respBytes, &wrapped); parseErr != nil {
 			return nil, fmt.Errorf("parsing manifest response (object): %w", parseErr)
 		}
-		records := make([]models.Record, 0, len(wrapped.Records))
-		for _, manifestRow := range wrapped.Records {
-			records = append(records, models.Record{
-				ID:       int(manifestRow.ID),
-				UUID:     manifestRow.UUID,
-				Type:     models.MemoryType(manifestRow.Type),
-				Summary:  manifestRow.Summary,
-				Metadata: manifestRow.Metadata,
-				Status:   models.MemoryStatus(manifestRow.Status),
-			})
+		// Junior Tip [recent full-record parity, 2026-07-03]: wrapped.Records is now
+		// []models.Record (full), so return it directly — no subset mapping that used to
+		// drop weight/score/related_ids/content/valid_*/superseded_by. Guard a nil slice
+		// (absent "records" key) into a non-nil empty slice to keep the historical contract.
+		if wrapped.Records == nil {
+			return []models.Record{}, nil
 		}
-		return records, nil
+		return wrapped.Records, nil
 	default:
 		// Empty body or unexpected shape (e.g. "null"): treat as no records
 		// rather than erroring, matching the "manifest can be empty" contract.
