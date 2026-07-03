@@ -44,6 +44,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import warnings
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -142,6 +143,40 @@ def _utc_timestamp() -> str:
     return now.strftime("%Y%m%d-%H%M%S")
 
 
+def _parse_search_results(data: Any) -> List[SearchResult]:
+    """
+    Parse a raw search-endpoint envelope into typed ``SearchResult`` objects.
+
+    Junior Tip [envelope→typed parity, 2026-07-03]: the search endpoints
+    (``/api/v1/search/global``, ``/api/v1/search/type``, ``/api/v1/search``)
+    return the envelope ``{"results": [{"record": {...}, "similarity": 0.87},
+    ...]}``. The Python SDK USED to hand back the bare ``data.get("results",
+    [])`` list of raw dicts, which broke cross-SDK parity — the Go and TS SDKs
+    return typed structs, not maps. We now parse each hit into a
+    ``SearchResult(record=Record(...), similarity=...)`` so all three SDKs
+    return the same typed shape.
+
+    Junior Tip [keep it nested, not flat]: we deliberately preserve the nested
+    ``SearchResult.record`` shape (the full ``Record`` under ``.record``) and do
+    NOT flatten the record fields up onto the result. Flattening is a separate,
+    intentionally-deferred parity decision — mirroring it here would be a
+    silent contract change.
+
+    Returns an empty list when the payload is not the expected envelope object.
+    """
+    if not isinstance(data, dict):
+        return []
+    parsed: List[SearchResult] = []
+    for hit in data.get("results", []):
+        parsed.append(
+            SearchResult(
+                record=Record(**hit["record"]),
+                similarity=hit.get("similarity", 0.0),
+            )
+        )
+    return parsed
+
+
 # ---------------------------------------------------------------------------
 # Memory — the single canonical client (simple ergonomics + full surface)
 # ---------------------------------------------------------------------------
@@ -220,8 +255,16 @@ class Memory:
         else:
             self._container_tag = _derive_container_tag(key)
 
-        # Session UUID: container_tag + UTC timestamp.
-        self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}"
+        # Session UUID: container_tag + UTC timestamp + 6 random hex chars.
+        # Junior Tip [collision-proof session id, parity 2026-07-03]: the
+        # timestamp alone (``%Y%m%d-%H%M%S``) has 1-second resolution, so two
+        # Memory clients constructed in the same second under the same
+        # container_tag would derive the SAME session_uuid and cross-write each
+        # other's session. Appending 3 bytes of crypto-random hex
+        # (``secrets.token_hex(3)`` → 6 lowercase hex chars) makes the default
+        # session_uuid effectively unique. Format is byte-for-byte identical to
+        # the Go and TS SDKs: ``<container_tag>-<YYYYMMDD-HHMMSS>-<6 hex>``.
+        self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
 
         # ID of the episodic anchor created for the current session, if any.
         # Junior Tip [session anchor invariant, 2026-06-08]: the server rejects
@@ -571,7 +614,7 @@ class Memory:
         limit: int = 10,
         type_filter: Optional[str] = None,
         min_index: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SearchResult]:
         """
         Global semantic search across ALL sessions (safe memory types only).
 
@@ -587,7 +630,8 @@ class Memory:
                          POST; the barrier header is honoured on POST reads too.
 
         Returns:
-            List of search result dicts.
+            List of typed ``SearchResult`` objects (nested ``.record`` +
+            ``.similarity``).
 
         Example::
 
@@ -599,7 +643,7 @@ class Memory:
         data = await self._connection.post(
             "/api/v1/search/global", payload, min_index=min_index
         )
-        return data.get("results", []) if isinstance(data, dict) else []
+        return _parse_search_results(data)
 
     async def search_by_type(
         self,
@@ -608,7 +652,7 @@ class Memory:
         query: Optional[str] = None,
         *,
         min_index: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SearchResult]:
         """
         Search filtered by cognitive type with optional keyword query.
 
@@ -621,7 +665,8 @@ class Memory:
             min_index:   Optional read-your-writes barrier (see ``search``).
 
         Returns:
-            List of search result dicts.
+            List of typed ``SearchResult`` objects (nested ``.record`` +
+            ``.similarity``).
         """
         params: Dict[str, str] = {"type": memory_type, "limit": str(limit)}
         if query:
@@ -629,7 +674,7 @@ class Memory:
         data = await self._connection.get(
             "/api/v1/search/type", params=params, min_index=min_index
         )
-        return data.get("results", []) if isinstance(data, dict) else []
+        return _parse_search_results(data)
 
     async def search_session(
         self,
@@ -639,7 +684,7 @@ class Memory:
         limit: int = 10,
         type_filter: Optional[str] = None,
         min_index: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SearchResult]:
         """
         Search within a single session (all record types, including recent).
 
@@ -661,7 +706,8 @@ class Memory:
             min_index:    Optional read-your-writes barrier (see ``search``).
 
         Returns:
-            List of search result dicts.
+            List of typed ``SearchResult`` objects (nested ``.record`` +
+            ``.similarity``).
         """
         target_uuid = session_uuid if session_uuid is not None else self._session_uuid
         payload: Dict[str, Any] = {"uuid": target_uuid, "text": query, "limit": limit}
@@ -670,7 +716,7 @@ class Memory:
         data = await self._connection.post(
             "/api/v1/search", payload, min_index=min_index
         )
-        return data.get("results", []) if isinstance(data, dict) else []
+        return _parse_search_results(data)
 
     async def smart_search(
         self,
@@ -708,7 +754,7 @@ class Memory:
         limit: int = 10,
         *,
         min_index: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SearchResult]:
         """
         Recall memories via global search.
 
@@ -723,7 +769,7 @@ class Memory:
             min_index: Optional read-your-writes barrier (see ``search``).
 
         Returns:
-            List of search result dicts.
+            List of typed ``SearchResult`` objects (inherited from ``search``).
         """
         return await self.search(query, limit=limit, min_index=min_index)
 
@@ -1159,7 +1205,12 @@ class Memory:
         Returns:
             The new session UUID.
         """
-        self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}"
+        # Junior Tip [SDK parity 2026-07-03]: identical shape to the constructor's
+        # default session_uuid — <container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 random hex>.
+        # The random suffix (secrets.token_hex(3)) is what stops two rotations in the
+        # same UTC second from colliding onto one session (cross-contamination), and it
+        # keeps this path byte-for-byte with Go NewSession and TS newSession.
+        self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
         # New session → no anchor yet; force re-creation on the next typed add.
         self._session_anchor_id = None
         return self._session_uuid

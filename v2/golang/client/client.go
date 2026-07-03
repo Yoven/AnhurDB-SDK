@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/anhurdb/sdk-go/v2/models"
 )
@@ -101,8 +102,8 @@ func NewMemory(apiKey string, opts ...Option) *Memory {
 		containerTag = "mem-" + hex.EncodeToString(hash[:])[:12]
 	}
 
-	// Session UUID: containerTag + random 12 hex chars.
-	sessionUUID := containerTag + "-" + randomHex(12)
+	// Session UUID: containerTag + UTC timestamp + random 6 hex chars.
+	sessionUUID := deriveSessionUUID(containerTag)
 
 	return &Memory{
 		conn:         conn,
@@ -122,6 +123,35 @@ func randomHex(n int) string {
 		return ""
 	}
 	return hex.EncodeToString(b)[:n]
+}
+
+// utcTimestamp returns the current UTC time as "YYYYMMDD-HHMMSS".
+//
+// Junior Tip [SDK parity 2026-07-03]: this MUST byte-for-byte match the
+// Python SDK's _utc_timestamp (strftime("%Y%m%d-%H%M%S")) and the TypeScript
+// SDK's utcTimestamp. The Go reference layout "20060102-150405" is the exact
+// equivalent — do NOT reorder the layout fields or the three SDKs will emit
+// differently-shaped session UUIDs, breaking the cross-SDK session_uuid
+// invariant.
+func utcTimestamp() string {
+	return time.Now().UTC().Format("20060102-150405")
+}
+
+// deriveSessionUUID builds the default auto-derived session UUID:
+//
+//	<container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 hex random>
+//
+// e.g. "mem-3f9a1b2c4d5e-20260703-143025-a1b2c3".
+//
+// Junior Tip [SDK parity 2026-07-03]: both the UTC timestamp layout AND the
+// width of the random suffix (6 hex = 3 crypto/rand bytes) MUST match the
+// Python and TypeScript SDKs byte-for-byte. The timestamp alone is not unique
+// enough (two sessions in the same second would collide), so the 6-hex random
+// tail disambiguates while staying identical in shape across languages. This
+// is the single source of truth for the format — NewMemory and NewSession both
+// call it so the two paths can never drift apart.
+func deriveSessionUUID(containerTag string) string {
+	return containerTag + "-" + utcTimestamp() + "-" + randomHex(6)
 }
 
 // --------------------------------------------------------------------------
@@ -849,10 +879,18 @@ func (m *Memory) ReadContent(ctx context.Context, recordID int64, opts ...ReadOp
 	return string(respBytes), nil
 }
 
-// Recent retrieves the most recent records from the manifest.
+// Recent retrieves the most recent records.
 //
-// GET /api/v1/manifest returns records ordered by creation time
-// (newest first).
+// GET /api/v1/recent?limit=N hits the server's dedicated ListRecent endpoint,
+// which returns records ordered by creation time (newest first).
+//
+// Junior Tip [endpoint parity 2026-07-03]: this MUST call /api/v1/recent — the
+// server's dedicated "recent" route — NOT /api/v1/manifest (that is the
+// paginated ManifestGlobal, a different endpoint). Python's recent() already
+// uses /api/v1/recent; Go and TS were pointed at /manifest and were realigned
+// here. Only `limit` is sent (no type/offset). The dual-shape parse below is
+// unchanged: ListRecent emits the envelope {"records":[],"count":N}, and we
+// also accept a bare array for forward compatibility.
 //
 // Junior Tip [name parity 2026-06-18]: this is the canonical name for the MCP
 // `recent_memories` tool, aligned across Go/Python/TS. It was renamed from
@@ -869,7 +907,7 @@ func (m *Memory) Recent(ctx context.Context, limit int, opts ...ReadOption) ([]m
 	params := url.Values{}
 	params.Set("limit", strconv.Itoa(limit))
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/manifest", params, cfg.minIndex)
+	respBytes, err := m.conn.Get(ctx, "/api/v1/recent", params, cfg.minIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1400,8 +1438,13 @@ func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string, opt
 
 // NewSession rotates the session UUID (generates a fresh random suffix).
 // All subsequent Add() calls will be grouped under the new session.
+//
+// Junior Tip [SDK parity 2026-07-03]: this shares deriveSessionUUID with
+// NewMemory so a rotated session has the exact same
+// <container_tag>-<UTC timestamp>-<6 hex> shape as the initial one — mirroring
+// the Python SDK's new_session, which reuses the same _utc_timestamp helper.
 func (m *Memory) NewSession() {
-	m.sessionUUID = m.containerTag + "-" + randomHex(12)
+	m.sessionUUID = deriveSessionUUID(m.containerTag)
 }
 
 // SessionID returns the current session UUID (read-only).

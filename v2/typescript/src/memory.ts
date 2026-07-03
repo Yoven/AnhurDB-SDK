@@ -134,6 +134,28 @@ function utcTimestamp(d: Date = new Date()): string {
 }
 
 /**
+ * Generate a 6-lowercase-hex random suffix (3 crypto-random bytes) for the
+ * default auto-derived session UUID.
+ *
+ * Junior Tip [session-uuid collision parity, 2026-07-03]: the auto-derived
+ * default session UUID is `<container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 hex>`. The
+ * UTC timestamp alone collides for two sessions opened in the same wall-clock
+ * second, so a 3-byte crypto-random suffix disambiguates them. The 6-hex width
+ * and the crypto source MUST match the other SDKs byte-for-byte: Python
+ * `secrets.token_hex(3)`, Go `crypto/rand` 3 bytes -> hex, TS
+ * `crypto.getRandomValues` over a 3-byte `Uint8Array` -> hex (3 bytes = exactly
+ * 6 hex chars). `crypto` is a global in Node 18+ and every browser, mirroring
+ * deriveTag's use of `crypto.subtle`.
+ */
+function randomHexSuffix(): string {
+  const randomBytes = new Uint8Array(3);
+  crypto.getRandomValues(randomBytes);
+  return Array.from(randomBytes)
+    .map((byteValue) => byteValue.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
  * Wrap a container tag into the canonical metadata JSON envelope
  * `{"container_tag":"<tag>"}`.
  *
@@ -203,7 +225,7 @@ export class Memory {
     // Container tag: explicit userId or derived from apiKey.
     if (options.userId) {
       this.containerTag = options.userId;
-      this.sessionUuid = `${this.containerTag}-${utcTimestamp()}`;
+      this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
       this.tagReady = Promise.resolve();
     } else {
       // Temporary tag — replaced once the async hash resolves.
@@ -215,7 +237,7 @@ export class Memory {
           writable: false,
           configurable: false,
         });
-        this.sessionUuid = `${this.containerTag}-${utcTimestamp()}`;
+        this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
       });
     }
   }
@@ -475,12 +497,21 @@ export class Memory {
     const params: Record<string, string> = { type };
     if (limit !== undefined) params.limit = String(limit);
 
-    const data = await this.client.get<{ results?: SearchResult[] }>(
-      "/api/v1/search/type",
-      params,
-      readOptions?.minIndex,
-    );
-    return data.results ?? [];
+    // Junior Tip [flatten parity, 2026-07-03]: `/api/v1/search/type` returns the
+    // SAME envelope as search/recall/searchSession — `{results:[{record,
+    // similarity}]}` (server verified; Python lists this endpoint alongside
+    // /search/global and /search). Previously this returned `data.results` raw,
+    // typed as SearchResult[] (a type lie) — the nested `{record, similarity}`
+    // objects leaked out unflattened. We now route through flattenSearchResults
+    // so callers get the SDK's flat shape (id/type/summary/score/...), identical
+    // to the other search methods. The flat key stays `score` (TS convention).
+    const data = await this.client.get<{
+      results?: Array<{
+        record?: Record<string, unknown>;
+        similarity?: number;
+      }>;
+    }>("/api/v1/search/type", params, readOptions?.minIndex);
+    return this.flattenSearchResults(data.results ?? []);
   }
 
   /**
@@ -546,7 +577,19 @@ export class Memory {
   }
 
   /**
-   * Fetch the most recent records from the manifest.
+   * Fetch the most recent records via the dedicated `GET /api/v1/recent`
+   * endpoint (server handler `ListRecent`).
+   *
+   * Junior Tip [endpoint + response-shape parity, 2026-07-03]: this hits the
+   * DEDICATED recents route (`/api/v1/recent`), NOT the paginated
+   * `/api/v1/manifest` (`ManifestGlobal`) — they are different endpoints and
+   * only {@link manifestGlobal} should use the manifest. The server emits either
+   * a bare JSON array `[...]` OR an envelope object `{"records":[...],"count":N}`,
+   * so we accept BOTH: an `Array.isArray` check returns the bare array verbatim,
+   * otherwise we unwrap the `records` key. Not handling the bare-array shape
+   * would silently drop every record. Mirrors Python `recent`
+   * (`data if isinstance(data, list) else data.get("records", [])`) and Go
+   * `Recent`.
    *
    * @param limit - Maximum records to return (default 20).
    */
@@ -557,12 +600,10 @@ export class Memory {
     const params: Record<string, string> = {};
     if (limit !== undefined) params.limit = String(limit);
 
-    const data = await this.client.get<{ records?: MemoryRecord[] }>(
-      "/api/v1/manifest",
-      params,
-      readOptions?.minIndex,
-    );
-    return data.records ?? [];
+    const data = await this.client.get<
+      MemoryRecord[] | { records?: MemoryRecord[] }
+    >("/api/v1/recent", params, readOptions?.minIndex);
+    return Array.isArray(data) ? data : (data.records ?? []);
   }
 
   /**
@@ -951,7 +992,11 @@ export class Memory {
    */
   async newSession(): Promise<string> {
     await this.tagReady;
-    this.sessionUuid = `${this.containerTag}-${utcTimestamp()}`;
+    // Junior Tip [SDK parity 2026-07-03]: identical shape to the constructor's default
+    // session_uuid — `<container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 random hex>`. The random
+    // suffix (randomHexSuffix) stops two rotations in the same UTC second from colliding
+    // onto one session, byte-for-byte with Python new_session and Go NewSession.
+    this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
     return this.sessionUuid;
   }
 
