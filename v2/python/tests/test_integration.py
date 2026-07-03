@@ -39,10 +39,10 @@ from anhurdb.query import QueryBuilder, Filter
 
 # ── Configuration ─────────────────────────────────────────────────
 
-API_KEY = os.environ.get(
-    "ANHUR_API_KEY",
-    "anhur_dPsAOlSrbm1kpGYrfCWUkflJskoeg6PdZP8RC_0V7W07L_QoxadYmwn7ZWYOoEyqRgEKDhivtvFCog4gMGW25r9qUD0XRES4LQLJCUETf1FBHO4OeA",
-)
+# No hardcoded secret (2026-07-03): the key comes ONLY from the environment.
+# Empty when unset → the server rejects with 401 and the test fails loudly,
+# instead of shipping a real credential in a versioned test file.
+API_KEY = os.environ.get("ANHUR_API_KEY", "")
 SERVER_URL = os.environ.get("ANHUR_URL", "http://localhost:8000")
 
 # ── Test Runner ───────────────────────────────────────────────────

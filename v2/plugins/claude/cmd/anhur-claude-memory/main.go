@@ -465,7 +465,12 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) {
 			_ = os.Remove(path)
 			logLine(cfg, "flushed queued chunk "+path)
 		} else {
-			logLine(cfg, "flush still failing for "+path+" (retry next start)")
+			// Junior Tip [log the addErr, 2026-07-03]: this line used to swallow the
+			// error, so a PERMANENT rejection (e.g. HTTP 409 "session has reached the
+			// maximum of 500 records") looked identical to a transient DB-down retry —
+			// the queue sat "still failing" for 10 days before anyone saw the 409.
+			// The queue must never drop chunks, but it must FAIL LOUD about why.
+			logLine(cfg, fmt.Sprintf("flush still failing for %s (retry next start): %v", path, addErr))
 		}
 	}
 }
