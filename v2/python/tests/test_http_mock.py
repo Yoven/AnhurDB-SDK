@@ -288,15 +288,20 @@ class TestMemoryCloudMode(AioHTTPTestCase):
             self.assertEqual(result["records"][0]["id"], 42)
 
     @unittest_run_loop
-    async def test_search_returns_flat_results(self):
+    async def test_search_returns_nested_results(self):
+        # Junior Tip [nested SearchResult parity, 2026-07-03]: search() returns
+        # typed SearchResult objects — the full Record lives under .record and the
+        # relevance score under .similarity (NOT flattened onto the hit, and NOT
+        # keyed "score"). This mirrors the canonical server wire
+        # ({"results":[{"record":{...},"similarity":0.95}]}) and the Go/TS SDKs.
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             results = await mem.search("what does user do?")
             self.assertEqual(len(results), 2)
-            self.assertEqual(results[0]["id"], 1)
-            self.assertEqual(results[0]["summary"], "Data scientist at Google")
-            self.assertAlmostEqual(results[0]["score"], 0.95)
-            self.assertEqual(results[1]["type"], "preference")
+            self.assertEqual(results[0].record.id, 1)
+            self.assertEqual(results[0].record.summary, "Data scientist at Google")
+            self.assertAlmostEqual(results[0].similarity, 0.95)
+            self.assertEqual(results[1].record.type, "preference")
 
     @unittest_run_loop
     async def test_profile_returns_structured(self):

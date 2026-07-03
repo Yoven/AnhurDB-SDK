@@ -119,7 +119,9 @@ func TestLiveE2E(testHandle *testing.T) {
 			break
 		}
 		for _, hit := range hits {
-			if hit.ID == recordID {
+			// SearchResult is nested now: id lives on the record, and Record.ID is
+			// int while recordID is int64, so cast for the comparison.
+			if int64(hit.Record.ID) == recordID {
 				found = true
 			}
 		}

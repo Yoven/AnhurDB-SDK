@@ -60,18 +60,22 @@ func (r *Retriever) GetRelevantDocuments(ctx context.Context, query string) ([]D
 
 	docs := make([]Document, 0, len(results))
 	for _, hit := range results {
-		content := hit.Content
+		// SearchResult is now nested: the fields live on hit.Record (a full
+		// models.Record) and the score stays at hit.Similarity. Record.Content is
+		// `any` (the server may send a string body or a structured payload), so
+		// take the string form when present and fall back to the summary.
+		content, _ := hit.Record.Content.(string)
 		if content == "" {
-			content = hit.Summary
+			content = hit.Record.Summary
 		}
 
 		doc := Document{
-			ID:          fmt.Sprintf("%d", hit.ID),
+			ID:          fmt.Sprintf("%d", hit.Record.ID),
 			PageContent: content,
 			Score:       hit.Similarity,
 			Metadata: map[string]interface{}{
-				"type":     hit.Type,
-				"metadata": hit.Metadata,
+				"type":     string(hit.Record.Type),
+				"metadata": hit.Record.Metadata,
 			},
 		}
 		docs = append(docs, doc)

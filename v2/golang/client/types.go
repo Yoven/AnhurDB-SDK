@@ -40,14 +40,23 @@ type RecordSummary struct {
 	Summary string `json:"summary"`
 }
 
-// SearchResult represents a single search hit from the server.
+// SearchResult represents a single search hit from the server: the COMPLETE
+// record nested under "record" plus its relevance score under "similarity".
+//
+// Junior Tip [nested shape is the cross-SDK contract, 2026-07-03]: the server
+// wire is {"results":[{"record":{<full record>},"similarity":0.63}, ...]} and
+// the score key is "similarity" at the hit level, NOT a "score" inside the
+// record. The three SDKs (Go/Python/TS) MUST expose this identical nested shape
+// so a hit serialized by one and consumed by another carries every record field
+// — the previous flat SearchResult silently dropped everything except
+// id/type/summary/metadata/content, which is exactly the kind of field loss the
+// SDK-parity invariant forbids. Record is the SDK's own typed models.Record, so
+// callers get related_ids, main_ids, status, valid_from, created_at, etc. — not
+// a lossy subset. Python's SearchResult(record=Record, similarity) is the
+// reference shape; Go mirrors it field-for-field here.
 type SearchResult struct {
-	ID         int64   `json:"id"`
-	Type       string  `json:"type"`
-	Summary    string  `json:"summary"`
-	Similarity float64 `json:"similarity"`
-	Metadata   string  `json:"metadata,omitempty"`
-	Content    string  `json:"content,omitempty"`
+	Record     models.Record `json:"record"`
+	Similarity float64       `json:"similarity"`
 }
 
 // ProfileResult contains the memory profile for a container tag.
@@ -577,24 +586,18 @@ type recordCreateResponse struct {
 	RaftIndex uint64 `json:"raft_index,omitempty"`
 }
 
-// searchResponse is the wire format returned by POST /api/v1/search/global.
+// searchResponse is the wire format returned by the search endpoints
+// (POST /api/v1/search/global, POST /api/v1/search, GET /api/v1/search/type):
+// {"results":[{"record":{...},"similarity":...}, ...]}.
+//
+// Junior Tip [decode straight into the public type — no flatten]: each element
+// already IS the exported SearchResult ({record, similarity} with record a full
+// models.Record), so we decode directly into []SearchResult. The old searchHit
+// / searchRecord subset structs (which flattened the record and dropped every
+// field except id/type/summary/metadata/content) are gone — that lossy step was
+// the bug this reform removes.
 type searchResponse struct {
-	Results []searchHit `json:"results"`
-}
-
-// searchHit is a single element inside searchResponse.Results.
-type searchHit struct {
-	Record     searchRecord `json:"record"`
-	Similarity float64      `json:"similarity"`
-}
-
-// searchRecord is the record sub-object inside a search hit.
-type searchRecord struct {
-	ID       int64  `json:"id"`
-	Type     string `json:"type"`
-	Summary  string `json:"summary"`
-	Metadata string `json:"metadata"`
-	Content  string `json:"content"`
+	Results []SearchResult `json:"results"`
 }
 
 // manifestResponse is the wire format for GET /api/v1/manifest.

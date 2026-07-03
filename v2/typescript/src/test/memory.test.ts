@@ -15,6 +15,7 @@ import {
   AnhurQueryError,
   AnhurConnectionError,
 } from "../types.js";
+import type { SearchResult } from "../types.js";
 
 // ── Constructor tests ─────────────────────────────────────────
 
@@ -259,5 +260,106 @@ describe("Memory.walkSemantic (goal-directed body serialization)", () => {
     assert.equal(body.target_tag, "project-x");
     assert.ok(!("vector" in body));
     assert.ok(!("max_cost" in body));
+  });
+});
+
+// ── search() nested SearchResult shape (2026-07-03) ───────────
+// Junior Tip [nested parity]: every search method returns the canonical
+// `{ record: <full MemoryRecord>, similarity }` shape — the full record NESTED
+// (no dropped fields) with the score in the SIBLING `similarity` key (NOT a flat
+// `score`). Mirrors Python `SearchResult(record, similarity)` and Go
+// `SearchResult{Record, Similarity}`. We mock fetch to return the exact server
+// envelope `{results:[{record:{...}, similarity}]}` and assert the SDK nests it.
+describe("Memory.search (nested SearchResult shape)", () => {
+  const serverEnvelope = {
+    results: [
+      {
+        record: {
+          id: 42,
+          uuid: "sess-abc",
+          type: "fact",
+          summary: "User is a data scientist at Google",
+          status: "saved",
+          weight: 0.9,
+          score: 9,
+          related_ids: [7, 8],
+          main_ids: [3],
+          created_at: "2026-07-03T00:00:00Z",
+          updated_at: "2026-07-03T00:00:00Z",
+        },
+        similarity: 0.63,
+      },
+    ],
+    count: 1,
+  };
+
+  const withMockedFetch = async (
+    run: (mem: Memory) => Promise<unknown>,
+  ): Promise<unknown> => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(serverEnvelope), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      return await run(mem);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  };
+
+  it("search() nests the full record under .record with sibling .similarity", async () => {
+    const results = (await withMockedFetch((mem) =>
+      mem.search("what does this user do?"),
+    )) as SearchResult[];
+    assert.equal(results.length, 1);
+    // Score lives in the sibling `similarity`, NOT a flat `score`.
+    assert.equal(results[0].similarity, 0.63);
+    // The full record is preserved, nested under `record`.
+    assert.equal(results[0].record.id, 42);
+    assert.equal(results[0].record.summary, "User is a data scientist at Google");
+    // Fields the old flat shape dropped must survive.
+    assert.equal(results[0].record.uuid, "sess-abc");
+    assert.deepEqual(results[0].record.related_ids, [7, 8]);
+    // No flat leakage: the top-level hit has no `score`/`summary`/`id`.
+    assert.ok(!("score" in results[0]));
+    assert.ok(!("summary" in results[0]));
+    assert.ok(!("id" in results[0]));
+  });
+
+  it("recall() returns the same nested shape", async () => {
+    const results = (await withMockedFetch((mem) =>
+      mem.recall("google"),
+    )) as SearchResult[];
+    assert.equal(results.length, 1);
+    assert.equal(results[0].record.id, 42);
+    assert.equal(results[0].similarity, 0.63);
+  });
+
+  it("searchByType() returns the same nested shape", async () => {
+    const results = (await withMockedFetch((mem) =>
+      mem.searchByType("fact"),
+    )) as SearchResult[];
+    assert.equal(results.length, 1);
+    assert.equal(results[0].record.type, "fact");
+    assert.equal(results[0].similarity, 0.63);
+  });
+
+  it("defaults similarity to 0 when the server omits it", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ results: [{ record: { id: 1, summary: "x" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const results = (await mem.search("q")) as SearchResult[];
+      assert.equal(results[0].similarity, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

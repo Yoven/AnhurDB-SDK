@@ -348,7 +348,7 @@ export class Memory {
    * @example
    * ```ts
    * const results = await mem.search("what does this user do?", { limit: 5 });
-   * results.forEach(r => console.log(r.summary, r.score));
+   * results.forEach(r => console.log(r.record.summary, r.similarity));
    * ```
    */
   async search(
@@ -377,7 +377,7 @@ export class Memory {
       }>;
     }>("/api/v1/search/global", payload, readOptions?.minIndex);
 
-    return this.flattenSearchResults(data.results);
+    return this.nestSearchResults(data.results);
   }
 
   // ── searchSession() — session-scoped hybrid search ──────────
@@ -430,7 +430,7 @@ export class Memory {
       }>;
     }>("/api/v1/search", payload, readOptions?.minIndex);
 
-    return this.flattenSearchResults(data.results);
+    return this.nestSearchResults(data.results);
   }
 
   // ── profile() — get user/agent profile ──────────────────────
@@ -497,21 +497,20 @@ export class Memory {
     const params: Record<string, string> = { type };
     if (limit !== undefined) params.limit = String(limit);
 
-    // Junior Tip [flatten parity, 2026-07-03]: `/api/v1/search/type` returns the
+    // Junior Tip [nested parity, 2026-07-03]: `/api/v1/search/type` returns the
     // SAME envelope as search/recall/searchSession — `{results:[{record,
     // similarity}]}` (server verified; Python lists this endpoint alongside
-    // /search/global and /search). Previously this returned `data.results` raw,
-    // typed as SearchResult[] (a type lie) — the nested `{record, similarity}`
-    // objects leaked out unflattened. We now route through flattenSearchResults
-    // so callers get the SDK's flat shape (id/type/summary/score/...), identical
-    // to the other search methods. The flat key stays `score` (TS convention).
+    // /search/global and /search). We route through nestSearchResults so callers
+    // get the canonical nested {@link SearchResult} (`{record, similarity}`),
+    // identical to the other search methods — the full record is preserved, and
+    // the score lives in the sibling `similarity` field.
     const data = await this.client.get<{
       results?: Array<{
         record?: Record<string, unknown>;
         similarity?: number;
       }>;
     }>("/api/v1/search/type", params, readOptions?.minIndex);
-    return this.flattenSearchResults(data.results ?? []);
+    return this.nestSearchResults(data.results ?? []);
   }
 
   /**
@@ -573,7 +572,7 @@ export class Memory {
       }>;
     }>("/api/v1/search/global", payload, readOptions?.minIndex);
 
-    return this.flattenSearchResults(data.results);
+    return this.nestSearchResults(data.results);
   }
 
   /**
@@ -1784,28 +1783,31 @@ export class Memory {
   }
 
   /**
-   * Flatten nested search response into simple SearchResult array.
+   * Map the server's nested search envelope into typed {@link SearchResult}s.
    *
-   * The server returns `{ results: [{ record: {...}, similarity: N }] }`
-   * but our SDK surface exposes flat objects.
+   * The server emits `{ results: [{ record: {...}, similarity: N }] }` and the
+   * SDK surface preserves that exact shape — the full record NESTED under
+   * `record`, with the score as a SIBLING `similarity`.
+   *
+   * Junior Tip [no flattening, 2026-07-03]: the old helper flattened each hit to
+   * `{id,type,summary,score,metadata,content}`, silently DROPPING every other
+   * record field (uuid/weight/related_ids/main_ids/status/valid_from/...) — a
+   * data-loss bug. We now keep the whole record: cast the raw JSON object to the
+   * typed {@link MemoryRecord} (the server serialises exactly those keys) and
+   * default a missing `similarity` to 0. Matches Python `SearchResult(record,
+   * similarity)` (the reference) and Go `SearchResult{Record, Similarity}`. NOTE
+   * the score key is `similarity`, NOT `score`.
    */
-  private flattenSearchResults(
+  private nestSearchResults(
     results?: Array<{
       record?: Record<string, unknown>;
       similarity?: number;
     }>,
   ): SearchResult[] {
-    return (results ?? []).map((item) => {
-      const rec = (item.record ?? {}) as Record<string, unknown>;
-      return {
-        id: (rec.id as number) ?? 0,
-        type: (rec.type as string) ?? "",
-        summary: (rec.summary as string) ?? "",
-        score: (item.similarity as number) ?? 0,
-        metadata: (rec.metadata as string) ?? undefined,
-        content: (rec.content as string) ?? undefined,
-      };
-    });
+    return (results ?? []).map((item) => ({
+      record: (item.record ?? {}) as unknown as MemoryRecord,
+      similarity: item.similarity ?? 0,
+    }));
   }
 
   /** String representation for logging / debugging. */

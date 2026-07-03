@@ -234,21 +234,13 @@ func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, o
 		return nil, fmt.Errorf("parsing session search response: %w", decodeErr)
 	}
 
-	// Flatten the nested {record, similarity} envelope into flat SearchResult,
-	// identical to Search/SearchByType so callers get a uniform shape.
-	results := make([]SearchResult, 0, len(resp.Results))
-	for _, hit := range resp.Results {
-		results = append(results, SearchResult{
-			ID:         hit.Record.ID,
-			Type:       hit.Record.Type,
-			Summary:    hit.Record.Summary,
-			Similarity: hit.Similarity,
-			Metadata:   hit.Record.Metadata,
-			Content:    hit.Record.Content,
-		})
+	// The nested {record, similarity} envelope IS the public SearchResult shape,
+	// identical to Search/SearchByType — decode straight in so the full record
+	// survives. Preserve the non-nil empty-slice contract.
+	if resp.Results == nil {
+		return []SearchResult{}, nil
 	}
-
-	return results, nil
+	return resp.Results, nil
 }
 
 // --------------------------------------------------------------------------

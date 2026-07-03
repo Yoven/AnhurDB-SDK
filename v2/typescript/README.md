@@ -54,7 +54,7 @@ await mem.add("Revenue hit $1M this quarter", { score: 9, type: "fact" });
 // Search across all sessions
 const results = await mem.search("user preferences?", { limit: 5 });
 for (const r of results) {
-  console.log(`${r.summary} (score: ${r.score})`);
+  console.log(`${r.record.summary} (similarity: ${r.similarity})`);
 }
 
 // Get user profile

@@ -544,21 +544,15 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 		return nil, fmt.Errorf("parsing search response: %w", err)
 	}
 
-	// Flatten the nested response into simple structs so users don't
-	// need to know about MemoryRecord internals.
-	results := make([]SearchResult, 0, len(resp.Results))
-	for _, hit := range resp.Results {
-		results = append(results, SearchResult{
-			ID:         hit.Record.ID,
-			Type:       hit.Record.Type,
-			Summary:    hit.Record.Summary,
-			Similarity: hit.Similarity,
-			Metadata:   hit.Record.Metadata,
-			Content:    hit.Record.Content,
-		})
+	// The wire envelope already IS the public SearchResult shape ({record,
+	// similarity}), so return the decoded slice directly — no flatten step, and
+	// the FULL nested models.Record survives (the old flatten kept only
+	// id/type/summary/metadata/content). Preserve the historical non-nil
+	// empty-slice contract when the server omits "results".
+	if resp.Results == nil {
+		return []SearchResult{}, nil
 	}
-
-	return results, nil
+	return resp.Results, nil
 }
 
 // Profile retrieves the memory profile for this container tag.
@@ -641,19 +635,12 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 		return nil, fmt.Errorf("parsing search-by-type response: %w", err)
 	}
 
-	results := make([]SearchResult, 0, len(resp.Results))
-	for _, hit := range resp.Results {
-		results = append(results, SearchResult{
-			ID:         hit.Record.ID,
-			Type:       hit.Record.Type,
-			Summary:    hit.Record.Summary,
-			Similarity: hit.Similarity,
-			Metadata:   hit.Record.Metadata,
-			Content:    hit.Record.Content,
-		})
+	// Same nested {record, similarity} envelope as Search — decode straight in,
+	// keeping the full record. Preserve the non-nil empty-slice contract.
+	if resp.Results == nil {
+		return []SearchResult{}, nil
 	}
-
-	return results, nil
+	return resp.Results, nil
 }
 
 // SmartSearch performs full-text search with cognitive weight boosting.

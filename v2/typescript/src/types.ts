@@ -158,15 +158,26 @@ export interface SearchOptions {
   typeFilter?: MemoryType;
 }
 
-/** A single search hit returned by `Memory.search()`. */
+/**
+ * A single search hit returned by every search method
+ * (`search`/`searchSession`/`searchByType`/`recall`).
+ *
+ * Junior Tip [nested shape parity, 2026-07-03]: this is the CANONICAL wire shape
+ * the server emits (server/model/record.go SearchResult) —
+ * `{ "record": {<full Record>}, "similarity": 0.63 }`. We nest the complete
+ * {@link MemoryRecord} verbatim and carry the score in a SIBLING `similarity`
+ * field (NOT inside the record). The previous flat shape
+ * (`{id,type,summary,score,...}`) DROPPED every other record field
+ * (uuid/weight/related_ids/main_ids/status/valid_from/...) — silent data loss.
+ * All three SDKs must match: Python is `SearchResult(record=Record,
+ * similarity=float)` (the reference), Go is `SearchResult{Record, Similarity}`.
+ * NOTE the score key is `similarity`, NOT `score`.
+ */
 export interface SearchResult {
-  id: number;
-  type: string;
-  summary: string;
-  /** Similarity score (0-1). */
-  score: number;
-  metadata?: string;
-  content?: string;
+  /** The full memory record, verbatim (no fields dropped). */
+  record: MemoryRecord;
+  /** Similarity score (0-1), a sibling of `record` — not inside it. */
+  similarity: number;
 }
 
 // ── profile() ────────────────────────────────────────────────
