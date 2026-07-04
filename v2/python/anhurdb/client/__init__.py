@@ -240,7 +240,8 @@ class Memory:
     ``manifest_global``, ``manifest_session``, ``list_chat``, ``count_by_type``,
     ``list_types``, ``recent``, ``walk``, ``walk_semantic``, ``graph``,
     ``get_grounding``, ``batch_read_content``, ``batch_update_status``,
-    ``link_consolidated``, ``append_main_ids``, ``supersede``, ``decay``,
+    ``link_consolidated``, ``append_main_ids``, ``append_related_ids``,
+    ``supersede``, ``decay``,
     all ``*_entit*`` methods, ``upload_file``/``upload_status``, session
     history/clusters, ``explain``, ``access_stats``, ``get_engine_config``.
 
@@ -1052,6 +1053,35 @@ class Memory:
             return {}
         payload = {"ids": [record_id], "main_ids_to_append": main_ids}
         return await self._connection.patch("/api/v1/records/append-main-ids", payload)
+
+    async def append_related_ids(
+        self,
+        record_id: int,
+        related_ids: List[int],
+    ) -> Dict[str, Any]:
+        """
+        Append related record IDs to the ``related_ids`` array of a single record.
+
+        Server-side this reads, deduplicates, and writes back — idempotent on
+        the union of existing + supplied IDs. Junior Tip [SDK parity]: exact
+        mirror of ``append_main_ids`` on the sibling REST route
+        ``PATCH /api/v1/records/append-related-ids`` (payload key
+        ``related_ids_to_append``); keeps the Go/Python/TS SDK trio in lockstep
+        (parity invariant #13). Append, never replace.
+
+        Args:
+            record_id:   Record that receives the related links.
+            related_ids: Related IDs to append.
+
+        Returns:
+            Confirmation dict (empty when ``related_ids`` is empty — no-op).
+        """
+        if record_id <= 0:
+            raise AnhurError("append_related_ids: record_id must be > 0")
+        if not related_ids:
+            return {}
+        payload = {"ids": [record_id], "related_ids_to_append": related_ids}
+        return await self._connection.patch("/api/v1/records/append-related-ids", payload)
 
     async def append_main_links(
         self,

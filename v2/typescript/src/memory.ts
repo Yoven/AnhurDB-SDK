@@ -1404,6 +1404,33 @@ export class Memory {
   }
 
   /**
+   * Append related record IDs to a single record's `related_ids` array.
+   * Server-side: read, dedup, write back — idempotent (append, not replace).
+   *
+   * Junior Tip [SDK parity, invariant #13]: exact mirror of {@link appendMainIds}
+   * — same validation, same PATCH verb, same `{ ids: [recordId], ..._to_append }`
+   * payload shape. Delegates to the server `AppendRelatedIDs` topology handler;
+   * the SDK does no dedup itself so the read-modify-write stays transactional on
+   * the server.
+   *
+   * @param recordId   - Record that receives the related links.
+   * @param relatedIds - Related IDs to append.
+   */
+  async appendRelatedIds(
+    recordId: number,
+    relatedIds: number[],
+  ): Promise<Record<string, unknown>> {
+    if (recordId <= 0) {
+      throw new Error("appendRelatedIds: recordId must be > 0");
+    }
+    if (relatedIds.length === 0) return {};
+    return this.client.patch<Record<string, unknown>>(
+      "/api/v1/records/append-related-ids",
+      { ids: [recordId], related_ids_to_append: relatedIds },
+    );
+  }
+
+  /**
    * Set `consolidate_id` on a batch of child records (judge → star link).
    * Batched so N children pointing at one star cost ONE Raft round-trip.
    *

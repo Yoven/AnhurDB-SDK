@@ -398,6 +398,45 @@ func (m *Memory) AppendMainIDs(ctx context.Context, recordID int64, mainIDs []in
 	return patchErr
 }
 
+// AppendRelatedIDs appends peer record IDs to the related_ids array of a single
+// record via PATCH /api/v1/records/append-related-ids. Server-side the operation
+// reads, deduplicates, and writes back — safe to call repeatedly with the same
+// payload (idempotent on the union of existing + supplied IDs).
+//
+// Junior Tip [exact mirror of AppendMainIDs]: this is the related_ids twin of
+// AppendMainIDs — same single-record shape (one record, N peers), same
+// validation ladder (nil conn / recordID<=0 / empty slice no-op), and the same
+// PATCH-with-server-side-dedup contract. It exists as its own method (rather
+// than a shared helper) because the REST endpoints, payload keys
+// (main_ids_to_append vs related_ids_to_append), and graph semantics differ:
+// main_ids models the child→parent consolidation edge, related_ids models the
+// peer/similarity overlay the Similarity Linker and Hub Growth agents build.
+// Keeping the two methods byte-for-byte parallel is what invariant #13
+// (cross-SDK parity) checks, so any change here must land in AppendMainIDs too.
+//
+// Junior Tip [why append, not replace]: the server dispatches the transactional
+// read-modify-write batch command (not the whole-list overwrite used by
+// UpdateRecord), so concurrent appenders never clobber each other's edges — the
+// server unions and dedups. Passing the same peer twice is a no-op, never a
+// duplicate.
+func (m *Memory) AppendRelatedIDs(ctx context.Context, recordID int64, relatedIDs []int64) error {
+	if m.conn == nil {
+		return ErrEmptyAPIKey
+	}
+	if recordID <= 0 {
+		return fmt.Errorf("AppendRelatedIDs: recordID must be > 0")
+	}
+	if len(relatedIDs) == 0 {
+		return nil // nothing to append, server would no-op too
+	}
+	payload := map[string]interface{}{
+		"ids":                   []int64{recordID},
+		"related_ids_to_append": relatedIDs,
+	}
+	_, patchErr := m.conn.Patch(ctx, "/api/v1/records/append-related-ids", payload)
+	return patchErr
+}
+
 // LinkConsolidated sets the consolidate_id column on a batch of children
 // records via PATCH /api/v1/records/consolidate-ids. Used by the judge agent
 // after a consolidated star is approved: every source record gets its
