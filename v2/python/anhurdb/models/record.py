@@ -69,7 +69,12 @@ class Record(BaseModel):
 
     id: Optional[int] = Field(default=0)
     uuid: str = ""
-    type: MemoryType = Field(default=MemoryType.EPISODIC)
+    # Junior Tip [read-model enum tolerance, 2026-07-04]: type/status are plain str on the
+    # READ model (not MemoryType/MemoryStatus enums) so an out-of-taxonomy value the server
+    # may legitimately hold (e.g. status="" on a transient/processing record) is preserved
+    # verbatim instead of raising a pydantic ValidationError that would destroy the ENTIRE
+    # search/recent/query response. Matches Go (type MemoryStatus string) and TS (status: string).
+    type: str = Field(default="episodic")
 
     weight: float = Field(default=0.0)
     score: int = Field(default=5)
@@ -80,7 +85,7 @@ class Record(BaseModel):
 
     archived: bool = Field(default=False)
     consolidated: bool = Field(default=False)
-    status: MemoryStatus = Field(default=MemoryStatus.SAVED)
+    status: str = Field(default="saved")  # plain str — see the type/status Junior Tip above
 
     metadata: str = Field(default="")
     summary: str = Field(default="")

@@ -830,7 +830,11 @@ class Memory:
         data = await self._connection.post(
             "/api/v1/query", compiled_ast, min_index=min_index
         )
-        records_data = data.get("records", []) if isinstance(data, dict) else []
+        # Junior Tip [null records coalesce, 2026-07-04]: the server marshals an empty
+        # result as {"records": null} (a nil Go slice -> JSON null), so .get("records", [])
+        # returns None (key present) and iterating it raises TypeError. `or []` coalesces
+        # null/None to [], matching Go (wrapped.Records == nil -> []) and TS (records ?? []).
+        records_data = (data.get("records") or []) if isinstance(data, dict) else []
         return [Record(**record_fields) for record_fields in records_data]
 
     async def search_with_ast(

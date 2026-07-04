@@ -102,12 +102,13 @@ class TestMemory(unittest.TestCase):
         self.assertTrue(mem.session_id.startswith("agent-x-"))
 
     def test_session_id_format(self):
-        """Session UUID should be container_tag-YYYYMMDD-HHMMSS."""
+        """Session UUID is container_tag-YYYYMMDD-HHMMSS-<6hex> (timestamp + random suffix)."""
         mem = Memory(api_key="key", user_id="u1")
         parts = mem.session_id.split("-", 1)
         self.assertEqual(parts[0], "u1")
-        # Remainder should be YYYYMMDD-HHMMSS format
-        self.assertRegex(parts[1], r"^\d{8}-\d{6}$")
+        # Remainder is YYYYMMDD-HHMMSS-<6hex> — the 6-hex random suffix (2026-07-04 parity)
+        # makes two sessions created in the same UTC second collision-safe.
+        self.assertRegex(parts[1], r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 
     def test_new_session_changes_uuid(self):
         mem = Memory(api_key="key", user_id="u1")

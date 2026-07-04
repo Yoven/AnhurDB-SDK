@@ -245,6 +245,9 @@ def create_app_cloud():
     app.router.add_get("/api/v1/sessions/stats", handle_sessions_stats)
     app.router.add_post("/api/v1/query", handle_ast_query)
     app.router.add_get("/api/v1/manifest", handle_manifest)
+    # recent() hits the dedicated GET /api/v1/recent (ListRecent) — same {records:[...]}
+    # envelope as manifest, so reuse the handler; the old mock only had /manifest.
+    app.router.add_get("/api/v1/recent", handle_manifest)
     app.router.add_post("/api/v1/walk", handle_walk)
     app.router.add_post("/api/v1/walk/semantic", handle_walk_semantic)
     app.router.add_get("/api/v1/records/{id}/topology", handle_topology)
