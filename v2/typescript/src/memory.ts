@@ -1332,6 +1332,19 @@ export class Memory {
     if (!sessionUuid) {
       throw new Error("createInSession: sessionUuid is required");
     }
+    // Junior Tip [container_tag mis-tag fix, 2026-07 — parity with Go/Python]:
+    // on the auto-derived path the constructor sets a placeholder
+    // this.containerTag = "mem-init" and only overwrites it with the real
+    // mem-<hash> tag once `tagReady` resolves (deriveTag awaits an async
+    // crypto.subtle.digest). buildMetadataJson(this.containerTag) below runs in
+    // this synchronous prologue, so WITHOUT this barrier a record created right
+    // after construction would be persisted with {"container_tag":"mem-init"}
+    // and then silently fall out of every container-scoped search/profile for
+    // the real user — the exact silent mis-routing the container_tag envelope
+    // exists to prevent (516-record incident, 2026-05-22). Go/Python set the tag
+    // synchronously in their constructors; awaiting here restores that invariant
+    // and matches add/search/create/newSession, which all await tagReady first.
+    await this.tagReady;
     const summary = this.truncateSummary(text);
     const payload: RecordPayload = {
       uuid: sessionUuid,
