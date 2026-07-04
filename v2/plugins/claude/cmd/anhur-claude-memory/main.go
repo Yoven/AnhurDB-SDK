@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -288,6 +289,7 @@ func extractConversation(cfg config, lines []string) string {
 //   - "calls": text + a COMPACT tool_use line ("[tool: Name {input}]"); tool_result skipped.
 //   - "all":   the above + a TRUNCATED tool_result ("[result: ...]") so the bulk of bash/
 //     file output never floods the memory or the (already-saturated) extraction pipeline.
+//
 // thinking blocks are always skipped (internal reasoning, not memory).
 func contentText(cfg config, raw json.RawMessage) string {
 	if len(raw) == 0 {
@@ -438,12 +440,27 @@ func hardSplitRunes(s string, maxBytes int) []string {
 
 // ── no-silent-loss queue ─────────────────────────────────────────────────────
 
+// queueSeq gives every queued chunk a process-unique suffix so multiple chunks
+// persisted within the same clock tick never collide onto one filename.
+var queueSeq uint64
+
 func queueChunk(cfg config, content string) {
-	name := fmt.Sprintf("%s-%d.txt", time.Now().UTC().Format("20060102T150405"), os.Getpid())
+	// Junior Tip [collision-proof + fail-loud, 2026-07-04]: the old name was
+	// second-granular time + pid, so two chunks queued in the same second (a NORMAL
+	// multi-chunk persist — cmdPersist loops over chunks) produced the SAME path and
+	// os.WriteFile silently overwrote all-but-the-last = silent memory loss, violating
+	// this file's own "#1 rule — no silent loss" (header). And a WriteFile error was
+	// swallowed (only the success path logged), so a failed queue write vanished with no
+	// trace while the transcript moved on. Now the name is unique per write (nanosecond +
+	// pid + atomic seq) and a write failure fails LOUD (logged, not silent).
+	seq := atomic.AddUint64(&queueSeq, 1)
+	name := fmt.Sprintf("%s-%d-%d.txt", time.Now().UTC().Format("20060102T150405.000000000"), os.Getpid(), seq)
 	path := filepath.Join(cfg.queueDir(), name)
-	if err := os.WriteFile(path, []byte(content), 0o600); err == nil {
-		logLine(cfg, "queued chunk -> "+path)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		logLine(cfg, fmt.Sprintf("queue write FAILED for chunk (data at risk): %v", err))
+		return
 	}
+	logLine(cfg, "queued chunk -> "+path)
 }
 
 // flushQueue retries every queued chunk; successful ones are removed, the rest stay for next time.
