@@ -338,13 +338,29 @@ describe("Memory.search (nested SearchResult shape)", () => {
     assert.equal(results[0].similarity, 0.63);
   });
 
-  it("searchByType() returns the same nested shape", async () => {
-    const results = (await withMockedFetch((mem) =>
-      mem.searchByType("fact"),
-    )) as SearchResult[];
-    assert.equal(results.length, 1);
-    assert.equal(results[0].record.type, "fact");
-    assert.equal(results[0].similarity, 0.63);
+  it("searchByType() reads the bare `records` envelope and nests each record", async () => {
+    // Junior Tip [real contract, 2026-07-04]: GET /api/v1/search/type returns a BARE
+    // `{records:[<Record>],count}` array — NOT the `{results:[{record,similarity}]}`
+    // envelope of search/global (server/handler/record_search.go: SearchByType). The
+    // SDK must read `records` and wrap each into a SearchResult; reading `results`
+    // (the old bug) returned [] for every call. A type filter carries no semantic
+    // distance, so `similarity` is 0.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ records: [serverEnvelope.results[0].record], count: 1 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const results = (await mem.searchByType("fact")) as SearchResult[];
+      assert.equal(results.length, 1);
+      assert.equal(results[0].record.type, "fact");
+      assert.equal(results[0].record.id, 42);
+      assert.equal(results[0].similarity, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("defaults similarity to 0 when the server omits it", async () => {

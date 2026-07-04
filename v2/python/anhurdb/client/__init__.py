@@ -147,10 +147,11 @@ def _parse_search_results(data: Any) -> List[SearchResult]:
     """
     Parse a raw search-endpoint envelope into typed ``SearchResult`` objects.
 
-    Junior Tip [envelope→typed parity, 2026-07-03]: the search endpoints
-    (``/api/v1/search/global``, ``/api/v1/search/type``, ``/api/v1/search``)
-    return the envelope ``{"results": [{"record": {...}, "similarity": 0.87},
-    ...]}``. The Python SDK USED to hand back the bare ``data.get("results",
+    Junior Tip [envelope→typed parity, 2026-07-03]: the hybrid search endpoints
+    (``/api/v1/search/global`` and ``/api/v1/search`` — the latter also backs
+    ``search_session``) return the envelope ``{"results": [{"record": {...},
+    "similarity": 0.87}, ...]}``. (``/api/v1/search/type`` is the exception — a BARE
+    ``records`` array, parsed by ``_parse_typed_records``.) The Python SDK USED to hand back the bare ``data.get("results",
     [])`` list of raw dicts, which broke cross-SDK parity — the Go and TS SDKs
     return typed structs, not maps. We now parse each hit into a
     ``SearchResult(record=Record(...), similarity=...)`` so all three SDKs
@@ -175,6 +176,33 @@ def _parse_search_results(data: Any) -> List[SearchResult]:
             )
         )
     return parsed
+
+
+def _parse_typed_records(data: Any) -> List[SearchResult]:
+    """
+    Parse a BARE-record envelope (``{"records": [{...}, ...], "count": N}``) into
+    typed ``SearchResult`` objects.
+
+    Junior Tip [envelope-key fix, 2026-07-04]: ``/api/v1/search/type`` does NOT use
+    the ``{"results": [{"record":..., "similarity":...}]}`` envelope of ``search`` /
+    ``search_global`` / ``search_session``. The server handler ``SearchByType``
+    writes a BARE record array under ``records`` (``{"records", "count"}``). Routing
+    ``search_by_type`` through ``_parse_search_results`` (which reads ``results``)
+    therefore matched nothing and returned ``[]`` for EVERY call — the cross-SDK
+    "search_by_type returns empty" bug. Here each element already IS the full record,
+    so we wrap it into a ``SearchResult`` with ``similarity=0.0``: a type filter
+    carries no semantic distance; the ranking lives in the record's own
+    ``weight``/``score``, preserved verbatim. Mirrors Go's SearchByType and TS's
+    searchByType exactly (same key, same nested shape).
+
+    Returns an empty list when the payload is not the expected envelope object.
+    """
+    if not isinstance(data, dict):
+        return []
+    return [
+        SearchResult(record=Record(**record), similarity=0.0)
+        for record in data.get("records", [])
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +702,7 @@ class Memory:
         data = await self._connection.get(
             "/api/v1/search/type", params=params, min_index=min_index
         )
-        return _parse_search_results(data)
+        return _parse_typed_records(data)
 
     async def search_session(
         self,

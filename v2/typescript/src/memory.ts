@@ -497,20 +497,23 @@ export class Memory {
     const params: Record<string, string> = { type };
     if (limit !== undefined) params.limit = String(limit);
 
-    // Junior Tip [nested parity, 2026-07-03]: `/api/v1/search/type` returns the
-    // SAME envelope as search/recall/searchSession — `{results:[{record,
-    // similarity}]}` (server verified; Python lists this endpoint alongside
-    // /search/global and /search). We route through nestSearchResults so callers
-    // get the canonical nested {@link SearchResult} (`{record, similarity}`),
-    // identical to the other search methods — the full record is preserved, and
-    // the score lives in the sibling `similarity` field.
+    // Junior Tip [envelope-key fix, 2026-07-04]: `/api/v1/search/type` does NOT use
+    // the `{results:[{record,similarity}]}` envelope of search/recall/searchSession.
+    // The server handler (server/handler/record_search.go: SearchByType) writes a
+    // BARE record array under `records`: `{records:[<Record>],count:N}`. Reading
+    // `data.results` therefore matched nothing and returned `[]` for EVERY call —
+    // the cross-SDK "searchByType returns empty" bug. We read `records` and wrap each
+    // full record into the canonical {@link SearchResult} so the shape stays identical
+    // to the other search methods. A type filter has no semantic distance, so
+    // `similarity` is 0 — the ranking lives in the record's own weight/score, kept
+    // verbatim. Mirrors Go SearchByType and Python search_by_type (same key/shape).
     const data = await this.client.get<{
-      results?: Array<{
-        record?: Record<string, unknown>;
-        similarity?: number;
-      }>;
+      records?: Array<Record<string, unknown>>;
     }>("/api/v1/search/type", params, readOptions?.minIndex);
-    return this.nestSearchResults(data.results ?? []);
+    return (data.records ?? []).map((rawRecord) => ({
+      record: rawRecord as unknown as MemoryRecord,
+      similarity: 0,
+    }));
   }
 
   /**

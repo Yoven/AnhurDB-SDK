@@ -586,8 +586,8 @@ type recordCreateResponse struct {
 	RaftIndex uint64 `json:"raft_index,omitempty"`
 }
 
-// searchResponse is the wire format returned by the search endpoints
-// (POST /api/v1/search/global, POST /api/v1/search, GET /api/v1/search/type):
+// searchResponse is the wire format returned by the hybrid search endpoints
+// (POST /api/v1/search/global, POST /api/v1/search):
 // {"results":[{"record":{...},"similarity":...}, ...]}.
 //
 // Junior Tip [decode straight into the public type — no flatten]: each element
@@ -596,6 +596,12 @@ type recordCreateResponse struct {
 // / searchRecord subset structs (which flattened the record and dropped every
 // field except id/type/summary/metadata/content) are gone — that lossy step was
 // the bug this reform removes.
+//
+// Junior Tip [NOT search/type, 2026-07-04]: GET /api/v1/search/type does NOT use
+// this envelope — it returns a BARE {"records":[<Record>],"count":N} array with no
+// per-hit similarity (server/handler/record_search.go: SearchByType). SearchByType
+// decodes "records" directly and wraps into SearchResult; reusing searchResponse
+// there read the absent "results" key and silently returned an empty slice.
 type searchResponse struct {
 	Results []SearchResult `json:"results"`
 }

@@ -630,17 +630,29 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 		return nil, err
 	}
 
-	var resp searchResponse
+	// Junior Tip [envelope-key fix, 2026-07-04]: GET /api/v1/search/type does NOT use
+	// the {"results":[{record,similarity}]} envelope of Search/SearchGlobal — the server
+	// handler (server/handler/record_search.go: SearchByType) writes a BARE record array
+	// under "records": {"records":[<Record>],"count":N}. Decoding into searchResponse
+	// (which reads "results") therefore matched NOTHING and returned an empty slice for
+	// EVERY call — the cross-SDK "search_by_type returns empty" bug. We decode "records"
+	// and wrap each full record into the canonical SearchResult so the return shape stays
+	// identical to the other search methods. A type filter carries no semantic distance,
+	// so Similarity is 0 — the ranking lives in the record's own weight/score, preserved
+	// verbatim.
+	var resp struct {
+		Records []models.Record `json:"records"`
+	}
 	if err := json.Unmarshal(respBytes, &resp); err != nil {
 		return nil, fmt.Errorf("parsing search-by-type response: %w", err)
 	}
 
-	// Same nested {record, similarity} envelope as Search — decode straight in,
-	// keeping the full record. Preserve the non-nil empty-slice contract.
-	if resp.Results == nil {
-		return []SearchResult{}, nil
+	// Preserve the non-nil empty-slice contract (callers range over the result).
+	results := make([]SearchResult, 0, len(resp.Records))
+	for _, record := range resp.Records {
+		results = append(results, SearchResult{Record: record})
 	}
-	return resp.Results, nil
+	return results, nil
 }
 
 // SmartSearch performs full-text search with cognitive weight boosting.
