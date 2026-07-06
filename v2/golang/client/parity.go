@@ -124,7 +124,17 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 		"status":         status,
 	}
 
-	respBytes, postErr := m.postRecordSeedingAnchor(ctx, payload, recordType)
+	// Junior Tip [no anchor-seed — 2026-07-06]: the create is exactly ONE
+	// request. The server AUTO-LINKS the episodic anchor
+	// (record_create.go FindLastEpisodicConsistent, Rule 3a) and the RYW race is
+	// closed by writeConn, so a derived record (fact/decision/…) placed in a
+	// session that already has an episodic just works. A session GENUINELY with
+	// no episodic returns an honest typed 422 ("create an episodic record
+	// first") — the CORRECT contract, since callers write episodic-first
+	// (agents/plugin already do). We do NOT fabricate a synthetic episodic
+	// anchor: that polluted the graph (violates the perfect-brain invariant) and
+	// diverged from the gRPC path. The typed error surfaces straight to the dev.
+	respBytes, postErr := m.conn.Post(ctx, "/api/v1/records", payload)
 	if postErr != nil {
 		return nil, postErr
 	}
@@ -141,40 +151,6 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 		Mode:      "oss",
 		RaftIndex: resp.RaftIndex,
 	}, nil
-}
-
-// postRecordSeedingAnchor POSTs a record payload to /api/v1/records and, if the
-// server rejects it because the session has no episodic anchor yet, seeds one
-// episodic anchor in the SAME session and retries the original write ONCE.
-//
-// Junior Tip [anchor-seed parity, 2026-06-18]: the server refuses a non-episodic
-// record (fact/decision/…) in a session with no episodic anchor, returning HTTP
-// 422 "…without an episodic anchor…". The TypeScript and Python SDKs seed the
-// missing anchor and retry so a typed first write "just works"; Go now does the
-// same in both Create and createRecord, so create()/add() behave identically
-// across the three SDKs. An episodic write never triggers this (an episodic IS
-// an anchor). The seed reuses the same payload as an episodic (weight 0.5) so the
-// anchor carries the caller's text. Duplicate seeds from a concurrent race are
-// deduped per-session server-side.
-func (m *Memory) postRecordSeedingAnchor(ctx context.Context, payload map[string]interface{}, recordType string) ([]byte, error) {
-	respBytes, postErr := m.conn.Post(ctx, "/api/v1/records", payload)
-	if postErr == nil {
-		return respBytes, nil
-	}
-	if recordType == "episodic" || !isEpisodicAnchorError(postErr) {
-		return nil, postErr
-	}
-
-	anchorPayload := make(map[string]interface{}, len(payload))
-	for payloadKey, payloadValue := range payload {
-		anchorPayload[payloadKey] = payloadValue
-	}
-	anchorPayload["type"] = "episodic"
-	anchorPayload["weight"] = 0.5
-	if _, seedErr := m.conn.Post(ctx, "/api/v1/records", anchorPayload); seedErr != nil {
-		return nil, seedErr
-	}
-	return m.conn.Post(ctx, "/api/v1/records", payload)
 }
 
 // --------------------------------------------------------------------------

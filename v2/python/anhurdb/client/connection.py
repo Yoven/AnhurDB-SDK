@@ -23,7 +23,6 @@ Security hardening:
 """
 
 import aiohttp
-import asyncio
 import json
 import re
 from typing import Any, Dict, Optional
@@ -58,46 +57,19 @@ _HEADER_MIN_INDEX = "X-Anhur-Min-Index"
 # Regex for validating header values — rejects CRLF injection attempts.
 _HEADER_SAFE = re.compile(r"^[\x20-\x7E]+$")
 
-# HTTP methods that are safe to retry without changing server state more than
-# once. AnhurDB record creation is idempotent per (uuid, summary, content) on
-# the leader, so a write that failed *because the node lost leadership* never
-# committed locally and is safe to replay against the new leader.
-_RETRYABLE_METHODS = frozenset({"POST", "PATCH", "PUT", "GET", "DELETE"})
-
-# Number of total attempts (1 initial + retries) for transient write failures.
-_MAX_WRITE_ATTEMPTS = 3
-
-# Base backoff in seconds; grows exponentially (0.1, 0.2, 0.4 ...).
-_RETRY_BASE_BACKOFF = 0.1
-
-# Substrings (matched case-insensitively against an HTTP 500 body) that mark a
-# transient cluster condition worth retrying:
-#   - leadership handoff in flight (raft "node is not the leader" / not_leader)
-#   - the episodic anchor for a session not yet visible on the node that served
-#     the write (read-your-writes lag right after session creation).
-# Junior Tip [transient-only retry, 2026-06-08]: we deliberately do NOT retry
-# every 5xx. A genuine application bug returning 500 must surface immediately,
-# not be hidden behind three silent replays. Only these known-transient,
-# self-healing cluster states qualify.
-_TRANSIENT_500_MARKERS = (
-    "not_leader",
-    "not the leader",
-    "not leader",
-    "leadership",
-    "no leader",
-    "leader unknown",
-    "anchor",
-)
-
-
-def _is_transient_cluster_error(body_text: str) -> bool:
-    """
-    Return True if an HTTP 500 body indicates a self-healing cluster state
-    (leadership handoff or a not-yet-visible session anchor) that justifies an
-    idempotent retry.
-    """
-    lowered = body_text.lower()
-    return any(marker in lowered for marker in _TRANSIENT_500_MARKERS)
+# Junior Tip [transparent pipe — router owns retry, 2026-07-06]: this transport
+# deliberately has NO retry loop. It issues exactly ONE HTTP request per call
+# and surfaces the outcome verbatim. The SINGLE owner of retry in the AnhurDB
+# stack is the ROUTER (the write path that fronts the Raft leader); it replays
+# idempotent writes across a leadership handoff where it can prove the previous
+# attempt never committed. A client-side transport retry is the WIDEST possible
+# net — it re-fires GETs and every 5xx marker match, which (a) double-counts
+# reads, (b) can mask a genuine server bug behind silent replays, and (c)
+# duplicates work the router already does correctly and closer to the log. So we
+# removed the former ``_MAX_WRITE_ATTEMPTS`` / ``_RETRYABLE_METHODS`` /
+# ``_TRANSIENT_500_MARKERS`` / ``_is_transient_cluster_error`` / exponential-
+# backoff machinery entirely. Callers that truly need a retry decide it at their
+# own layer with full context; the pipe just carries bytes.
 
 
 def _validate_header_value(value: str, name: str) -> None:
@@ -394,13 +366,15 @@ class HTTPConnection:
         min_index: Optional[int] = None,
     ) -> Any:
         """
-        Execute an HTTP request and return parsed JSON.
+        Execute a SINGLE HTTP request and return parsed JSON.
 
-        Transient-failure handling:
-          - An HTTP 500 whose body marks a self-healing cluster state
-            (leadership handoff or a not-yet-visible session anchor) is retried
-            up to ``_MAX_WRITE_ATTEMPTS`` times with exponential backoff. Every
-            other 500 surfaces immediately. See ``_is_transient_cluster_error``.
+        Transparent pipe (Junior Tip [router owns retry, 2026-07-06]): this
+        makes exactly ONE request and surfaces the result — success, typed HTTP
+        error, or connection failure — with NO retry. The router is the single
+        retry owner in the stack (it can prove an idempotent write never
+        committed before replaying it across a leadership handoff). Every 5xx,
+        including a leadership-handoff body, now surfaces immediately to the
+        caller instead of being silently replayed here.
 
         Security:
           - Response body capped at ``max_response_size`` to prevent OOM.
@@ -441,104 +415,87 @@ class HTTPConnection:
         if min_index:
             request_headers = {_HEADER_MIN_INDEX: str(min_index)}
 
-        retryable = method.upper() in _RETRYABLE_METHODS
+        # Single request, no retry — the router is the only retry owner (see the
+        # transparent-pipe Junior Tip on this method and at module level).
+        try:
+            async with session.request(
+                method,
+                url,
+                json=body,
+                headers=request_headers,
+                allow_redirects=False,
+            ) as response:
+                # SECURITY: Cap response size to prevent memory exhaustion.
+                raw = await response.content.read(self._max_response_size + 1)
+                if len(raw) > self._max_response_size:
+                    raise AnhurError(
+                        f"Response exceeds maximum size "
+                        f"({self._max_response_size // (1024*1024)} MB)"
+                    )
+                body_text = raw.decode("utf-8", errors="replace")
 
-        last_transient_error: Optional[AnhurError] = None
-        for attempt_index in range(_MAX_WRITE_ATTEMPTS):
-            try:
-                async with session.request(
-                    method,
-                    url,
-                    json=body,
-                    headers=request_headers,
-                    allow_redirects=False,
-                ) as response:
-                    # SECURITY: Cap response size to prevent memory exhaustion.
-                    raw = await response.content.read(self._max_response_size + 1)
-                    if len(raw) > self._max_response_size:
-                        raise AnhurError(
-                            f"Response exceeds maximum size "
-                            f"({self._max_response_size // (1024*1024)} MB)"
-                        )
-                    body_text = raw.decode("utf-8", errors="replace")
+                # Map HTTP status codes to typed exceptions.
+                # SECURITY: Error messages include status + server body but
+                # never the API key or full URL (which could leak in logs).
+                if response.status in (401, 403):
+                    raise AnhurAuthError(
+                        f"Authentication failed (HTTP {response.status})"
+                    )
+                elif response.status in (400, 422):
+                    raise AnhurQueryError(
+                        f"Invalid request (HTTP {response.status}): {body_text[:500]}"
+                    )
+                elif response.status == 404:
+                    raise AnhurQueryError(
+                        f"Resource not found (HTTP 404): {path}"
+                    )
+                elif response.status == 409:
+                    raise AnhurQueryError(
+                        f"Conflict (HTTP 409): {body_text[:500]}"
+                    )
+                elif response.status == 415:
+                    raise AnhurQueryError(
+                        f"Unsupported media type (HTTP 415): {body_text[:500]}"
+                    )
+                elif response.status == 429:
+                    raise AnhurError(
+                        f"Rate limited (HTTP 429): {body_text[:200]}"
+                    )
+                elif response.status in (301, 302, 303, 307, 308):
+                    # Redirects are disabled for security. Log the attempt.
+                    raise AnhurError(
+                        f"Server returned redirect (HTTP {response.status}). "
+                        f"Redirects are disabled to prevent credential leakage."
+                    )
+                elif response.status >= 500:
+                    # No retry here: surface the server error verbatim. The
+                    # router replays idempotent writes across a leadership
+                    # handoff; a transport-level replay would be the widest,
+                    # least-informed retry (it would re-fire reads too).
+                    raise AnhurError(
+                        f"Server error (HTTP {response.status}): "
+                        f"{body_text[:500]}"
+                    )
 
-                    # Map HTTP status codes to typed exceptions.
-                    # SECURITY: Error messages include status + server body but
-                    # never the API key or full URL (which could leak in logs).
-                    if response.status in (401, 403):
-                        raise AnhurAuthError(
-                            f"Authentication failed (HTTP {response.status})"
-                        )
-                    elif response.status in (400, 422):
-                        raise AnhurQueryError(
-                            f"Invalid request (HTTP {response.status}): {body_text[:500]}"
-                        )
-                    elif response.status == 404:
-                        raise AnhurQueryError(
-                            f"Resource not found (HTTP 404): {path}"
-                        )
-                    elif response.status == 409:
-                        raise AnhurQueryError(
-                            f"Conflict (HTTP 409): {body_text[:500]}"
-                        )
-                    elif response.status == 415:
-                        raise AnhurQueryError(
-                            f"Unsupported media type (HTTP 415): {body_text[:500]}"
-                        )
-                    elif response.status == 429:
-                        raise AnhurError(
-                            f"Rate limited (HTTP 429): {body_text[:200]}"
-                        )
-                    elif response.status in (301, 302, 303, 307, 308):
-                        # Redirects are disabled for security. Log the attempt.
-                        raise AnhurError(
-                            f"Server returned redirect (HTTP {response.status}). "
-                            f"Redirects are disabled to prevent credential leakage."
-                        )
-                    elif response.status >= 500:
-                        server_error = AnhurError(
-                            f"Server error (HTTP {response.status}): "
-                            f"{body_text[:500]}"
-                        )
-                        # Retry only the known-transient cluster states, and
-                        # only when more attempts remain.
-                        if (
-                            retryable
-                            and _is_transient_cluster_error(body_text)
-                            and attempt_index < _MAX_WRITE_ATTEMPTS - 1
-                        ):
-                            last_transient_error = server_error
-                            await asyncio.sleep(
-                                _RETRY_BASE_BACKOFF * (2 ** attempt_index)
-                            )
-                            continue
-                        raise server_error
+                if not body_text:
+                    return {}
 
-                    if not body_text:
-                        return {}
+                try:
+                    return json.loads(body_text)
+                except json.JSONDecodeError:
+                    # Plain-text body. ``read_content`` wants it verbatim;
+                    # everyone else gets the legacy ``{"message": ...}``
+                    # envelope for backward compatibility.
+                    if raw_text:
+                        return body_text
+                    return {"message": body_text[:1000]}
 
-                    try:
-                        return json.loads(body_text)
-                    except json.JSONDecodeError:
-                        # Plain-text body. ``read_content`` wants it verbatim;
-                        # everyone else gets the legacy ``{"message": ...}``
-                        # envelope for backward compatibility.
-                        if raw_text:
-                            return body_text
-                        return {"message": body_text[:1000]}
-
-            except aiohttp.ClientError as exc:
-                # SECURITY: Do not include the full URL in error messages
-                # as it could be logged and contains the server address.
-                raise AnhurConnectionError(
-                    f"Failed to connect to AnhurDB: {type(exc).__name__}"
-                ) from exc
-
-        # All attempts exhausted on a transient error.
-        if last_transient_error is not None:
-            raise last_transient_error
-        # Defensive: loop should always return or raise above.
-        raise AnhurError("request failed without a response")
+        except aiohttp.ClientError as exc:
+            # SECURITY: Do not include the full URL in error messages
+            # as it could be logged and contains the server address.
+            raise AnhurConnectionError(
+                f"Failed to connect to AnhurDB: {type(exc).__name__}"
+            ) from exc
 
     # -- MCP tunnel (legacy/alternative transport) --------------------------
 

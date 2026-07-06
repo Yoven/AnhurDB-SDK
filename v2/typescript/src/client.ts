@@ -78,42 +78,26 @@ const HEADER_MIN_INDEX = "X-Anhur-Min-Index";
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 
-/**
- * Number of attempts (initial + retries) for idempotent writes that hit a
- * transient cluster condition.
+/*
+ * Junior Tip [transparent pipe, 2026-07-06]: this SDK deliberately owns NO
+ * transport-level retry. The ROUTER (:8000) is the single authority for write
+ * retry / leader-redirect across the cluster — it already retries transient
+ * cluster conditions (`not_leader`, anchor-replication races) server-side
+ * before it ever answers the SDK. A second retry budget in the client would
+ * (a) stack on top of the router's, turning a genuine 5xx storm into a 3x
+ * amplification, and (b) let the three SDKs drift from one another and from the
+ * router. So the transport is a TRANSPARENT PIPE: exactly one HTTP attempt,
+ * then the typed error is handed straight back to the caller. The former
+ * WRITE_RETRY_ATTEMPTS / RETRY_BACKOFF_BASE_MS / isTransientWriteError() /
+ * delay() / TransientWriteError machinery was removed for this reason.
  *
- * Junior Tip [retry parity, 2026-06]: 3 total attempts matches the Go/Python
- * SDK retry budget. We ONLY retry writes whose effect is idempotent at the
- * application layer (POST/PATCH of the same record payload) and ONLY for the
- * two known-transient signatures below — never blanket-retry, or a genuine
- * 500 storm turns into a 3x amplification.
+ * NOTE — there is ALSO no application-level anchor seeding. `createRecord` in
+ * memory.ts makes exactly one request; a 422 "episodic anchor" surfaces as a
+ * typed AnhurQueryError and is NEVER silently patched by fabricating a synthetic
+ * episodic record. (The old seed-and-retry was removed 2026-07-06 — it polluted
+ * the graph with a phantom anchor and diverged from the gRPC path; the server
+ * auto-links a real anchor when the session already has one.)
  */
-const WRITE_RETRY_ATTEMPTS = 3;
-
-/** Base backoff in milliseconds; doubles each attempt (100, 200, 400...). */
-const RETRY_BACKOFF_BASE_MS = 100;
-
-/**
- * Decide whether an error response is a transient cluster condition that a
- * retry can plausibly clear.
- *
- *   - HTTP 500 with a "not_leader" body: the contacted node was not the Raft
- *     leader at that instant; a moment later a leader is elected / known.
- *   - Any status with an "episodic anchor" body: the anchor record this write
- *     depends on was created microseconds earlier and the read that validates
- *     it raced ahead of replication — read-your-writes catches up on retry.
- */
-function isTransientWriteError(status: number, bodyText: string): boolean {
-  const lower = bodyText.toLowerCase();
-  if (status === 500 && lower.includes("not_leader")) return true;
-  if (lower.includes("episodic anchor")) return true;
-  return false;
-}
-
-/** Sleep helper for backoff between retries. */
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
 
 /** Regex for safe HTTP header values (printable ASCII only). */
 const HEADER_SAFE = /^[\x20-\x7e]*$/;
@@ -237,44 +221,17 @@ export class HttpClient {
 
   // ── Core request method ──────────────────────────────────────
 
-  private async request<T>(opts: RequestOptions): Promise<T> {
-    // Junior Tip [retry, 2026-06]: only POST/PATCH are retried, and only on
-    // the transient signatures in isTransientWriteError. GET is safe to retry
-    // too in principle, but the two transient conditions we target
-    // (not_leader on a write, missing anchor for a dependent write) are
-    // write-path only, so we scope the budget to writes to avoid masking
-    // genuine read failures. DELETE is left single-shot (idempotency of a
-    // hard delete on retry is server-dependent).
-    const retryable = opts.method === "POST" || opts.method === "PATCH";
-    const maxAttempts = retryable ? WRITE_RETRY_ATTEMPTS : 1;
-
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this.attempt<T>(opts);
-      } catch (err: unknown) {
-        lastError = err;
-        const transient =
-          err instanceof TransientWriteError && attempt < maxAttempts;
-        if (!transient) {
-          // Unwrap the carrier so callers see the real typed AnhurError.
-          if (err instanceof TransientWriteError) throw err.cause;
-          throw err;
-        }
-        // Exponential backoff: 100ms, 200ms, ...
-        await delay(RETRY_BACKOFF_BASE_MS * 2 ** (attempt - 1));
-      }
-    }
-    // Unreachable in practice; satisfies the type checker.
-    throw lastError;
-  }
-
   /**
-   * Perform a single HTTP attempt. Throws a `TransientWriteError` (wrapping
-   * the typed error) when the response matches a retryable cluster condition,
-   * so the retry loop in `request` can distinguish it from a permanent error.
+   * Perform the single HTTP request and map the outcome to a typed result or a
+   * typed AnhurDB error.
+   *
+   * Junior Tip [transparent pipe, 2026-07-06]: exactly ONE attempt — this SDK
+   * no longer owns any transport retry (the router is the sole retry authority;
+   * see the module note above). A connection failure / timeout becomes an
+   * AnhurConnectionError; any HTTP error status becomes the matching typed
+   * AnhurError and is thrown straight back to the caller, undecorated.
    */
-  private async attempt<T>(opts: RequestOptions): Promise<T> {
+  private async request<T>(opts: RequestOptions): Promise<T> {
     let url = `${this.baseUrl}${opts.path}`;
 
     if (opts.params) {
@@ -360,11 +317,12 @@ export class HttpClient {
         );
       }
 
-      // Wrap transient conditions so the retry loop can act on them while
-      // preserving the original typed error for the final throw.
-      if (isTransientWriteError(response.status, bodyText)) {
-        throw new TransientWriteError(typedError);
-      }
+      // Junior Tip [transparent pipe, 2026-07-06]: throw the typed error
+      // straight to the caller — no transient-detection, no retry wrapper, and
+      // no semantic fix-up. The router already exhausted its retry budget before
+      // answering, so any status the SDK sees here is final; a 422 "episodic
+      // anchor" reaches the caller as a typed AnhurQueryError (memory.ts
+      // createRecord no longer seeds a synthetic anchor).
       throw typedError;
     }
 
@@ -391,19 +349,5 @@ export class HttpClient {
     } catch {
       return { message: text.slice(0, 1000) } as T;
     }
-  }
-}
-
-/**
- * Internal carrier used to flag a retryable transient cluster error between
- * `attempt` and the retry loop in `request`. Never surfaces to callers — the
- * loop always unwraps `cause` (the real typed AnhurError) before throwing.
- */
-class TransientWriteError extends Error {
-  readonly cause: AnhurError;
-  constructor(cause: AnhurError) {
-    super(cause.message);
-    this.name = "TransientWriteError";
-    this.cause = cause;
   }
 }

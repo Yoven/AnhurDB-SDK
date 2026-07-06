@@ -295,15 +295,21 @@ class Memory:
         # the Go and TS SDKs: ``<container_tag>-<YYYYMMDD-HHMMSS>-<6 hex>``.
         self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
 
-        # ID of the episodic anchor created for the current session, if any.
-        # Junior Tip [session anchor invariant, 2026-06-08]: the server rejects
-        # a derived record (fact/preference/task/…) when the session has no
-        # episodic anchor yet ("cannot create preference without an episodic
-        # anchor"). The ingest path creates that anchor implicitly; the direct
-        # records path does not, so when add() routes a typed record straight
-        # to /api/v1/records we lazily create the anchor once per session and
-        # cache its ID here so subsequent typed adds auto-link to it.
-        self._session_anchor_id: Optional[int] = None
+        # Junior Tip [anchor-seed REMOVED — 2026-07-06]: the SDK no longer
+        # tracks, probes, or fabricates a per-session episodic anchor. Two
+        # server-side facts made the client-side seed both redundant AND
+        # harmful: (1) the server AUTO-LINKS the real episodic anchor for a
+        # derived write (record_create.go FindLastEpisodicConsistent, Rule 3a),
+        # and (2) the read-your-writes race that the seed used to paper over is
+        # closed server-side (writeConn). So a derived add()/create() now issues
+        # exactly ONE request. When a session genuinely has no episodic yet, the
+        # server returns an HONEST HTTP 422 ("create an episodic record first"),
+        # which we surface verbatim as a typed AnhurQueryError — the CORRECT
+        # contract (callers write the episodic first; the agents and the plugin
+        # already do). The old seed fabricated a SYNTHETIC episodic copied from
+        # the derived text: that polluted the graph (violating the perfect-brain
+        # no-junk-data invariant) and diverged from the gRPC path, which never
+        # seeded. Deleted for good — the pipe writes what the caller asked for.
 
         # Cloud ingest availability (None = untested).
         self._ingest_available: Optional[bool] = None
@@ -460,24 +466,16 @@ class Memory:
                 caller_metadata = {"_raw": existing_metadata}
         payload["metadata"] = _build_metadata_json(self._container_tag, caller_metadata)
 
-        # Junior Tip [anchor-seed parity, 2026-06-18]: the server refuses a
-        # non-episodic record in a session with no episodic anchor yet (HTTP 422
-        # "...without an episodic anchor..."). TS and Go create() seed the missing
-        # anchor and retry once so a typed caller-owned create "just works";
-        # Python now matches. The seed reuses the same payload as an episodic
-        # (weight 0.5) in the SAME session (req.uuid). An episodic create never
-        # triggers this (an episodic IS an anchor).
-        record_type = payload.get("type")
-        try:
-            return await self._connection.post("/api/v1/records", payload)
-        except AnhurQueryError as anchor_exc:
-            if record_type == "episodic" or "episodic anchor" not in str(anchor_exc).lower():
-                raise
-            anchor_payload = dict(payload)
-            anchor_payload["type"] = "episodic"
-            anchor_payload["weight"] = 0.5
-            await self._connection.post("/api/v1/records", anchor_payload)
-            return await self._connection.post("/api/v1/records", payload)
+        # Junior Tip [anchor-seed REMOVED — 2026-07-06]: create() issues exactly
+        # ONE request. If the caller's session has no episodic anchor yet, the
+        # server returns an honest HTTP 422 ("create an episodic record first"),
+        # which propagates here as a typed AnhurQueryError for the dev to handle
+        # (write the episodic first). We deliberately do NOT fabricate a
+        # synthetic episodic and retry: the server auto-links the REAL anchor
+        # when one exists (record_create.go, Rule 3a), and seeding a fake anchor
+        # copied from the caller's derived text polluted the graph (perfect-brain
+        # invariant) and diverged from the gRPC path, which never seeded.
+        return await self._connection.post("/api/v1/records", payload)
 
     async def get(
         self,
@@ -1273,8 +1271,6 @@ class Memory:
         # same UTC second from colliding onto one session (cross-contamination), and it
         # keeps this path byte-for-byte with Go NewSession and TS newSession.
         self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
-        # New session → no anchor yet; force re-creation on the next typed add.
-        self._session_anchor_id = None
         return self._session_uuid
 
     async def list_sessions(
@@ -2147,16 +2143,14 @@ class Memory:
         effective_score = 5 if score is None else score
         effective_type = MemoryType.EPISODIC if mem_type is None else mem_type
 
-        # Ensure the session has an episodic anchor before writing a derived
-        # type. The server rejects orphan derived records (see the
-        # ``_session_anchor_id`` Junior Tip on __init__). Episodic records are
-        # themselves the anchor, so they skip this step.
-        related_ids: List[int] = []
-        if effective_type != MemoryType.EPISODIC:
-            anchor_id = await self._ensure_session_anchor()
-            if anchor_id:
-                related_ids = [anchor_id]
-
+        # Junior Tip [anchor-seed REMOVED — 2026-07-06]: a derived add() no
+        # longer probes/creates a session anchor before writing. It issues ONE
+        # request and sends NO synthetic related_ids link; the server auto-links
+        # the REAL episodic anchor (record_create.go FindLastEpisodicConsistent,
+        # Rule 3a). On a session that genuinely has no episodic yet, the server
+        # returns an honest HTTP 422 that surfaces to the caller as a typed
+        # AnhurQueryError (write the episodic first). Fabricating an anchor from
+        # the derived text here polluted the graph and diverged from gRPC.
         req = CreateRequest(
             uuid=self._session_uuid,
             type=effective_type,
@@ -2164,7 +2158,6 @@ class Memory:
             content=text,
             score=effective_score,
             weight=effective_score / 10,
-            related_ids=related_ids,
             metadata=_build_metadata_json(self._container_tag, metadata),
         )
 
@@ -2172,11 +2165,6 @@ class Memory:
             "/api/v1/records",
             req.model_dump(exclude_none=True),
         )
-
-        # If this add itself created the episodic anchor, remember its ID so
-        # later typed adds in the same session can link to it without a probe.
-        if effective_type == MemoryType.EPISODIC and self._session_anchor_id is None:
-            self._session_anchor_id = data.get("id")
 
         return {
             "session_id": self._session_uuid,
@@ -2187,36 +2175,6 @@ class Memory:
             # min_index= on a subsequent read for read-your-writes consistency.
             "raft_index": data.get("raft_index", 0),
         }
-
-    async def _ensure_session_anchor(self) -> Optional[int]:
-        """
-        Return the episodic anchor ID for the current session, creating one if
-        none exists yet.
-
-        Junior Tip [anchor caching, 2026-06-08]: cached per session in
-        ``_session_anchor_id`` so a burst of typed adds creates exactly one
-        anchor, not one per call. The anchor is a minimal episodic record — the
-        same shape the ingest endpoint produces — so downstream agents treat
-        these sessions identically whether they arrived via ingest or direct.
-        """
-        if self._session_anchor_id is not None:
-            return self._session_anchor_id
-
-        anchor_req = CreateRequest(
-            uuid=self._session_uuid,
-            type=MemoryType.EPISODIC,
-            summary="session start",
-            content="session start",
-            score=5,
-            weight=0.5,
-            metadata=_build_metadata_json(self._container_tag),
-        )
-        anchor_data = await self._connection.post(
-            "/api/v1/records",
-            anchor_req.model_dump(exclude_none=True),
-        )
-        self._session_anchor_id = anchor_data.get("id")
-        return self._session_anchor_id
 
     @staticmethod
     def _flatten_search_results(data: Any) -> List[Dict[str, Any]]:

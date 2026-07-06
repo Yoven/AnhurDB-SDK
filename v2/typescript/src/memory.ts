@@ -1280,10 +1280,14 @@ export class Memory {
    * caller key can never clobber `container_tag` — the 2026-05-22 corruption
    * bug. `weight` is derived from `score/10` to match {@link createRecord}.
    *
-   * Junior Tip [anchor]: a non-episodic type in a session with no episodic
-   * anchor is HTTP 422 server-side; we reuse {@link createRecord}'s seed-and-
-   * retry so a `create(text, { type: "fact" })` into a fresh session still
-   * succeeds instead of failing on the missing anchor.
+   * Junior Tip [anchor contract, 2026-07-06]: a non-episodic type in a session
+   * with no episodic anchor is HTTP 422 server-side ("create an episodic record
+   * first"). The SDK does NOT fabricate that anchor — {@link createRecord} makes
+   * ONE request and surfaces the typed {@link AnhurQueryError}, so a
+   * `create(text, { type: "fact" })` into a genuinely-empty session fails
+   * honestly. Callers write an episodic record first (the agents and memory
+   * plugin already do); when one exists the server auto-links the anchor
+   * (record_create.go: FindLastEpisodicConsistent, Rule 3a).
    *
    * @param text    - Record text (stored in summary + content).
    * @param options - Full-fidelity fields (all optional).
@@ -1743,40 +1747,24 @@ export class Memory {
     if (extra?.validFrom) payload.valid_from = extra.validFrom;
     if (extra?.validUntil) payload.valid_until = extra.validUntil;
 
-    let data: { id?: number; raft_index?: number };
-    try {
-      data = await this.client.post<{ id?: number; raft_index?: number }>(
-        "/api/v1/records",
-        payload,
-      );
-    } catch (err: unknown) {
-      // Junior Tip [transient anchor, 2026-06]: the server refuses a
-      // non-episodic record (fact/preference/decision/...) in a session that
-      // has no episodic "anchor" yet, returning HTTP 422 "cannot create
-      // <type> without an episodic anchor in session ...". When the caller
-      // explicitly asked for such a type, we seed the missing anchor with the
-      // same text (episodic) and retry once. This keeps score/type honoured
-      // instead of forcing the caller to manually pre-create an anchor.
-      const isAnchorError =
-        err instanceof Error &&
-        err.message.includes("episodic anchor") &&
-        type !== "episodic";
-      if (!isAnchorError) throw err;
-
-      const anchorPayload: RecordPayload = {
-        ...payload,
-        type: "episodic",
-        weight: 0.5,
-      };
-      await this.client.post<{ id?: number; raft_index?: number }>(
-        "/api/v1/records",
-        anchorPayload,
-      );
-      data = await this.client.post<{ id?: number; raft_index?: number }>(
-        "/api/v1/records",
-        payload,
-      );
-    }
+    // Junior Tip [no anchor seeding, 2026-07-06 — parity with Go/Python + gRPC]:
+    // this is exactly ONE request. When a session already has an episodic record
+    // the server AUTO-LINKS the anchor for a derived (fact/decision/…) record
+    // (server record_create.go: FindLastEpisodicConsistent, Rule 3a) and the
+    // read-your-writes race is closed server-side (single writeConn), so the only
+    // way the caller still sees HTTP 422 "create an episodic record first" is a
+    // GENUINELY anchor-less session — the honest, correct contract. This SDK USED
+    // to catch that 422, fabricate a SYNTHETIC episodic record from the same text,
+    // and retry once. That was wrong on two counts: it polluted the graph with a
+    // phantom anchor (violating the perfect-brain no-junk invariant) and it
+    // diverged from the gRPC path, which never seeds. We now let the typed
+    // AnhurQueryError SURFACE to the dev unchanged; the correct fix is caller-side
+    // (write an episodic record first — the agents and the memory plugin already
+    // do), never a client-fabricated anchor.
+    const data = await this.client.post<{ id?: number; raft_index?: number }>(
+      "/api/v1/records",
+      payload,
+    );
 
     return {
       // Junior Tip [full-fidelity create]: report the session the record

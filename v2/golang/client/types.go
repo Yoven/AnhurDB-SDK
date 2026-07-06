@@ -340,11 +340,14 @@ func WithScore(score int) AddOption {
 // WithType sets the memory type (e.g. "episodic", "semantic", "procedural").
 // When omitted, the SDK falls back to the historical default of "episodic".
 //
-// Junior Tip [server invariant]: the server rejects a "semantic" (or other
-// non-episodic) record created in a session that has no episodic anchor yet,
-// with HTTP 422 "without an episodic anchor". Add's retry logic treats that
-// rejection as transient (the anchor may be landing concurrently) — see
-// isTransientWriteError.
+// Junior Tip [server invariant — no client seed, 2026-07-06]: the server rejects
+// a "semantic" (or other non-episodic) record created in a session that has no
+// episodic anchor yet, with an honest HTTP 422. The server auto-links the
+// episodic anchor when one EXISTS (record_create.go FindLastEpisodicConsistent,
+// Rule 3a); when the session genuinely has none, the 422 ("create an episodic
+// record first") surfaces straight to the caller. The SDK does NOT fabricate a
+// synthetic anchor — that polluted the graph and diverged from gRPC. Callers
+// (agents/plugin) write an episodic first, honouring the contract.
 func WithType(memType string) AddOption {
 	return func(cfg *addConfig) {
 		cfg.memType = &memType

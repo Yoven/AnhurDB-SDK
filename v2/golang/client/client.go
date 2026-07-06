@@ -240,12 +240,22 @@ func buildMetadataJSONWith(containerTag string, extra map[string]interface{}) st
 // supplied values verbatim and returns the real DB id. WithMetadata alone does
 // NOT force the records path, because ingest preserves caller metadata.
 //
-// Junior Tip [retry semantics]: this is a WRITE, so Add transparently retries
-// a small set of TRANSIENT failures (Raft not_leader during a leadership flap,
-// and the episodic-anchor 422 that resolves once a concurrent anchor lands)
-// with exponential backoff. Permanent validation errors (empty input, bad
-// score, 401) are returned immediately — retrying those just wastes time and
-// can amplify load. See isTransientWriteError + withWriteRetry.
+// Junior Tip [router owns retry — transparent pipe, 2026-07-06]: this is a WRITE,
+// and Add issues exactly ONE request per path (ingest probe, then records) with
+// NO transport-level retry loop. The router in front of the cluster is the single
+// owner of retry and routing: it already redirects a not_leader write to the
+// current leader and rides out apply-lag, so a second retry layer in the SDK only
+// duplicated that work, hid failures behind latency, and risked double-writes.
+// Any failure (transient or permanent) now surfaces to the caller immediately.
+//
+// Junior Tip [no anchor-seed — 2026-07-06]: the SDK also no longer fabricates a
+// synthetic episodic anchor when a typed first write hits an empty session. The
+// server auto-links the episodic anchor (record_create.go
+// FindLastEpisodicConsistent, Rule 3a) and a session genuinely without any
+// episodic returns an honest 422 ("create an episodic record first") — the
+// correct contract, since callers write episodic-first. Seeding a synthetic
+// anchor polluted the graph and diverged from the gRPC path, so the typed 422
+// now surfaces straight to the caller.
 func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -271,25 +281,27 @@ func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddR
 	// score/type/metadata forces the records path.
 	forceRecordsPath := cfg.score != nil || cfg.memType != nil || len(cfg.metadata) > 0
 
-	return withWriteRetry(ctx, func() (*AddResult, error) {
-		// Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
-		// score/type. Once we know ingest is unavailable (404), we skip it on
-		// subsequent calls to avoid unnecessary round-trips.
-		if !forceRecordsPath && (m.ingestAvailable == nil || *m.ingestAvailable) {
-			result, err := m.tryIngest(ctx, text, cfg)
-			if result != nil {
-				return result, nil
-			}
-			// Only propagate non-404 errors.
-			if err != nil && !errors.Is(err, ErrNotFound) {
-				return nil, err
-			}
+	// Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
+	// score/type. Once we know ingest is unavailable (404), we skip it on
+	// subsequent calls to avoid unnecessary round-trips.
+	//
+	// Junior Tip [single request per path — router owns retry]: each branch below
+	// makes ONE request and returns its outcome directly. There is deliberately no
+	// retry loop here; the router redirects/retries at the cluster edge.
+	if !forceRecordsPath && (m.ingestAvailable == nil || *m.ingestAvailable) {
+		result, err := m.tryIngest(ctx, text, cfg)
+		if result != nil {
+			return result, nil
 		}
+		// Only propagate non-404 errors.
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
 
-		// Synchronous record creation: OSS/self-hosted fallback, OR the
-		// score/type-pinned path that ingest cannot honour.
-		return m.createRecord(ctx, text, cfg)
-	})
+	// Synchronous record creation: OSS/self-hosted fallback, OR the
+	// score/type-pinned path that ingest cannot honour.
+	return m.createRecord(ctx, text, cfg)
 }
 
 // tryIngest attempts the cloud ingest endpoint.
@@ -524,7 +536,11 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 		"status":         "saved",
 	}
 
-	respBytes, err := m.postRecordSeedingAnchor(ctx, payload, recordType)
+	// Junior Tip [no anchor-seed — 2026-07-06]: the anchor is auto-linked on the
+	// server; a session genuinely without an episodic returns an honest 422, we
+	// do NOT fabricate a synthetic one. See Create for the full rationale. This
+	// is exactly ONE request; any error (including a 422) surfaces to the caller.
+	respBytes, err := m.conn.Post(ctx, "/api/v1/records", payload)
 	if err != nil {
 		return nil, err
 	}

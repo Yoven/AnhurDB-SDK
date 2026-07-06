@@ -134,35 +134,30 @@ func TestAddDefaultsBackwardCompatible(t *testing.T) {
 	}
 }
 
-// TestAddRetriesTransientThenSucceeds drives the full Add retry path against a
-// server that returns not_leader twice (HTTP 500) then succeeds.
-func TestAddRetriesTransientThenSucceeds(t *testing.T) {
-	calls := 0
+// TestAddDoesNotRetryTransient pins the transparent-pipe contract: the SDK owns
+// NO transport retry, so a transient not_leader (HTTP 500) surfaces to the caller
+// after exactly ONE record-create request. The router — not the SDK — is
+// responsible for redirecting/retrying the write at the cluster edge.
+func TestAddDoesNotRetryTransient(t *testing.T) {
+	recordCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/ingest") {
 			http.NotFound(responseWriter, request)
 			return
 		}
-		calls++
-		if calls < 3 {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			io.WriteString(responseWriter, `{"error":"not_leader"}`)
-			return
-		}
-		io.WriteString(responseWriter, `{"id":555}`)
+		recordCalls++
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(responseWriter, `{"error":"not_leader"}`)
 	}))
 	defer server.Close()
 
 	mem := NewMemory("k", WithURL(server.URL))
-	result, err := mem.Add(context.Background(), "x")
-	if err != nil {
-		t.Fatalf("Add should have recovered after retries: %v", err)
+	if _, err := mem.Add(context.Background(), "x"); err == nil {
+		t.Fatal("expected not_leader error to surface immediately, got nil")
 	}
-	if result.ID != 555 {
-		t.Fatalf("expected id 555, got %d", result.ID)
-	}
-	// 2 ingest-404 probes are cached after the first, so record calls == 3.
-	if calls != 3 {
-		t.Fatalf("expected 3 record-create calls, got %d", calls)
+	// One ingest-404 probe caches unavailability, then a SINGLE records POST. No
+	// retry loop means the failing write is not re-sent by the SDK.
+	if recordCalls != 1 {
+		t.Fatalf("SDK must not retry; expected 1 record-create call, got %d", recordCalls)
 	}
 }

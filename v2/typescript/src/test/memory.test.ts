@@ -379,3 +379,63 @@ describe("Memory.search (nested SearchResult shape)", () => {
     }
   });
 });
+
+// ── Anchor-seed removal (single request, surface 422) ─────────
+// Junior Tip [contract, 2026-07-06]: the SDK USED to catch a 422 "episodic
+// anchor" on a derived (fact/decision/…) create, fabricate a SYNTHETIC episodic
+// record from the same text, and retry once — polluting the graph and diverging
+// from the gRPC path. That seed-and-retry was removed. A derived create into an
+// anchor-less session must now make EXACTLY ONE request and surface the typed
+// AnhurQueryError unchanged; the caller (agents/plugin) writes an episodic
+// record first. These tests lock that: request count == 1, and the error type.
+describe("Memory.create (no anchor seeding)", () => {
+  it("makes exactly one request and surfaces the typed 422, no synthetic seed", async () => {
+    const originalFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount++;
+      // Mirrors the server's honest anchor error for a genuinely-empty session.
+      return new Response(
+        "cannot create fact without an episodic anchor in session; " +
+          "create an episodic record first",
+        { status: 422 },
+      );
+    }) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      await assert.rejects(
+        () => mem.create("some fact", { type: "fact" }),
+        // A 422 maps to AnhurQueryError (see HttpClient.request).
+        (err: unknown) => err instanceof AnhurQueryError,
+      );
+      // The load-bearing assertion: ONE attempt only. Seed-and-retry would have
+      // fired a second (episodic) POST and a third (retry) POST.
+      assert.equal(callCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("surfaces the 422 even for a non-episodic add() (records path)", async () => {
+    const originalFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount++;
+      return new Response(
+        "cannot create decision without an episodic anchor in session",
+        { status: 422 },
+      );
+    }) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      // A pinned type forces the synchronous /records path (createRecord).
+      await assert.rejects(
+        () => mem.add("a decision", { type: "decision" }),
+        (err: unknown) => err instanceof AnhurQueryError,
+      );
+      assert.equal(callCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
