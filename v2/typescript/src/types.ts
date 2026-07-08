@@ -98,6 +98,18 @@ export interface AddOptions {
    * incident). Server stores `metadata` as a JSON string.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Pins the SESSION (uuid) the ingested record lands in. The tenant comes from
+   * the API key; the session is the caller's unit of conversation.
+   *
+   * Junior Tip [tenant + session, NOT "container" — 2026-07-08]: the ingest
+   * route used to hardcode the episodic session to the container_tag, collapsing
+   * every add into ONE giant session and breaking the per-session model (one
+   * consolidated per session, anchored at its first episodic). With `sessionId`
+   * each conversation is its own session while recall still scopes to the tenant.
+   * Omit = the server keeps the backward-compatible container_tag-as-session.
+   */
+  sessionId?: string;
 }
 
 /** A single record descriptor returned inside `AddResult`. */
@@ -400,6 +412,8 @@ export interface IngestPayload {
   score?: number;
   type?: string;
   metadata?: string;
+  /** Pins the record's session (uuid) to the caller's conversation; empty = container_tag default. */
+  session_id?: string;
 }
 
 /** Payload sent to POST /api/v1/records (OSS fallback + full-fidelity create). */

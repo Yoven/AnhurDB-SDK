@@ -264,7 +264,12 @@ func cmdPersist(ctx context.Context, cfg config, mem *client.Memory) {
 		}
 		chunk := fmt.Sprintf("Claude Code session %s — conversation excerpt%s (%s):\n%s",
 			sessionID, label, time.Now().UTC().Format(time.RFC3339), body)
-		if _, addErr := mem.Add(ctx, chunk); addErr != nil {
+		// Junior Tip [tenant + session, 2026-07-08]: pin the record to THIS
+		// conversation's session (sessionID), NOT the container. The tenant comes
+		// from the API key; each Claude Code conversation is its own session, so
+		// consolidation produces one consolidated per conversation anchored at its
+		// first episodic. Recall still scopes to the whole tenant.
+		if _, addErr := mem.Add(ctx, chunk, client.WithSessionID(sessionID)); addErr != nil {
 			queueChunk(cfg, chunk) // DB down → queue; recall flushes it next start (no silent loss)
 			queued++
 		} else {
@@ -517,7 +522,11 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) {
 		if readErr != nil {
 			continue
 		}
-		if _, addErr := mem.Add(ctx, string(content)); addErr == nil {
+		// Recover into the ORIGINAL conversation's session: the session id is
+		// embedded in the chunk header ("Claude Code session <id> — ..."), so a
+		// queued chunk drains back into the same session it came from instead of
+		// collapsing into the container. Empty extraction → server default.
+		if _, addErr := mem.Add(ctx, string(content), client.WithSessionID(sessionFromChunk(string(content)))); addErr == nil {
 			_ = os.Remove(path)
 			logLine(cfg, "flushed queued chunk "+path)
 		} else {
@@ -560,6 +569,22 @@ func readLines(path string) ([]string, error) {
 		lines = append(lines, scanner.Text())
 	}
 	return lines, scanner.Err()
+}
+
+// sessionFromChunk pulls the conversation session id out of a persisted chunk's
+// header ("Claude Code session <id> — conversation excerpt..."). Returns "" when
+// the header is absent, in which case the server keeps its container_tag default.
+func sessionFromChunk(chunk string) string {
+	const marker = "Claude Code session "
+	start := strings.Index(chunk, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := chunk[start+len(marker):]
+	if end := strings.IndexAny(rest, " \n\t"); end >= 0 {
+		return rest[:end]
+	}
+	return ""
 }
 
 // logLine appends a timestamped diagnostic to the plugin log. It NEVER includes the API key.

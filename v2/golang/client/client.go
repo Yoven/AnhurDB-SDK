@@ -311,13 +311,14 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 		"content":       text,
 		"container_tag": m.containerTag,
 	}
-	// Junior Tip [ingest ignores metadata, 2026-06-18]: the server's ingest
-	// request struct is exactly {content, container_tag} (handler/ingest.go), so
-	// score/type/metadata would all be silently dropped here. Add routes any
-	// pinned score/type/metadata to the synchronous records path precisely so they
-	// are NOT lost — tryIngest is therefore only reached for a plain add(text),
-	// and we deliberately forward nothing beyond content + container_tag.
-	_ = cfg // no addConfig field is honoured by the ingest endpoint
+	// Junior Tip [session_id — tenant + session, 2026-07-08]: when the caller pins
+	// a session (WithSessionID), forward it so the episodic anchor lands in THAT
+	// session instead of the container_tag-as-session default. This is the one
+	// addConfig field ingest now honours; score/type/metadata still force the
+	// records path (they are silently dropped by ingest), so they never reach here.
+	if cfg != nil && cfg.sessionID != "" {
+		payload["session_id"] = cfg.sessionID
+	}
 
 	respBytes, err := m.conn.Post(ctx, "/api/v1/ingest", payload)
 	if err != nil {

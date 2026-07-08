@@ -324,7 +324,7 @@ export class Memory {
     // score/type — the ingest worker cannot honour those, so route straight to
     // the records path that persists them verbatim.
     if (!forceRecordsPath && this.ingestAvailable !== false) {
-      const result = await this.tryIngest(text, score, type, metadata);
+      const result = await this.tryIngest(text, score, type, metadata, options?.sessionId);
       if (result !== null) return result;
     }
 
@@ -1643,12 +1643,14 @@ export class Memory {
     score: number,
     type: MemoryType,
     metadata?: Record<string, unknown>,
+    sessionId?: string,
   ): Promise<AddResult | null> {
-    // Junior Tip [score/type drop fix, 2026-06]: previously this method took
-    // the score/type as `_score`/`_type` and threw them away — the ingest
-    // payload carried only content + container_tag, silently dropping the
-    // caller's intent. We now forward them so the ingest worker can honour
-    // (or hint off) them, matching the Python/Go SDK fix.
+    // Junior Tip [score/type drop fix, 2026-06 / session 2026-07-08]: previously
+    // this method took the score/type as `_score`/`_type` and threw them away —
+    // the ingest payload carried only content + container_tag, silently dropping
+    // the caller's intent. We now forward them. `session_id` pins the record's
+    // SESSION (uuid) to the caller's conversation (tenant + session model);
+    // empty keeps the server's container_tag-as-session default.
     const payload: IngestPayload = {
       content: text,
       container_tag: this.containerTag,
@@ -1656,6 +1658,9 @@ export class Memory {
       type,
       metadata: buildMetadataJson(this.containerTag, metadata),
     };
+    if (sessionId) {
+      payload.session_id = sessionId;
+    }
 
     try {
       const data = await this.client.post<{

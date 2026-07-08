@@ -366,6 +366,7 @@ class Memory:
         score: Optional[int] = None,
         type: Optional[MemoryType] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        session_id: str = "",
     ) -> Dict[str, Any]:
         """
         Store a memory. Simplest way to save information.
@@ -410,7 +411,7 @@ class Memory:
         )
 
         if not wants_explicit_fields and self._ingest_available is not False:
-            result = await self._try_ingest(text, score, type, metadata)
+            result = await self._try_ingest(text, score, type, metadata, session_id)
             if result is not None:
                 return result
 
@@ -2080,6 +2081,7 @@ class Memory:
         score: Optional[int],
         mem_type: Optional[MemoryType],
         metadata: Optional[Dict[str, Any]],
+        session_id: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
         Attempt cloud ingest at ``/api/v1/ingest``.
@@ -2087,13 +2089,16 @@ class Memory:
         Returns None if the endpoint doesn't exist (404), allowing the
         caller to fall back to direct record creation.
 
-        Junior Tip [ingest field set, 2026-06-08]: the server ingest handler
-        only reads ``content`` + ``container_tag`` and hardcodes the episodic
-        type. ``add()`` therefore never routes here when score/type/metadata
-        are set — they would be dropped. The extra parameters are accepted only
-        to keep a uniform internal signature.
+        Junior Tip [ingest field set, 2026-06-08 / session 2026-07-08]: the
+        server ingest handler reads ``content`` + ``container_tag`` and, when
+        given, ``session_id``. It hardcodes the episodic type, so ``add()``
+        never routes here when score/type/metadata are set. ``session_id`` pins
+        the record's SESSION (uuid) to the caller's conversation — the tenant is
+        the API key's tenant; empty keeps the container_tag-as-session default.
         """
         payload = {"content": text, "container_tag": self._container_tag}
+        if session_id:
+            payload["session_id"] = session_id
 
         try:
             data = await self._connection.post("/api/v1/ingest", payload)

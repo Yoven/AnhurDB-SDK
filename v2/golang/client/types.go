@@ -324,9 +324,10 @@ type AddOption func(*addConfig)
 // "unset" sentinel — we must distinguish "score not provided" from "score
 // explicitly 0". Pointers give us that three-state (nil / set-to-zero / set).
 type addConfig struct {
-	score    *int
-	memType  *string
-	metadata map[string]interface{}
+	score     *int
+	memType   *string
+	metadata  map[string]interface{}
+	sessionID string
 }
 
 // WithScore sets the salience score (typically 0-10) on the record being added.
@@ -364,6 +365,23 @@ func WithType(memType string) AddOption {
 func WithMetadata(metadata map[string]interface{}) AddOption {
 	return func(cfg *addConfig) {
 		cfg.metadata = metadata
+	}
+}
+
+// WithSessionID pins the SESSION (uuid) the ingested record lands in. The tenant
+// comes from the API key; the session is the caller's own unit of conversation.
+//
+// Junior Tip [tenant + session, NOT "container" — 2026-07-08]: the ingest route
+// used to hardcode the episodic anchor's session to the container_tag, so every
+// call collapsed into ONE giant session. That breaks the per-session model
+// (consolidation makes ONE consolidated per session, anchored at the session's
+// first episodic). With WithSessionID the caller (e.g. the Claude-Code plugin)
+// passes the ACTUAL conversation id, so each conversation is its own session
+// while recall still scopes to the whole tenant. Empty = the server keeps the
+// backward-compatible container_tag-as-session default.
+func WithSessionID(sessionID string) AddOption {
+	return func(cfg *addConfig) {
+		cfg.sessionID = sessionID
 	}
 }
 
