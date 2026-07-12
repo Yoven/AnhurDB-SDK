@@ -17,13 +17,13 @@ Available in **Python**, **TypeScript**, and **Go**. Same API. Same endpoints. Z
 ## Install
 
 ```bash
-# Python (async Memory class + full AnhurClient + Query Builder)
+# Python (async Memory + QueryBuilder)
 pip install anhurdb
 
-# TypeScript / Node.js (zero runtime dependencies)
+# TypeScript / Node.js (Memory + QueryBuilder, zero runtime deps)
 npm install anhurdb
 
-# Go (zero external dependencies — stdlib only)
+# Go (Memory.Query + NewQuery(), zero external deps — stdlib only)
 go get github.com/anhurdb/sdk-go/v2
 ```
 
@@ -205,14 +205,10 @@ async with Memory(api_key="anhur_xxx") as mem:
     await mem.update(42, summary="Updated summary", score=8)
     await mem.delete(42)
 
-# AnhurClient also available for advanced use (AST queries, admin-level ops)
-from anhurdb import AnhurClient
-async with AnhurClient(api_key="anhur_xxx") as client:
-    from anhurdb.query import Filter
-    results = await client.search_with_ast(
-        Filter({"type": {"$eq": "risk"}, "weight": {"$gt": 0.8}}),
-        session_uuid="session-uuid",
-    )
+    # AST query (QueryBuilder)
+    from anhurdb.query import QueryBuilder
+    qb = QueryBuilder().where(type="risk", score__gte=7).limit(20)
+    records = await mem.query(qb, session_uuid="session-uuid")
 ```
 
 ### TypeScript
@@ -263,6 +259,14 @@ const sessions = await mem.listSessions();
 const history = await mem.getSessionHistory("session-uuid");
 const clusters = await mem.getSessionClusters("session-uuid");
 await mem.newSession();
+
+// AST query (QueryBuilder)
+import { QueryBuilder } from "anhurdb";
+const { records } = await new QueryBuilder()
+  .where("type", "$eq", "risk")
+  .where("score", "$gte", 7)
+  .limit(20)
+  .execute(mem);
 
 // Mutate
 await mem.update(42, { summary: "Updated" });
@@ -332,6 +336,13 @@ func main() {
     clusters, _ := mem.GetSessionClusters(ctx, "session-uuid")
     mem.NewSession()
     fmt.Println(mem.SessionID(), mem.ContainerTag())
+
+    // AST query (NewQuery fluent builder)
+    req := client.NewQuery().
+        Where("type", client.QueryOp{Eq: "risk"}).
+        Where("score", client.QueryOp{Gte: 7}).
+        Limit(20)
+    records, _ := mem.Query(ctx, req)
 
     // Mutate
     _ = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
@@ -413,6 +424,7 @@ AnhurDB-SDK/
 |   +-- typescript/          TypeScript SDK (zero runtime deps)
 |   |   +-- src/
 |   |   |   +-- memory.ts    Memory class (30+ methods)
+|   |   |   +-- query.ts     QueryBuilder (AST-based DSL)
 |   |   |   +-- client.ts    HTTP client (native fetch)
 |   |   |   +-- types.ts     All interfaces + error classes
 |   |   |   +-- index.ts     Public exports
@@ -421,8 +433,9 @@ AnhurDB-SDK/
 |   +-- golang/              Go SDK (zero external deps)
 |       +-- client/
 |       |   +-- client.go    Memory struct (30+ methods)
+|       |   +-- parity.go    Memory.Query + NewQuery() AST builder
 |       |   +-- connection.go REST HTTP client (stdlib only)
-|       |   +-- types.go     Response types, Entity, Upload, options
+|       |   +-- types.go     Response types, Entity, Upload, QueryRequest
 |       |   +-- errors.go    Typed error constants
 |       +-- models/          Record, Session, Enums (13 statuses)
 |       +-- crypto/          BSQ quantizer (stub)

@@ -161,6 +161,28 @@ err = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
 err = mem.Delete(ctx, 42)
 ```
 
+### AST Query (Query Builder)
+
+Structured filtering via `POST /api/v1/query`. Build a `QueryRequest` directly or with the fluent `NewQuery()` helper:
+
+```go
+import (
+    "context"
+    anhurdb "github.com/anhurdb/sdk-go/v2"
+    "github.com/anhurdb/sdk-go/v2/client"
+)
+
+mem := anhurdb.NewMemory("anhur_xxx")
+req := client.NewQuery().
+    Where("type", client.QueryOp{Eq: "risk"}).
+    Where("score", client.QueryOp{Gte: 7}).
+    OrderBy("weight", "desc").
+    Limit(20)
+records, err := mem.Query(context.Background(), req)
+```
+
+Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`. Filterable columns match the server whitelist (`type`, `score`, `weight`, `status`, `created_at`, etc.).
+
 ## Error Handling
 
 ```go

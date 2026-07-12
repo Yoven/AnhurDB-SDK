@@ -178,6 +178,33 @@ await mem.update(42, { summary: "Updated", score: 8, status: "archived" });
 await mem.delete(42);
 ```
 
+### Query Builder (AST)
+
+Structured filtering via `POST /api/v1/query`. Use `QueryBuilder` to compile an AST, then `Memory.query()` or `.execute()`:
+
+```typescript
+import { Memory, QueryBuilder } from "anhurdb";
+
+const mem = new Memory({ apiKey: "anhur_xxx" });
+
+// Fluent builder
+const { records } = await new QueryBuilder()
+  .where("type", "$eq", "risk")
+  .where("score", "$gte", 7)
+  .orderBy("weight", "desc")
+  .limit(20)
+  .execute(mem);
+
+// Or build + query separately
+const ast = new QueryBuilder()
+  .whereEquals("status", "saved")
+  .limit(10)
+  .build();
+const result = await mem.query(ast);
+```
+
+Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
+
 ## API Reference
 
 ### `new Memory(options)`
@@ -194,7 +221,7 @@ await mem.delete(42);
 | Category | Methods |
 |----------|---------|
 | **Core** | `add`, `search`, `profile` |
-| **Search** | `searchByType`, `smartSearch`, `recall`, `recent` |
+| **Search** | `searchByType`, `smartSearch`, `recall`, `recent`, `query` |
 | **Graph** | `walk`, `walkSemantic`, `getContext`, `readContent` |
 | **Entity** | `searchEntities`, `upsertEntity`, `entityGraph`, `entityTimeline`, `upsertEntityEdge`, `linkRecordEntity`, `getRecordEntities` |
 | **Batch** | `batchReadContent`, `batchUpdateStatus` |

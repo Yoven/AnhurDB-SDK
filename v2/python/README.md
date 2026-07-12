@@ -178,7 +178,7 @@ Memory(
 
 - **CRUD**: `create`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `delete`, `explain`
 - **Diagnostics**: `access_stats`, `get_engine_config`
-- **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `search_with_ast`
+- **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `query` (`search_with_ast` deprecated)
 - **Manifests / taxonomy**: `manifest_global`, `manifest_session`, `list_chat`, `count_by_type`, `list_types`, `recent`
 - **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_main_links`, `decay`
 - **Graph**: `walk`, `walk_semantic`, `graph`
@@ -190,26 +190,28 @@ Memory(
 
 ## Query Builder
 
-The Python SDK includes a fluent query builder for advanced filtering:
+The Python SDK includes a fluent query builder for advanced filtering. Execute via `Memory.query()` (canonical across all SDKs):
 
 ```python
+from anhurdb import Memory
 from anhurdb.query import QueryBuilder, Filter
 
-# Fluent builder with Django-style kwargs
-qb = QueryBuilder()
-qb.where(type="risk", score__gte=7).order_by("weight", "desc").limit(10)
+async with Memory(api_key="anhur_xxx") as mem:
+    # Fluent builder with Django-style kwargs
+    qb = QueryBuilder()
+    qb.where(type="risk", score__gte=7).order_by("weight", "desc").limit(10)
+    records = await mem.query(qb)
 
-# Execute via AnhurClient
-records = await client.search_with_ast(qb)
+    # Scope to a specific session
+    records = await mem.query(qb, session_uuid="session-123")
 
-# Scope to a specific session
-records = await client.search_with_ast(qb, session_uuid="session-123")
-
-# Or use Filter shorthand for simple cases
-records = await client.search_with_ast(
-    Filter({"type": {"$eq": "risk"}, "score": {"$gt": 7}}),
-)
+    # Filter shorthand for simple cases
+    records = await mem.query(
+        Filter({"type": {"$eq": "risk"}, "score": {"$gt": 7}}),
+    )
 ```
+
+> **Deprecated:** `search_with_ast()` still works but emits a `DeprecationWarning`. Use `query()` instead.
 
 Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
 
