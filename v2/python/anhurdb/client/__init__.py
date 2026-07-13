@@ -1716,7 +1716,7 @@ class Memory:
 
         Args:
             name:        Entity name (required).
-            entity_type: Entity type (e.g. ``"person"``, ``"org"``).
+            entity_type: Entity type (e.g. ``"person"``, ``"organization"``).
             summary:     Short description.
             attributes:  Arbitrary key-value metadata.
 

@@ -98,11 +98,11 @@ const content = await mem.readContent(42);
 
 ```typescript
 // Search entities
-const entities = await mem.searchEntities("Google", "org");
+const entities = await mem.searchEntities("Google", "organization");
 
 // Create/update entity (idempotent)
 const entity = await mem.upsertEntity("Google", {
-  entityType: "org",
+  entityType: "organization",
   summary: "Technology company",
 });
 

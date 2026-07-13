@@ -59,7 +59,7 @@ async with AnhurClient(api_key="anhur_xxx") as client:
     results = await client.search("data scientist", limit=10)
 
     # Entity knowledge graph
-    entity = await client.upsert_entity("Google", entity_type="org")
+    entity = await client.upsert_entity("Google", entity_type="organization")
     graph = await client.get_entity_graph(entity["id"], depth=2)
     timeline = await client.entity_timeline(entity["id"])
 

@@ -1264,7 +1264,7 @@ func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, l
 
 	params := url.Values{}
 	if query != "" {
-		params.Set("query", query)
+		params.Set("q", query)
 	}
 	if entityType != "" {
 		params.Set("type", entityType)

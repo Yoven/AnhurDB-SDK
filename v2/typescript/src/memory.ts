@@ -1203,7 +1203,7 @@ export class Memory {
    * Search named entities (people, organisations, concepts).
    *
    * @param query      - Name or keyword search.
-   * @param entityType - Filter by entity type (e.g. "person", "org").
+   * @param entityType - Filter by entity type: person, organization, concept, location, product.
    * @param limit      - Maximum results (default 20).
    */
   async searchEntities(
@@ -1213,7 +1213,8 @@ export class Memory {
     readOptions?: ReadOptions,
   ): Promise<EntityRecord[]> {
     const params: Record<string, string> = {};
-    if (query) params.query = query;
+    // Junior Tip: server handler reads `q` (not `query`) — see entity.go SearchEntities.
+    if (query) params.q = query;
     if (entityType) params.type = entityType;
     if (limit !== undefined) params.limit = String(limit);
 

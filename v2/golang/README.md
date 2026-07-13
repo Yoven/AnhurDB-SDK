@@ -97,8 +97,8 @@ content, err := mem.ReadContent(ctx, 42)               // Full payload
 
 ```go
 // Search and create entities
-entities, err := mem.SearchEntities(ctx, "Google", "org", 20)
-entity, err := mem.UpsertEntity(ctx, "Google", "org", "Tech company", nil)
+entities, err := mem.SearchEntities(ctx, "Google", "organization", 20)
+entity, err := mem.UpsertEntity(ctx, "Google", "organization", "Tech company", nil)
 
 // Entity graph and timeline
 graph, err := mem.EntityGraph(ctx, entity.ID, 2)
