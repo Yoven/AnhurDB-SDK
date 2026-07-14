@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -74,6 +75,12 @@ type config struct {
 	//   "calls" — text + a COMPACT tool_use line; tool_result skipped (default).
 	//   "all"   — the above + a TRUNCATED tool_result.
 	includeTools string
+	// archive + archiveDir control the LOSSLESS verbatim transcript archive (ANHUR_ARCHIVE,
+	// ANHUR_ARCHIVE_DIR). This is the complete counterpart to the filtered episodic feed:
+	// the cortex sees clean dialogue, the archive keeps the full transcript (thinking + tool
+	// I/O included) so nothing is ever dropped. See archiveTranscript.
+	archive    bool
+	archiveDir string
 }
 
 // loadConfig reads the runtime config from the environment, falling back to the plugin identity's
@@ -89,6 +96,11 @@ func loadConfig(plugin Config) config {
 		recallLimit:   envInt("ANHUR_RECALL_LIMIT", 8),
 		maxChunkChars: envInt("ANHUR_MAX_CHUNK_CHARS", 24000),
 		includeTools:  strings.ToLower(envOr("ANHUR_INCLUDE_TOOLS", "calls")),
+		// Junior Tip [default ON, 2026-07-14]: the archive is a capability, so it defaults
+		// TRUE in code (disabled only by the literal "false"), matching the project rule that
+		// capabilities are on-by-default rather than gated behind a flag nobody sets.
+		archive:    os.Getenv("ANHUR_ARCHIVE") != "false",
+		archiveDir: envOr("ANHUR_ARCHIVE_DIR", filepath.Join(stateDir, "archive")),
 	}
 }
 
@@ -232,6 +244,11 @@ func cmdPersist(ctx context.Context, cfg config, mem *client.Memory) {
 		sessionID = "anon-" + filepath.Base(path)
 	}
 
+	// Archive the FULL verbatim transcript (thinking + tools included) on EVERY persist,
+	// independent of the filtered episodic delta below. A session with no new dialogue lines
+	// still refreshes the archive. Best-effort and isolated — see archiveTranscript.
+	archiveTranscript(cfg, sessionID, path)
+
 	lines, err := readLines(path)
 	if err != nil {
 		logLine(cfg, "persist: cannot read transcript: "+err.Error())
@@ -278,6 +295,66 @@ func cmdPersist(ctx context.Context, cfg config, mem *client.Memory) {
 	}
 	logLine(cfg, fmt.Sprintf("persist: lines %d-%d (session=%s, chunks=%d sent=%d queued=%d)",
 		last+1, len(lines), sessionID, len(chunks), sent, queued))
+}
+
+// ── lossless transcript archive ──────────────────────────────────────────────
+
+// archiveTranscript copies the complete session transcript — Claude Code's verbatim ground
+// truth, including thinking blocks and full untruncated tool I/O that the episodic feed
+// deliberately drops — to a durable archive directory. It is the LOSSLESS counterpart to
+// the filtered cortex feed: the extraction pipeline keeps seeing clean dialogue, while the
+// archive guarantees nothing from the session is ever lost.
+//
+// Junior Tip [whole-file overwrite, keyed by session, 2026-07-14]: the transcript is copied
+// in FULL each persist to <archiveDir>/<sessionID>.jsonl, overwriting the prior copy. So the
+// archive always holds the latest complete transcript with ZERO delta/cursor bookkeeping —
+// no chance of a gap, duplicate, or reordering (the same failure modes the episodic path
+// works hard to avoid). At session end the file is final.
+//
+// Junior Tip [best-effort + isolated, 2026-07-14]: archiving must never affect the durable
+// cortex feed. Every failure path only logs and returns; it never touches the episodic
+// persist, the queue, or the exit code. Mode 0600 (dir 0700) because the transcript holds
+// verbatim secrets — same restriction the rest of the plugin uses.
+func archiveTranscript(cfg config, sessionID, transcriptPath string) {
+	if !cfg.archive {
+		return
+	}
+	if err := os.MkdirAll(cfg.archiveDir, 0o700); err != nil {
+		logLine(cfg, "archive: cannot create archive dir: "+err.Error())
+		return
+	}
+	source, openErr := os.Open(transcriptPath)
+	if openErr != nil {
+		logLine(cfg, "archive: cannot read transcript: "+openErr.Error())
+		return
+	}
+	defer source.Close()
+
+	// Atomic publish: stream into a sibling temp file, then rename (atomic on one
+	// filesystem). Streaming via io.Copy keeps a large transcript off the heap.
+	dest := filepath.Join(cfg.archiveDir, sanitize(sessionID)+".jsonl")
+	tmp := dest + ".tmp"
+	tmpFile, createErr := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if createErr != nil {
+		logLine(cfg, "archive: cannot create temp file: "+createErr.Error())
+		return
+	}
+	if _, copyErr := io.Copy(tmpFile, source); copyErr != nil {
+		tmpFile.Close()
+		_ = os.Remove(tmp)
+		logLine(cfg, "archive: copy failed: "+copyErr.Error())
+		return
+	}
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		_ = os.Remove(tmp)
+		logLine(cfg, "archive: temp close failed: "+closeErr.Error())
+		return
+	}
+	if renameErr := os.Rename(tmp, dest); renameErr != nil {
+		_ = os.Remove(tmp)
+		logLine(cfg, "archive: rename failed: "+renameErr.Error())
+		return
+	}
 }
 
 // resolveTranscript returns the transcript path, preferring the one the hook provided and falling
