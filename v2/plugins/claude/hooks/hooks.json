@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". $HOME/.anhur-claude-memory/env 2>/dev/null; ${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory recall",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". $HOME/.anhur-claude-memory/env 2>/dev/null; ${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory persist",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". $HOME/.anhur-claude-memory/env 2>/dev/null; ${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory persist",
+            "timeout": 45
+          }
+        ]
+      }
+    ]
+  }
+}

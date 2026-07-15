@@ -1,0 +1,57 @@
+name: Release Go SDK
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v2/golang/**"
+      - ".github/scripts/generate-changelog.sh"
+      - ".github/workflows/release-golang.yml"
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Tag Go SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/golang
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - run: go mod tidy
+      - run: go test -v ./...
+      - run: go build -v ./...
+
+      - name: Generate release notes
+        working-directory: .
+        run: |
+          chmod +x .github/scripts/generate-changelog.sh
+          ./.github/scripts/generate-changelog.sh golang HEAD > /tmp/release-notes.md
+          ./.github/scripts/generate-changelog.sh golang HEAD --write
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: .
+        run: |
+          TAG_PREFIX="v2/golang/v"
+          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1)
+          if [ -z "$LATEST" ]; then
+            NEW_TAG="${TAG_PREFIX}2.0.0"
+          else
+            NEW_TAG=$(echo "$LATEST" | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          fi
+          gh release create "$NEW_TAG" \
+            --title "Go SDK ${NEW_TAG#v2/golang/}" \
+            --notes-file /tmp/release-notes.md
+          echo "Go module published via tag: $NEW_TAG"

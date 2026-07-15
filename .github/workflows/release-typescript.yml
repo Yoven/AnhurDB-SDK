@@ -1,0 +1,68 @@
+name: Release TypeScript SDK
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v2/typescript/**"
+      - ".github/scripts/generate-changelog.sh"
+      - ".github/workflows/release-typescript.yml"
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Publish TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2/typescript
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Generate release notes
+        working-directory: .
+        run: |
+          chmod +x .github/scripts/generate-changelog.sh
+          ./.github/scripts/generate-changelog.sh typescript HEAD > /tmp/release-notes.md
+          ./.github/scripts/generate-changelog.sh typescript HEAD --write
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: .
+        run: |
+          TAG_PREFIX="v2/typescript/v"
+          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1)
+          if [ -z "$LATEST" ]; then
+            NEW_TAG="${TAG_PREFIX}2.0.0"
+          else
+            NEW_TAG=$(echo "$LATEST" | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          fi
+          echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
+          gh release create "$NEW_TAG" \
+            --title "TypeScript SDK ${NEW_TAG#v2/typescript/}" \
+            --notes-file /tmp/release-notes.md
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            npm publish --access public
+          else
+            echo "Skipped npm publish (NPM_TOKEN not configured)."
+          fi

@@ -1,0 +1,11 @@
+{
+  "name": "anhurdb-memory-hermes",
+  "description": "The Hermes memory identity: a persistent, sovereign long-term memory backed by AnhurDB, isolated from the default Claude memory (its own tenant + container 'hermes-ltm' + state dir ~/.anhur-hermes-memory). Same engine as anhurdb-memory: auto-recall at session start, incremental auto-persist every turn and at session end, no-silent-loss disk queue + retry. Also bundles the AnhurDB MCP tools for explicit recall/store during a session.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Anhur",
+    "url": "https://anhur.cloud"
+  },
+  "homepage": "https://anhur.cloud",
+  "keywords": ["memory", "mcp", "anhurdb", "long-term-memory", "rag", "agent-memory"]
+}

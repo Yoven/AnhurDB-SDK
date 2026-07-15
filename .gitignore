@@ -1,0 +1,46 @@
+# Go binaries and coverage
+bin/
+coverage.out
+*.test
+anhur-claude-memory
+anhur-hermes-memory
+
+# Node
+node_modules/
+
+# Go module cache / env
+vendor/
+.env
+
+# Python Pycache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python environments
+venv/
+env/
+.env
+.venv
+*.venv/
+
+# Python packaging & distribution
+dist/
+build/
+*.egg-info/
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.tox/
+.nox/
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS System Files
+.DS_Store
