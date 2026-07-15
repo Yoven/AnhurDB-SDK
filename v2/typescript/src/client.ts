@@ -48,11 +48,15 @@ const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
 /**
  * Per-request timeout in milliseconds.
  *
- * default timeout, so a stalled server would hang the caller's promise forever.
- * 30_000ms (30s) matches the Python SDK (requests timeout=30) and the Go SDK
- * (http.Client.Timeout = 30s) so all three SDKs fail at the same boundary.
+ * Default 30_000ms matches the Python SDK and the Go SDK so all three fail at
+ * the same boundary. Override via ANHUR_REQUEST_TIMEOUT_MS for long-running
+ * hosted paths (e.g. HEL1 E2E search auto-embed, which routinely exceeds 30s
+ * under DeepInfra load while Go's e2e runner already uses 90s).
  */
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.ANHUR_REQUEST_TIMEOUT_MS || "");
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
+})();
 
 /*
  * Transport is a transparent pipe: exactly one HTTP attempt per call, then the
