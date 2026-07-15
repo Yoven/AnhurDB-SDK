@@ -40,19 +40,31 @@ go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.2
 ## How It Works
 
 ```
-Your App                    AnhurDB
-========                    =======
+Your App                         AnhurDB
+========                         =======
 
-mem.add("text")
+mem.add("text")                  PLATFORM PATH
     |  POST /api/v1/ingest
-    +---------------------->  Store memory, extract structured facts
-    <----------------------+  Return session_id and created records
+    +-------------------------->  Write 1 episodic now
+    <--------------------------+  Return episodic id
+                                  └─ async: extraction agent → satellites
+                                     (LLM + embed tokens billed)
+
+mem.create(typed...)             CALLER PATH
+    |  POST /api/v1/records
+    +-------------------------->  Write exactly 1 typed record
+    <--------------------------+  No extraction LLM
+                                  └─ async: enrichment embed only
 
 mem.search("query")
     |  POST /api/v1/search/global
-    +---------------------->  Hybrid search across sessions
-    <----------------------+  Ranked results with similarity scores
+    +-------------------------->  Hybrid search across sessions
+    <--------------------------+  Ranked results with similarity scores
 ```
+
+**Billing tip:** prefer `create` when you already have a typed atom (no
+extraction LLM). Prefer `add` / ingest for raw chat/notes — satellites are
+created by the platform and those LLM tokens are metered on your tenant.
 
 ---
 
@@ -64,7 +76,8 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `add(text)` | Store a memory with auto-extraction | POST /api/v1/ingest |
+| `add(text)` | Platform path: episodic + async extraction (LLM+embed billed) | POST /api/v1/ingest |
+| `create(...)` | Caller path: one typed record, no extraction (embed only) | POST /api/v1/records |
 | `search(query)` | Find relevant memories (global, cross-session) | POST /api/v1/search/global |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
 

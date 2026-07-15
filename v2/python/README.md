@@ -32,7 +32,8 @@ pip install \
 from anhurdb import Memory
 
 async with Memory(api_key="anhur_xxx") as mem:
-    # Store a memory (auto-embedding + extraction on cloud)
+    # add() → /ingest: episodic + platform extraction (LLM billed)
+    # create() → /records: one typed record, no extraction LLM
     await mem.add("I'm a data scientist at Google working on NLP")
 
     # Search across all sessions

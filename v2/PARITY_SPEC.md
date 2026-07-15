@@ -19,8 +19,8 @@ API. This document is the public contract; deviations are bugs.
 | Tool | Go / Python / TypeScript | HTTP route |
 |---|---|---|
 | health | `Health` / `health` / `health` | `GET /api/v1/health` |
-| ingest_memory | `Add` / `add` / `add` | `POST /api/v1/ingest` or `/records` |
-| create_memory | `Create` / `create` / `create` | `POST /api/v1/records` |
+| ingest_memory | `Add` / `add` / `add` | `POST /api/v1/ingest` (default) — episodic + platform extraction; LLM+embed billed. Falls back to `/records` if ingest 404 or caller pins type/score/metadata |
+| create_memory | `Create` / `create` / `create` | `POST /api/v1/records` — one typed record, **no** extraction LLM (embed only) |
 | create_in_session | `CreateInSession` / `create_in_session` / `createInSession` | `POST /api/v1/records` |
 | get_memory | `Get` / `get` / `get` | `GET /api/v1/records/{id}` |
 | update_memory | `Update` / `update` / `update` | `PATCH /api/v1/records/{id}` |

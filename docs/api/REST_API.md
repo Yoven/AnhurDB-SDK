@@ -18,11 +18,30 @@ X-Tenant-ID: my-tenant     (optional, multi-tenant)
 |--------|------|-------------|
 | GET | `/api/v1/health` | Service health check |
 
+### Write paths: `/ingest` vs `/records`
+
+AnhurDB exposes **two** write contracts. They are not interchangeable — behavior
+and **token billing** differ.
+
+| | `POST /api/v1/ingest` | `POST /api/v1/records` |
+|--|----------------------|------------------------|
+| SDK | `add(text)` (default) | `create(...)` — also `add(...)` when `type` / `score` / `metadata` are set |
+| MCP | `ingest_memory` | `create_memory` |
+| Immediate write | **1 episodic** | **Exactly 1** typed record |
+| Satellites (fact, preference, …) | **Platform** extraction agent (async NATS) | **Caller** only — no extraction job |
+| Body | `content` + `container_tag` (+ optional `session_id`) | Full create payload (`uuid`, `type`, `content`, …) |
+| Billing | Extraction **LLM** tokens + embed tokens for episodic **and** each satellite | **No** extraction LLM; embed tokens for that one record |
+
+```
+ingest:  text → episodic → extraction.create → agents create satellites
+records: typed payload → one record → enrichment embed only
+```
+
 ### Record CRUD
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/records` | Create a memory record |
+| POST | `/api/v1/records` | Create one typed record (**no** extraction) |
 | GET | `/api/v1/records/{id}` | Get record metadata |
 | GET | `/api/v1/records/{id}/content` | Get full record content |
 | GET | `/api/v1/records/{id}/topology` | Get record and nearby graph nodes |
@@ -87,7 +106,7 @@ X-Tenant-ID: my-tenant     (optional, multi-tenant)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/ingest` | Ingest text with auto-extraction |
+| POST | `/api/v1/ingest` | Platform path: episodic + async extraction (LLM + embed billed) |
 | GET | `/api/v1/profile` | User or agent profile |
 
 ### File upload
