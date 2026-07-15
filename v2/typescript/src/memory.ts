@@ -133,8 +133,7 @@ function randomHexSuffix(): string {
  *
  * path historically wrote `metadata` as the bare container_tag string
  * ("mem-3f9...") instead of a JSON object. On the server that poisoned every
- * downstream agent running `JSON.parse(metadata)` — entity taggers logged
- * `tagged_no_entities` and a one-shot repair had to fix 516 corrupted records.
+ * downstream code running `JSON.parse(metadata)` — keep the wire value valid JSON.
  * Go and Python SDKs carry the identical fix (buildMetadataJSON /
  * _build_metadata_json). ALL THREE SDKs MUST stay byte-identical here — see
  * the SDK-sync rule in project memory. Returns "{}" when the tag is empty.
@@ -142,10 +141,8 @@ function randomHexSuffix(): string {
 function buildMetadataJson(
   containerTag: string,
   extra?: Record<string, unknown>): string {
-  // merged UNDER the container_tag so the canonical tag can never be
-  // clobbered by a caller key named "container_tag" — that exact overwrite
-  // is what corrupted 516 records in 2026-05-22. Spread extra first, then
-  // force container_tag last.
+  // Merge caller extras first, then force container_tag last so a caller key
+  // named "container_tag" can never clobber the SDK-owned tag.
   if (!containerTag && !extra) return "{}";
   const merged: Record<string, unknown> = { ...(extra ?? {}) };
   if (containerTag) merged.container_tag = containerTag;
@@ -243,15 +240,13 @@ export class Memory {
    * embedding + extraction automatically). If that returns 404,
    * falls back to `/api/v1/records` (OSS mode, stores as text).
    *
-   * cloud `/api/v1/ingest` worker owns its OWN salience scoring and type
-   * classification — it hardcodes `type=episodic` and stores its own computed
-   * score, SILENTLY DROPPING any caller-supplied score/type (observed on the
-   * live cluster: a supplied score=8 landed as score=0). So when the caller
-   * explicitly pins `score` OR `type`, we skip ingest entirely and take the
-   * synchronous `/api/v1/records` path, which writes those values verbatim.
+   * Cloud `/api/v1/ingest` owns salience scoring and type classification —
+   * it stores type as episodic and does not persist caller-supplied score/type.
+   * When the caller explicitly pins `score` OR `type`, skip ingest and use
+   * synchronous `/api/v1/records`, which writes those values verbatim.
    * Plain `add(text)` with no score/type still prefers ingest (auto-embedding +
    * extraction). `metadata` alone does NOT force the records path, because
-   * ingest preserves caller metadata — this mirrors the Go SDK condition.
+   * ingest preserves caller metadata — this mirrors the Go/Python SDKs.
    *
    * @param text    - The text to remember.
    * @param options - Optional score (1-10) and memory type.
@@ -288,7 +283,7 @@ export class Memory {
     // Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
     // the records path that persists them verbatim.
     if (!forceRecordsPath && this.ingestAvailable !== false) {
-      const result = await this.tryIngest(text, score, type, metadata, options?.sessionId);
+      const result = await this.tryIngest(text, options?.sessionId);
       if (result !== null) return result;
     }
 
@@ -351,11 +346,8 @@ export class Memory {
    * `/search/global`), this hits the session `POST /api/v1/search` endpoint with
    * a `uuid`, so results come only from that one chat.
    *
-   * Search handler requires EITHER `text` OR `vector` (HTTP 400 otherwise) and
-   * has NO `mode` field — the vector/text/hybrid mode is implicit (text-only =
-   * unknown keys. We send `text` (the natural-language query) plus the scoping
-   * `uuid`; the optional `typeFilter` and RFC3339 temporal bounds map to
-   * `type_filter`/`as_of`/`since`/`until`. Mirrors Python `search_session` and
+   * Sends `text` (the natural-language query), scoping `uuid`, optional
+   * `limit`, and optional `type_filter`. Mirrors Python `search_session` and
    * Go `SearchSession`.
    *
    * @param query       - Natural language query (sent as `text`).
@@ -447,9 +439,11 @@ export class Memory {
    */
   async searchByType(
     type: MemoryType,
-    limit?: number): Promise<SearchResult[]> {
+    limit?: number,
+    query?: string): Promise<SearchResult[]> {
     const params: Record<string, string> = { type };
     if (limit !== undefined) params.limit = String(limit);
+    if (query) params.q = query;
 
     // the `{results:[{record,similarity}]}` envelope of search/recall/searchSession.
     // BARE record array under `records`: `{records:[<Record>],count:N}`. Reading
@@ -861,9 +855,8 @@ export class Memory {
    */
   async readContent(
     recordId: number): Promise<string> {
-    // (não JSON). getText devolve o corpo verbatim — antes, get<{content}> via
-    // JSON.parse falhava, embrulhava em {message} e isto retornava "" (perda
-    // total do conteúdo). Agora alinhado com Go (raw bytes) e Python (raw_text).
+    // text/plain body — use getText (raw), not JSON parse. Matches Go raw
+    // bytes and Python raw_text=True.
     return this.client.getText(
       `/api/v1/records/${recordId}/content`,
       undefined);
@@ -943,6 +936,29 @@ export class Memory {
    * @param recordId - The record ID to update.
    * @param fields   - Partial fields to update.
    */
+  /**
+   * Check server health via `GET /api/v1/health`.
+   *
+   * Junior Tip [parity]: matches Python `health` and Go `Health`.
+   */
+  async health(): Promise<Record<string, unknown>> {
+    return this.client.get<Record<string, unknown>>("/api/v1/health");
+  }
+
+  /**
+   * Fetch record metadata by ID via `GET /api/v1/records/{id}`.
+   *
+   * Junior Tip [vs readContent]: returns JSON metadata; use `readContent`
+   * for the full text body.
+   */
+  async get(recordId: number): Promise<Record<string, unknown>> {
+    if (recordId <= 0) {
+      throw new Error("get: recordId must be > 0");
+    }
+    return this.client.get<Record<string, unknown>>(
+      `/api/v1/records/${recordId}`);
+  }
+
   async update(
     recordId: number,
     fields: Partial<{
@@ -1204,17 +1220,11 @@ export class Memory {
     if (!sessionUuid) {
       throw new Error("createInSession: sessionUuid is required");
     }
-    // on the auto-derived path the constructor sets a placeholder
-    // this.containerTag = "mem-init" and only overwrites it with the real
-    // mem-<hash> tag once `tagReady` resolves (deriveTag awaits an async
-    // crypto.subtle.digest). buildMetadataJson(this.containerTag) below runs in
-    // this synchronous prologue, so without awaiting tagReady first a record created right
-    // after construction would be persisted with {"container_tag":"mem-init"}
-    // and then silently fall out of every container-scoped search/profile for
-    // the real user — the exact silent mis-routing the container_tag envelope
-    // exists to prevent (516-record incident, 2026-05-22). Go/Python set the tag
-    // synchronously in their constructors; awaiting here restores that invariant
-    // and matches add/search/create/newSession, which all await tagReady first.
+    // On the auto-derived path the constructor starts with placeholder
+    // "mem-init" until `tagReady` resolves (async sha256). Await it before
+    // buildMetadataJson so records never persist with the placeholder tag and
+    // fall out of container-scoped search/profile. Go/Python set the tag
+    // synchronously; awaiting here matches add/search/create/newSession.
     await this.tagReady;
     const summary = this.truncateSummary(text);
     const payload: RecordPayload = {
@@ -1266,6 +1276,21 @@ export class Memory {
   }
 
   /**
+   * Append parent record IDs to a batch of records (non-destructive).
+   *
+   * Junior Tip [parity]: batch form of {@link appendMainIds}; matches Python
+   * `append_main_links` and Go `AppendMainLinks`.
+   */
+  async appendMainLinks(
+    ids: number[],
+    mainIdsToAppend: number[]): Promise<Record<string, unknown>> {
+    if (ids.length === 0 || mainIdsToAppend.length === 0) return {};
+    return this.client.patch<Record<string, unknown>>(
+      "/api/v1/records/append-main-ids",
+      { ids, main_ids_to_append: mainIdsToAppend });
+  }
+
+  /**
    * Append related record IDs to a single record's `related_ids` array.
    * Server-side: read, dedup, write back — idempotent (append, not replace).
    *
@@ -1290,7 +1315,7 @@ export class Memory {
   }
 
   /**
-   * Set `consolidate_id` on a batch of child records (judge → star link).
+   * Set `consolidate_id` on a batch of child records (star-link topology).
    * Batched so N children pointing at one star cost ONE server round-trip.
    *
    * (matches the MCP `link_consolidated` tool and the Go `LinkConsolidated` /
@@ -1473,21 +1498,14 @@ export class Memory {
    */
   private async tryIngest(
     text: string,
-    score: number,
-    type: MemoryType,
-    metadata?: Record<string, unknown>,
     sessionId?: string): Promise<AddResult | null> {
-    // this method took the score/type as `_score`/`_type` and threw them away —
-    // the ingest payload carried only content + container_tag, silently dropping
-    // the caller's intent. We now forward them. `session_id` pins the record's
-    // SESSION (uuid) to the caller's conversation (tenant + session model);
-    // empty keeps the server's container_tag-as-session default.
+    // Ingest accepts only content + container_tag (+ optional session_id).
+    // score/type/metadata are intentionally omitted — the server drops them on
+    // this path. Callers that pin those fields take the /records path instead
+    // (see add() forceRecordsPath), matching Go and Python.
     const payload: IngestPayload = {
       content: text,
       container_tag: this.containerTag,
-      score,
-      type,
-      metadata: buildMetadataJson(this.containerTag, metadata),
     };
     if (sessionId) {
       payload.session_id = sessionId;
@@ -1575,16 +1593,10 @@ export class Memory {
     if (extra?.validFrom) payload.valid_from = extra.validFrom;
     if (extra?.validUntil) payload.valid_until = extra.validUntil;
 
-    // this is exactly ONE request. When a session already has an episodic record
-    // the server auto-links the anchor for a derived (fact/decision/…) record,
-    // so the only way the caller still sees HTTP 422 "create an episodic record first" is a
-    // GENUINELY anchor-less session — the honest, correct contract. This SDK USED
-    // to catch that 422, fabricate a SYNTHETIC episodic record from the same text,
-    // and retry once. That was wrong on two counts: it polluted the graph with a
-    // phantom anchor (violating the perfect-brain no-junk invariant) and it
-    // AnhurQueryError SURFACE to the dev unchanged; the correct fix is caller-side
-    // (write an episodic record first — the agents and the memory plugin already
-    // do), never a client-fabricated anchor.
+    // Exactly one request. If the session has no episodic anchor yet, the
+    // server returns HTTP 422 ("create an episodic record first"). The SDK
+    // surfaces that error unchanged — callers write an episodic first; the
+    // client never fabricates a synthetic anchor.
     const data = await this.client.post<{ id?: number }>(
       "/api/v1/records",
       payload);

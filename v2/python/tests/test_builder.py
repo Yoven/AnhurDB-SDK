@@ -13,7 +13,7 @@ Tests cover:
   - Combined complex queries
   - Edge cases and error handling
 
-Reference: server/handler/record_query.go
+Reference: AnhurDB AST query contract (whitelisted filter columns).
 """
 
 import unittest

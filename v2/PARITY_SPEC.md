@@ -18,10 +18,14 @@ API. This document is the public contract; deviations are bugs.
 
 | Tool | Go / Python / TypeScript | HTTP route |
 |---|---|---|
+| health | `Health` / `health` / `health` | `GET /api/v1/health` |
 | ingest_memory | `Add` / `add` / `add` | `POST /api/v1/ingest` or `/records` |
 | create_memory | `Create` / `create` / `create` | `POST /api/v1/records` |
+| create_in_session | `CreateInSession` / `create_in_session` / `createInSession` | `POST /api/v1/records` |
+| get_memory | `Get` / `get` / `get` | `GET /api/v1/records/{id}` |
 | update_memory | `Update` / `update` / `update` | `PATCH /api/v1/records/{id}` |
 | delete | `Delete` / `delete` / `delete` | `DELETE /api/v1/records/{id}` |
+| forget | `Forget` / `forget` / `forget` | Stub (not yet available) |
 | supersede_record | `Supersede` / `supersede` / `supersede` | `POST /api/v1/records/supersede` |
 | read_content | `ReadContent` / `read_content` / `readContent` | `GET /api/v1/records/{id}/content` |
 | get_memory_context | `GetContext` / `get_context` / `getContext` | `GET /api/v1/records/{id}/topology` |
@@ -47,7 +51,9 @@ API. This document is the public contract; deviations are bugs.
 | batch_update_status | `BatchUpdateStatus` / `batch_update_status` / `batchUpdateStatus` | `PATCH /api/v1/records/mark-consolidated` |
 | link_consolidated | `LinkConsolidated` / `link_consolidated` / `linkConsolidated` | `PATCH /api/v1/records/consolidate-ids` |
 | append_main_ids | `AppendMainIDs` / `append_main_ids` / `appendMainIds` | `PATCH /api/v1/records/append-main-ids` |
+| append_main_links | `AppendMainLinks` / `append_main_links` / `appendMainLinks` | `PATCH /api/v1/records/append-main-ids` (batch) |
 | append_related_ids | `AppendRelatedIDs` / `append_related_ids` / `appendRelatedIds` | `PATCH /api/v1/records/append-related-ids` |
+| new_session | `NewSession` / `new_session` / `newSession` | Client-side session rotation |
 | upload_file | `UploadFile` / `upload_file` / `uploadFile` | `POST /api/v1/upload` |
 | upload_status | `UploadStatus` / `upload_status` / `uploadStatus` | `GET /api/v1/upload/{id}/status` |
 | list_entities | `ListEntities` / `list_entities` / `listEntities` | `GET /api/v1/entities/list` |

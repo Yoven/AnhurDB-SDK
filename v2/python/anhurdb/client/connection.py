@@ -432,8 +432,9 @@ class HTTPConnection:
                 f"No MCP tool mapping for endpoint: {endpoint}"
             )
 
-        args = {"api_key": self.api_key, **json_data}
-        payload = {"tool": tool_name, "args": args}
+        # Auth stays on the X-API-Key header only — never duplicate the key in
+        # the JSON body (avoids accidental logging/proxy capture of credentials).
+        payload = {"tool": tool_name, "args": json_data}
 
         result = await self._request("POST", "/api/v1/mcp/direct", body=payload)
 

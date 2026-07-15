@@ -2,7 +2,7 @@
 Query operators and modes for the AnhurDB Query DSL.
 
 These operators map directly to SQL operations on the server side
-(see ``server/handler/record_query.go``). Only operators the server
+. Only operators the server
 actually implements are included — ``$neq``, ``$nin``, and ``$like``
 were removed because the server silently ignores them.
 

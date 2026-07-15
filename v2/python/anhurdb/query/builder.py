@@ -5,7 +5,7 @@ Generates a JSON Abstract Syntax Tree (AST) that the server processes
 via ``POST /api/v1/query``. The AST is validated server-side against
 a column whitelist and operator set.
 
-Server reference: ``server/handler/record_query.go``
+Server contract: whitelisted filter/sort columns on the AST query endpoint.
 
 Usage::
 
@@ -32,7 +32,7 @@ from .operators import QueryOperator, SemanticMode
 
 
 # Columns the server allows in filters and sort.
-# Must match server/handler/record_query.go allowedFilterColumns.
+# Must match the server AST query whitelist.
 ALLOWED_WHERE_COLUMNS = {
     "id", "uuid", "type", "dimension", "weight", "score",
     "status", "consolidated", "archived", "created_at", "updated_at",

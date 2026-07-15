@@ -113,6 +113,7 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 
 	return &AddResult{
 		ID:        resp.ID,
+		SessionID: sessionUUID,
 		Records:   []RecordSummary{{ID: resp.ID, Type: recordType, Summary: summary}},
 		Status:    "ok",
 		Mode:      "oss",
@@ -347,7 +348,7 @@ func (m *Memory) CountByType(ctx context.Context, opts ...ReadOption) (map[strin
 	}
 
 	counts := map[string]int{}
-	const pageSize = 500 // server hard-caps manifest limit at 1000; 500 keeps pages cheap.
+	const pageSize = 1000 // match Python/TS; server hard-caps manifest limit at 1000.
 	offset := 0
 	for {
 		page, pageErr := m.ManifestGlobal(ctx, "", pageSize, offset, opts...)

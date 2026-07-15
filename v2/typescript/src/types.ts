@@ -29,13 +29,7 @@ export type MemoryType =
   | "hub"
   | "file";
 
-/**
- * Status of a cognitive record in the cluster.
- *
- * Sourced from:
- *   - Go server: create.go, update.go, record_batch.go, upload.go
- *   - Python agents: consolidator.py, judge.py, regression/worker.py
- */
+/** Lifecycle status of a cognitive record. */
 export type MemoryStatus =
   | "saved"
   | "pending"
@@ -140,7 +134,7 @@ export interface SearchOptions {
  * A single search hit returned by every search method
  * (`search`/`searchSession`/`searchByType`/`recall`).
  *
- * the server emits (server/model/record.go SearchResult) —
+ * the server emits —
  * `{ "record": {<full Record>}, "similarity": 0.63 }`. We nest the complete
  * {@link MemoryRecord} verbatim and carry the score in a SIBLING `similarity`
  * field (NOT inside the record). The previous flat shape
@@ -364,19 +358,13 @@ export interface BatchUpdateResult {
 /**
  * Payload sent to POST /api/v1/ingest (cloud mode).
  *
- * received ONLY `content` + `container_tag`, so a caller's `score`/`type`
- * were silently discarded on this path — the exact parity bug the TS and
- * Python SDKs shared. We now forward `score`, `type`, and `metadata` as
- * optional hints. The server treats them as ingest hints; the OSS
- * `/api/v1/records` fallback persists them authoritatively. All three SDKs
- * must forward these identically.
+ * Wire contract is exactly `content` + `container_tag` (+ optional
+ * `session_id`). Callers that pin score/type/metadata use `/api/v1/records`
+ * instead — matching Go and Python.
  */
 export interface IngestPayload {
   content: string;
   container_tag: string;
-  score?: number;
-  type?: string;
-  metadata?: string;
   /** Pins the record's session (uuid) to the caller's conversation; empty = container_tag default. */
   session_id?: string;
 }

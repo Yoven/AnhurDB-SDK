@@ -49,6 +49,9 @@ var WithLimit = client.WithLimit
 // WithTypeFilter restricts search results to a specific memory type.
 var WithTypeFilter = client.WithTypeFilter
 
+// WithKeyword sets an optional free-text filter (query param "q") for SearchByType.
+var WithKeyword = client.WithKeyword
+
 // WithTimeout sets the HTTP client timeout.
 var WithTimeout = client.WithTimeout
 

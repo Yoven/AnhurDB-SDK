@@ -42,7 +42,7 @@ type Record struct {
 	// Junior Tip [SDK weight/score parity, 2026-07-04]: the server emits weight (Ebbinghaus
 	// decay strength) and score (client relevance) on every read; without these fields they
 	// silently decoded to zero, so Go SDK callers lost the ranking signal Python/TS keep.
-	// Mirrors clients/golang/models.Record and server/model.Record (weight float64, score int).
+	// Canonical record shape across SDKs (weight float64, score int).
 	Weight float64 `json:"weight"`
 	Score  int     `json:"score"`
 

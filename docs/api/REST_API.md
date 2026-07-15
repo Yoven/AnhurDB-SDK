@@ -27,7 +27,6 @@ X-Tenant-ID: my-tenant     (optional, multi-tenant)
 | GET | `/api/v1/records/{id}/content` | Get full record content |
 | GET | `/api/v1/records/{id}/topology` | Get record and nearby graph nodes |
 | GET | `/api/v1/records/{id}/grounding` | Get provenance and anchors |
-| GET | `/api/v1/records/{id}/explain` | Explain record relationships |
 | PATCH | `/api/v1/records/{id}` | Update record fields |
 | DELETE | `/api/v1/records/{id}` | Delete a record |
 

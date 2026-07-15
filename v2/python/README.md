@@ -179,18 +179,17 @@ Memory(
 
 ## API Reference — full surface (on `Memory`)
 
-`Memory` exposes the full AnhurDB surface (40+ endpoints) directly:
+`Memory` exposes the public AnhurDB surface (see `v2/PARITY_SPEC.md`):
 
-- **CRUD**: `create`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `delete`, `explain`
-- **Diagnostics**: `access_stats`, `get_engine_config`
+- **CRUD**: `create`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `delete`
 - **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `query` (`search_with_ast` deprecated)
 - **Manifests / taxonomy**: `manifest_global`, `manifest_session`, `list_chat`, `count_by_type`, `list_types`, `recent`
-- **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_main_links`, `decay`
-- **Graph**: `walk`, `walk_semantic`, `graph`
-- **Entity**: `search_entities`, `upsert_entity`, `get_entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
+- **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_related_ids`
+- **Graph**: `walk`, `walk_semantic`
+- **Entity**: `search_entities`, `upsert_entity`, `entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
 - **Upload**: `upload_file`, `upload_status`
 - **Temporal**: `supersede`
-- **Session**: `list_sessions`, `list_chat`, `get_session_history`, `get_session_clusters`, `manifest_global`, `manifest_session`, `recent`
+- **Session**: `list_sessions`, `get_session_history`, `get_session_clusters`, `new_session`
 - **Profile**: `profile`
 
 ## Query Builder

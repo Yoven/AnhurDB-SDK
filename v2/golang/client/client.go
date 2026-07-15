@@ -77,6 +77,10 @@ func NewMemory(apiKey string, opts ...Option) *Memory {
 		// Return a Memory that will fail on every call rather than panicking.
 		return &Memory{}
 	}
+	// Reject keys that cannot be sent as a safe HTTP header value (CRLF etc.).
+	if err := validateHeaderValue(apiKey, "apiKey"); err != nil {
+		return &Memory{}
+	}
 
 	cfg := &memoryConfig{
 		url: DefaultCloudURL,
@@ -274,20 +278,17 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 	}
 
 	return &AddResult{
-		ID:      firstID,
-		Records: records,
-		Status:  "ok",
-		Mode:    "cloud",
+		ID:        firstID,
+		SessionID: m.sessionUUID,
+		Records:   records,
+		Status:    "ok",
+		Mode:      "cloud",
 	}, nil
 }
 
 // CreateInSession stores `text` directly via POST /api/v1/records as an
 // episodic record under the supplied sessionUUID — bypassing m.sessionUUID
-// and any auto-session assignment in /api/v1/ingest. Used by agents that
-// must write into the SAME session as the source content they are
-// summarising (e.g. consolidation creating a consolidated star inside the
-// chat-* session it synthesised, so the judge can locate the source
-// records by session uuid).
+// and any auto-session assignment in /api/v1/ingest.
 //
 func (m *Memory) CreateInSession(ctx context.Context, text string, sessionUUID string) (*AddResult, error) {
 	return m.Create(ctx, sessionUUID, text)
@@ -316,6 +317,28 @@ func (m *Memory) AppendMainIDs(ctx context.Context, recordID int64, mainIDs []in
 	return patchErr
 }
 
+// AppendMainLinks appends parent record IDs to a batch of records via the same
+// PATCH /api/v1/records/append-main-ids route. Prefer AppendMainIDs for a
+// single child record.
+//
+// Junior Tip [batch form]: the wire payload already accepts multiple `ids`;
+// this helper exposes that shape so Go matches Python append_main_links /
+// TypeScript appendMainLinks without callers hand-rolling the map.
+func (m *Memory) AppendMainLinks(ctx context.Context, ids []int64, mainIDsToAppend []int64) error {
+	if m.conn == nil {
+		return ErrEmptyAPIKey
+	}
+	if len(ids) == 0 || len(mainIDsToAppend) == 0 {
+		return nil
+	}
+	payload := map[string]interface{}{
+		"ids":                ids,
+		"main_ids_to_append": mainIDsToAppend,
+	}
+	_, patchErr := m.conn.Patch(ctx, "/api/v1/records/append-main-ids", payload)
+	return patchErr
+}
+
 // AppendRelatedIDs appends peer record IDs to the related_ids array of a single
 // record via PATCH /api/v1/records/append-related-ids. Server-side the operation
 // reads, deduplicates, and writes back — safe to call repeatedly with the same
@@ -339,11 +362,9 @@ func (m *Memory) AppendRelatedIDs(ctx context.Context, recordID int64, relatedID
 	return patchErr
 }
 
-// LinkConsolidated sets the consolidate_id column on a batch of children
-// records via PATCH /api/v1/records/consolidate-ids. Used by the judge agent
-// after a consolidated star is approved: every source record gets its
-// consolidate_id pointed at the star so subsequent queries can navigate
-// child → parent in one column read.
+// LinkConsolidated sets the consolidate_id column on a batch of child
+// records via PATCH /api/v1/records/consolidate-ids so subsequent queries
+// can navigate child → parent in one column read.
 //
 func (m *Memory) LinkConsolidated(ctx context.Context, ids []int64, consolidateID int64) error {
 	if m.conn == nil {
@@ -427,6 +448,7 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 
 	return &AddResult{
 		ID:        resp.ID,
+		SessionID: m.sessionUUID,
 		Records:   []RecordSummary{{ID: resp.ID, Type: recordType, Summary: summary}},
 		Status:    "ok",
 		Mode:      "oss",
@@ -544,11 +566,14 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 		return nil, ErrEmptyInput
 	}
 
-	_ = opts
+	cfg := applyReadOptions(opts)
 
 	params := url.Values{}
 	params.Set("type", memType)
 	params.Set("limit", strconv.Itoa(limit))
+	if cfg.keyword != "" {
+		params.Set("q", cfg.keyword)
+	}
 
 	respBytes, err := m.conn.Get(ctx, "/api/v1/search/type", params)
 	if err != nil {
@@ -848,6 +873,48 @@ func truncateSummary(text string) string {
 	return string(runes[:maxSummaryRunes]) + "..."
 }
 
+// Health checks server liveness via GET /api/v1/health.
+//
+// Junior Tip [parity]: matches Python Memory.health and TypeScript health —
+// a cheap probe before write/search traffic.
+func (m *Memory) Health(ctx context.Context) (map[string]interface{}, error) {
+	if m.conn == nil {
+		return nil, ErrEmptyAPIKey
+	}
+	respBytes, getErr := m.conn.Get(ctx, "/api/v1/health", nil)
+	if getErr != nil {
+		return nil, getErr
+	}
+	var result map[string]interface{}
+	if unmarshalErr := json.Unmarshal(respBytes, &result); unmarshalErr != nil {
+		return nil, fmt.Errorf("Health: decode response: %w", unmarshalErr)
+	}
+	return result, nil
+}
+
+// Get fetches record metadata by ID via GET /api/v1/records/{id}.
+//
+// Junior Tip [vs ReadContent]: Get returns JSON metadata; ReadContent returns
+// the full text/plain body. Both are part of the public Memory surface.
+func (m *Memory) Get(ctx context.Context, recordID int64) (map[string]interface{}, error) {
+	if m.conn == nil {
+		return nil, ErrEmptyAPIKey
+	}
+	if recordID <= 0 {
+		return nil, fmt.Errorf("Get: recordID must be > 0")
+	}
+	path := fmt.Sprintf("/api/v1/records/%d", recordID)
+	respBytes, getErr := m.conn.Get(ctx, path, nil)
+	if getErr != nil {
+		return nil, getErr
+	}
+	var result map[string]interface{}
+	if unmarshalErr := json.Unmarshal(respBytes, &result); unmarshalErr != nil {
+		return nil, fmt.Errorf("Get: decode response: %w", unmarshalErr)
+	}
+	return result, nil
+}
+
 // Update partially updates a record by ID.
 //
 // The updates map can contain any subset of record fields
@@ -872,6 +939,18 @@ func (m *Memory) Delete(ctx context.Context, recordID int64) error {
 
 	path := fmt.Sprintf("/api/v1/records/%d", recordID)
 	return m.conn.Delete(ctx, path)
+}
+
+// Forget is a placeholder for a future decay API. It always returns an error.
+//
+// Junior Tip [parity stub]: Python forget() and TypeScript forget() raise the
+// same "not yet available" contract — use Delete or Update(..., archived).
+func (m *Memory) Forget(ctx context.Context, memoryID int64) error {
+	_ = ctx
+	_ = memoryID
+	return fmt.Errorf(
+		"Forget is not yet available. Use Delete for hard removal or Update with status=archived for soft delete",
+	)
 }
 
 // --------------------------------------------------------------------------

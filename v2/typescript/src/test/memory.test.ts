@@ -341,7 +341,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
   it("searchByType() reads the bare `records` envelope and nests each record", async () => {
     // Junior Tip [real contract, 2026-07-04]: GET /api/v1/search/type returns a BARE
     // `{records:[<Record>],count}` array — NOT the `{results:[{record,similarity}]}`
-    // envelope of search/global (server/handler/record_search.go: SearchByType). The
+    // envelope of search/global. The
     // SDK must read `records` and wrap each into a SearchResult; reading `results`
     // (the old bug) returned [] for every call. A type filter carries no semantic
     // distance, so `similarity` is 0.

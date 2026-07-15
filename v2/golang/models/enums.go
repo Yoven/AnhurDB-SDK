@@ -26,10 +26,6 @@ const (
 )
 
 // MemoryStatus defines the lifecycle status of a record.
-//
-// Sourced from:
-//   - Go server: create.go, update.go, record_batch.go, upload.go
-//   - Python agents: consolidator.py, judge.py, regression/worker.py
 type MemoryStatus string
 
 const (

@@ -66,15 +66,17 @@ func NewConnection(baseURL, apiKey string, timeout time.Duration) *HTTPConnectio
 		timeout = 30 * time.Second
 	}
 
-	// Validate API key against header injection.
+	// Reject API keys that cannot be sent safely as an HTTP header value.
+	// Invalid keys are treated like an empty key: methods return ErrEmptyAPIKey
+	// rather than risking header injection.
+	safeAPIKey := apiKey
 	if err := validateHeaderValue(apiKey, "apiKey"); err != nil {
-		// Return a connection that will work but log the validation error.
-		// We don't panic to match the graceful-failure pattern.
+		safeAPIKey = ""
 	}
 
 	return &HTTPConnection{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
+		APIKey:  safeAPIKey,
 		HTTPClient: &http.Client{
 			Timeout: timeout,
 			// SECURITY: Block redirects to prevent X-API-Key header

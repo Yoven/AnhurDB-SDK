@@ -13,10 +13,11 @@ import (
 // AddResult is returned by Memory.Add(). It contains the created
 // record(s) and whether cloud ingest or OSS fallback was used.
 type AddResult struct {
-	ID      int64           `json:"id"`
-	Records []RecordSummary `json:"records"`
-	Status  string          `json:"status"`
-	Mode    string          `json:"mode"` // "cloud" or "oss"
+	ID        int64           `json:"id"`
+	SessionID string          `json:"session_id,omitempty"`
+	Records   []RecordSummary `json:"records"`
+	Status    string          `json:"status"`
+	Mode      string          `json:"mode"` // "cloud" or "oss"
 }
 
 // RecordSummary is a lightweight descriptor of a created record.
@@ -63,10 +64,10 @@ type WalkNode struct {
 }
 
 // WalkEdge is a single edge connecting two nodes in a graph walk.
+// Wire shape matches the REST contract: {"source","target"}.
 type WalkEdge struct {
-	From     int64  `json:"from"`
-	To       int64  `json:"to"`
-	Relation string `json:"relation"`
+	Source int64 `json:"source"`
+	Target int64 `json:"target"`
 }
 
 // --------------------------------------------------------------------------
@@ -74,12 +75,10 @@ type WalkEdge struct {
 // --------------------------------------------------------------------------
 
 // ContextResult contains the topological context around a record.
+// Wire shape matches GET /api/v1/records/{id}/topology: {"target","neighbors"}.
 type ContextResult struct {
-	RecordID int64       `json:"record_id"`
-	Parents  []WalkNode  `json:"parents"`
-	Children []WalkNode  `json:"children"`
-	Siblings []WalkNode  `json:"siblings"`
-	Raw      interface{} `json:"raw,omitempty"`
+	Target    models.Record   `json:"target"`
+	Neighbors []models.Record `json:"neighbors"`
 }
 
 // --------------------------------------------------------------------------
@@ -356,6 +355,9 @@ type SearchOption = ReadOption
 type searchConfig struct {
 	limit      int
 	typeFilter string
+	// keyword is an optional free-text filter (query param "q") honoured by
+	// SearchByType. Empty means omit.
+	keyword string
 	// asOf / since / until are optional RFC3339 UTC bi-temporal filters honoured
 	// by the manifest reads. asOf is mutually exclusive with since/until — the
 	// server returns HTTP 400 on a violation, which the SDK surfaces verbatim.
@@ -399,6 +401,14 @@ func WithLimit(n int) SearchOption {
 func WithTypeFilter(t string) SearchOption {
 	return func(cfg *searchConfig) {
 		cfg.typeFilter = t
+	}
+}
+
+// WithKeyword sets an optional free-text filter (query param "q"), honoured by
+// SearchByType. Empty string is a no-op.
+func WithKeyword(keyword string) ReadOption {
+	return func(cfg *searchConfig) {
+		cfg.keyword = keyword
 	}
 }
 

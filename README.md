@@ -69,7 +69,7 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 | `search_by_type(type)` | Filter by memory type (fact, preference, etc.) | GET /api/v1/search/type |
 | `smart_search(query)` | Full-text search with cognitive weight boosting | GET /api/v1/search/smart |
 | `recall(query)` | Broad fan-out search (alias for global search) | POST /api/v1/search/global |
-| `recent(limit)` | Most recent memories | GET /api/v1/manifest |
+| `recent(limit)` | Most recent memories | GET /api/v1/recent |
 
 ### Graph Traversal
 

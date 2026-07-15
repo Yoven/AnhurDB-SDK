@@ -135,16 +135,9 @@ class Memory:
         - ``search(query)`` — find relevant memories (global)
         - ``profile()``    — get user/agent profile
 
-    Full surface (selection): ``create``, ``get``, ``update``, ``delete``,
-    ``read_content``, ``get_context``, ``recall``, ``search_session``,
-    ``search_by_type``, ``smart_search``, ``search_with_ast`` (QueryBuilder),
-    ``manifest_global``, ``manifest_session``, ``list_chat``, ``count_by_type``,
-    ``list_types``, ``recent``, ``walk``, ``walk_semantic``, ``graph``,
-    ``get_grounding``, ``batch_read_content``, ``batch_update_status``,
-    ``link_consolidated``, ``append_main_ids``, ``append_related_ids``,
-    ``supersede``, ``decay``,
-    all ``*_entit*`` methods, ``upload_file``/``upload_status``, session
-    history/clusters, ``explain``, ``access_stats``, ``get_engine_config``.
+    Full surface matches the Go/TypeScript SDKs (see ``v2/PARITY_SPEC.md``):
+    create/update/delete, search family, manifests, walk, entities, upload,
+    batch ops, sessions, profile, grounding.
 
     Args:
         api_key:   AnhurDB API key (required). Falls back to
@@ -194,18 +187,10 @@ class Memory:
         # the Go and TS SDKs: ``<container_tag>-<YYYYMMDD-HHMMSS>-<6 hex>``.
         self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
 
-        # tracks, probes, or fabricates a per-session episodic anchor. Two
-        # server-side facts made the client-side seed both redundant AND
-        # harmful: (1) the server AUTO-LINKS the real episodic anchor for a
-        # harmful: (1) the server auto-links the real episodic anchor for a
-        # derived write, and (2) client-side anchor seeding is no longer needed.
-        # So a derived add()/create() now issues exactly ONE request. When a session genuinely has no episodic yet, the
-        # server returns an HONEST HTTP 422 ("create an episodic record first"),
-        # which we surface verbatim as a typed AnhurQueryError — the CORRECT
-        # contract (callers write the episodic first; the agents and the plugin
-        # already do). The old seed fabricated a SYNTHETIC episodic copied from
-        # the derived text: that polluted the graph (violating the perfect-brain
-        # seeded. Deleted for good — the pipe writes what the caller asked for.
+        # Derived add()/create() issue exactly one request. When a session has
+        # no episodic yet, the server returns HTTP 422 ("create an episodic
+        # record first"), surfaced as AnhurQueryError. Callers write the
+        # episodic first — the client never fabricates a synthetic anchor.
 
         # Cloud ingest availability (None = untested).
         self._ingest_available: Optional[bool] = None
@@ -264,13 +249,13 @@ class Memory:
     ) -> Dict[str, Any]:
         """Store a memory. Simplest way to save information.
 
-        ``/api/v1/ingest`` endpoint accepts ONLY ``content`` + ``container_tag``
-        — it hardcodes ``type=episodic`` and never reads score/type/metadata
-        (see server handler ``record_ingest.go``). Sending them there drops
-        them silently. So when the caller explicitly sets ``score``, ``type``,
-        or ``metadata`` we MUST go straight to ``/api/v1/records``, which is the
-        only write path that persists those columns. Plain ``add(text)`` with no
-        options still prefers the ingest pipeline (auto-embedding + extraction).
+        ``/api/v1/ingest`` accepts ONLY ``content`` + ``container_tag`` — it
+        stores type as episodic and does not persist score/type/metadata.
+        Sending them there drops them silently. So when the caller explicitly
+        sets ``score``, ``type``, or ``metadata`` we MUST go straight to
+        ``/api/v1/records``, which is the only write path that persists those
+        columns. Plain ``add(text)`` with no options still prefers the ingest
+        pipeline (auto-embedding + extraction).
 
         Args:
             text:     The text to remember (required, non-empty).
@@ -323,17 +308,12 @@ class Memory:
 
         Returns:
             Server response dict (the created record). Includes ``id``."""
-        # public create() surface MUST inject the SDK-owned container_tag into the
-        # record metadata exactly like add()/_create_record do (via
-        # _build_metadata_json), or create()-d records carry NO container_tag and
-        # fall out of every container-scoped search/profile — the silent-integrity
-        # class that corrupted 516 records. Go Create and TS create inject it too;
-        # the three MUST stay identical here.
+        # Inject the SDK-owned container_tag into metadata (same as add() and
+        # the Go/TS create paths) so records stay visible to container-scoped
+        # search/profile.
         payload = req.model_dump(exclude_none=True)
-        # weight, seed it from score/10 (matching add()/_create_record and the
-        # Go/TS create) instead of CreateRequest's default 0.5. The regression
-        # agent recomputes weight server-side, but the seed stays consistent
-        # across the three SDKs.
+        # Seed weight from score/10 when the caller did not set weight, matching
+        # add()/_create_record and the Go/TS create defaults.
         if "weight" not in req.model_fields_set:
             payload["weight"] = round((req.score if req.score is not None else 5) / 10, 4)
         caller_metadata: Dict[str, Any] = {}
@@ -350,13 +330,8 @@ class Memory:
                 caller_metadata = {"_raw": existing_metadata}
         payload["metadata"] = _build_metadata_json(self._container_tag, caller_metadata)
 
-        # ONE request. If the caller's session has no episodic anchor yet, the
-        # server returns an honest HTTP 422 ("create an episodic record first"),
-        # which propagates here as a typed AnhurQueryError for the dev to handle
-        # (write the episodic first). We deliberately do NOT fabricate a
-        # synthetic episodic and retry: the server auto-links the REAL anchor
-        # when one exists (record_create.go, Rule 3a), and seeding a fake anchor
-        # copied from the caller's derived text polluted the graph (perfect-brain
+        # One request. Missing episodic anchor → HTTP 422, surfaced as
+        # AnhurQueryError. Never fabricate a synthetic anchor client-side.
         return await self._connection.post("/api/v1/records", payload)
 
     async def get(
@@ -846,29 +821,6 @@ class Memory:
             {"ids": ids, "main_ids_to_append": main_ids_to_append},
         )
 
-    async def decay(
-        self,
-        ids: List[int],
-        target_weight: float = 0.05,
-        target_dimension: int = 64,
-    ) -> Dict[str, Any]:
-        """Apply memory decay to a batch of records.
-
-        Decayed records are downgraded to floor values and archived.
-        Use this to prune low-importance memories over time.
-
-        Args:
-            ids:              List of record IDs to decay.
-            target_weight:    Floor weight after decay (default 0.05).
-            target_dimension: Target embedding dimension after decay (default 64).
-
-        Returns:
-            Confirmation dict with count of decayed records."""
-        return await self._connection.patch(
-            "/api/v1/records/decay",
-            {"ids": ids, "target_weight": target_weight, "target_dimension": target_dimension},
-        )
-
     # ── Graph Traversal ────────────────────────────────────────────
 
     async def walk(
@@ -947,27 +899,6 @@ class Memory:
             "/api/v1/walk/semantic",
             body,
                     )
-
-    async def graph(
-        self,
-        archived: bool = False,
-    ) -> Dict[str, Any]:
-        """Fetch the full knowledge graph (all nodes and edges).
-
-        Returns every record node and relationship edge in the database.
-        Use ``walk()`` for targeted traversal from a specific record.
-
-        Args:
-            archived:  Include archived records (default False).
-
-        Returns:
-            Dict with ``nodes`` (list of records) and ``edges`` (list of links)."""
-        params: Dict[str, str] = {}
-        if archived:
-            params["archived"] = "1"
-        return await self._connection.get(
-            "/api/v1/graph", params=params or None
-        )
 
     # ── Session Management ─────────────────────────────────────────
 
@@ -1584,56 +1515,6 @@ class Memory:
                 }
             raise
 
-    # ── Engine / diagnostics ───────────────────────────────────────
-
-    async def explain(
-        self,
-        record_id: int,
-    ) -> Dict[str, Any]:
-        """Get a human-readable explanation of why a record scored the way it did.
-
-        Returns the cognitive weight breakdown, decay factors, and the reasoning
-        behind the record's current score and status.
-
-        Args:
-            record_id: The record ID to explain.
-
-        Returns:
-            Dict with weight breakdown, decay factors, and cognitive rationale."""
-        return await self._connection.get(
-            f"/api/v1/records/{record_id}/explain"
-        )
-
-    async def access_stats(
-        self,
-    ) -> Dict[str, Any]:
-        """Get access frequency statistics for records.
-
-        Returns aggregated access counts used by the decay and hub-growth agents
-        to calibrate weight decay and identify high-traffic hubs.
-
-        Args:
-
-        Returns:
-            Dict with per-record access counts and aggregated statistics."""
-        return await self._connection.get("/api/v1/stats/access")
-
-    async def get_engine_config(
-        self,
-    ) -> Dict[str, Any]:
-        """Get the current tenant's cognitive engine configuration.
-
-        Returns the effective tuning parameters (decay rates, consolidation
-        thresholds, hub growth limits) that the agents are operating with.
-
-        Args:
-
-        Returns:
-            Dict with engine configuration parameters."""
-        return await self._connection.get(
-            "/api/v1/tenant/engine-config"
-        )
-
     async def forget(self, memory_id: Optional[int] = None) -> None:
         """Forget a specific memory or trigger cognitive decay.
 
@@ -1706,7 +1587,7 @@ class Memory:
 
         # longer probes/creates a session anchor before writing. It issues ONE
         # request and sends NO synthetic related_ids link; the server auto-links
-        # the REAL episodic anchor (record_create.go FindLastEpisodicConsistent,
+        # the REAL episodic anchor (server auto-link on create),
         # Rule 3a). On a session that genuinely has no episodic yet, the server
         # returns an honest HTTP 422 that surfaces to the caller as a typed
         # AnhurQueryError (write the episodic first). Fabricating an anchor from
