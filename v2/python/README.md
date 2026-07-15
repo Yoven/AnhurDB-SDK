@@ -19,8 +19,11 @@ Official async Python client for [AnhurDB](https://anhur.yoven.ai) — cognitive
 
 ## Install
 
+Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/python/vX.Y.Z`).
+
 ```bash
-pip install anhurdb
+pip install \
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.1/anhurdb-2.0.1-py3-none-any.whl
 ```
 
 ## Quick Start — Memory (Simple API)

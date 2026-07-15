@@ -1,5 +1,10 @@
 name: Release TypeScript SDK
 
+# Primary distribution: GitHub Releases on Yoven/AnhurDB-SDK
+# https://github.com/Yoven/AnhurDB-SDK/releases
+#
+# Optional secondary: npm when NPM_TOKEN is configured.
+
 permissions:
   contents: write
 
@@ -29,40 +34,68 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Compute next version
+        id: version
+        working-directory: .
+        run: |
+          set -euo pipefail
+          TAG_PREFIX="v2/typescript/v"
+          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1 || true)
+          if [ -z "$LATEST" ]; then
+            VERSION="2.0.0"
+          else
+            VERSION=$(echo "${LATEST#${TAG_PREFIX}}" | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          fi
+          NEW_TAG="${TAG_PREFIX}${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Next release: ${NEW_TAG}"
+
+      - name: Bump package version
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+      - name: Pack tarball for GitHub Release
+        run: |
+          set -euo pipefail
+          npm pack
+          ls -la *.tgz
 
       - name: Generate release notes
         working-directory: .
         run: |
           chmod +x .github/scripts/generate-changelog.sh
           ./.github/scripts/generate-changelog.sh typescript HEAD > /tmp/release-notes.md
-          ./.github/scripts/generate-changelog.sh typescript HEAD --write
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: .
         run: |
-          TAG_PREFIX="v2/typescript/v"
-          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1)
-          if [ -z "$LATEST" ]; then
-            NEW_TAG="${TAG_PREFIX}2.0.0"
-          else
-            NEW_TAG=$(echo "$LATEST" | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          set -euo pipefail
+          NEW_TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/${NEW_TAG}" >/dev/null; then
+            echo "Tag ${NEW_TAG} already exists — skipping release create."
+            exit 0
           fi
-          echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
-          gh release create "$NEW_TAG" \
-            --title "TypeScript SDK ${NEW_TAG#v2/typescript/}" \
+          gh release create "$NEW_TAG" "v2/typescript/anhurdb-${VERSION}.tgz" \
+            --title "TypeScript SDK ${VERSION}" \
             --notes-file /tmp/release-notes.md
+          echo "Published GitHub Release: https://github.com/Yoven/AnhurDB-SDK/releases/tag/${NEW_TAG}"
 
-      - name: Publish to npm
+      - name: Publish to npm (optional)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
             npm publish --access public
           else
-            echo "Skipped npm publish (NPM_TOKEN not configured)."
+            echo "Skipped npm publish (NPM_TOKEN not configured). Tarball is on GitHub Releases."
           fi

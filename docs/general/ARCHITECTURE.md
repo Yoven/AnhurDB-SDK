@@ -6,7 +6,7 @@ This repository ships the official client libraries for AnhurDB v2:
 
 - `v2/python` — async Python SDK (`anhurdb`)
 - `v2/typescript` — TypeScript SDK (`anhurdb`)
-- `v2/golang` — Go module `github.com/anhurdb/sdk-go/v2`
+- `v2/golang` — Go module `github.com/Yoven/AnhurDB-SDK/v2/golang/v2`
 - `v2/plugins` — optional IDE memory plugins
 
 All three SDKs expose a single **`Memory`** client with the same REST surface.

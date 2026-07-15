@@ -135,7 +135,7 @@ await mem.searchEntities("Google", "organization");
 ```go
 import (
     "context"
-    anhurdb "github.com/anhurdb/sdk-go/v2"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
 )
 
 mem := anhurdb.NewMemory("anhur_xxx", anhurdb.WithURL("https://anhurdb.yoven.ai"))

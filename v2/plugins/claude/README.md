@@ -15,7 +15,7 @@ Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB
   per tenant** — nothing else.
 
 The engine is a **single static Go binary that dogfoods the official AnhurDB Go SDK**
-(`github.com/anhurdb/sdk-go/v2`) — so it inherits the SDK's HTTP transport and error handling,
+(`github.com/Yoven/AnhurDB-SDK/v2/golang/v2`) — so it inherits the SDK's HTTP transport and error handling,
 and has **zero runtime dependencies** (no python, no jq, no curl). The plugin also registers the
 AnhurDB **MCP tools** for explicit recall/store during a session.
 
@@ -147,7 +147,7 @@ Decisions/Facts in the `<anhur-memory>` block, because nothing has been distille
 ## Building / distributing
 
 `make build` uses `CGO_ENABLED=0` for a fully static binary. For a standalone build outside this
-monorepo, drop the `replace` in `go.mod` and `go get github.com/anhurdb/sdk-go/v2`, then `make build`.
+monorepo, drop the `replace` in `go.mod` and `go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2`, then `make build`.
 
 ## Security
 

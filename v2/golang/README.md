@@ -8,8 +8,10 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 
 ## Install
 
+Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
+
 ```bash
-go get github.com/anhurdb/sdk-go/v2
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.1
 ```
 
 ## Quick Start
@@ -20,7 +22,7 @@ package main
 import (
     "context"
     "fmt"
-    anhurdb "github.com/anhurdb/sdk-go/v2"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
 )
 
 func main() {
@@ -173,8 +175,8 @@ Structured filtering via `POST /api/v1/query`. Build a `QueryRequest` directly o
 ```go
 import (
     "context"
-    anhurdb "github.com/anhurdb/sdk-go/v2"
-    "github.com/anhurdb/sdk-go/v2/client"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
+    "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
 )
 
 mem := anhurdb.NewMemory("anhur_xxx")
@@ -216,7 +218,7 @@ if err != nil {
 The SDK includes a retriever adapter for Go agentic frameworks:
 
 ```go
-import "github.com/anhurdb/sdk-go/v2/integrations/dspy"
+import "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/integrations/dspy"
 
 retriever := dspy.NewRetriever(mem, 10)
 docs, err := retriever.GetRelevantDocuments(ctx, "user's role?")

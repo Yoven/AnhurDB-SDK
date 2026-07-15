@@ -3,7 +3,7 @@ package client
 import (
 	"time"
 
-	"github.com/anhurdb/sdk-go/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
 )
 
 // --------------------------------------------------------------------------

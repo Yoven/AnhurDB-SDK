@@ -18,16 +18,22 @@ Available in **Python**, **TypeScript**, and **Go**. Same API. Same endpoints. Z
 
 ## Install
 
+Packages ship on **[GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases)** (Yoven).
+
 ```bash
-# Python (async Memory + QueryBuilder)
-pip install anhurdb
+# Python — wheel from the Python SDK release assets
+pip install \
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.1/anhurdb-2.0.1-py3-none-any.whl
 
-# TypeScript / Node.js (Memory + QueryBuilder, zero runtime deps)
-npm install anhurdb
+# TypeScript — tarball from the TypeScript SDK release assets
+npm install \
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.0/anhurdb-2.0.0.tgz
 
-# Go (Memory.Query + NewQuery(), zero external deps — stdlib only)
-go get github.com/anhurdb/sdk-go/v2
+# Go — module tag v2/golang/vX.Y.Z on this repo
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.1
 ```
+
+> Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
 
 ---
 
@@ -268,8 +274,8 @@ package main
 import (
     "context"
     "fmt"
-    anhurdb "github.com/anhurdb/sdk-go/v2"
-    "github.com/anhurdb/sdk-go/v2/client"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
+    "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
 )
 
 func main() {
@@ -420,7 +426,7 @@ AnhurDB-SDK/
 |       |   +-- types.go     Response types, Entity, Upload, QueryRequest
 |       |   +-- errors.go    Typed error constants
 |       +-- models/          Record and session types
-|       +-- go.mod           github.com/anhurdb/sdk-go/v2
+|       +-- go.mod           github.com/Yoven/AnhurDB-SDK/v2/golang/v2
 |
 +-- docs/
 |   +-- general/ARCHITECTURE.md

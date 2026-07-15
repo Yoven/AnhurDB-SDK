@@ -1,5 +1,12 @@
 name: Release Go SDK
 
+# Primary distribution: GitHub Releases on Yoven/AnhurDB-SDK
+# https://github.com/Yoven/AnhurDB-SDK/releases
+#
+# Consumers:
+#   go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.x.y
+# (tag shape: v2/golang/v2.x.y)
+
 permissions:
   contents: write
 
@@ -37,21 +44,27 @@ jobs:
         run: |
           chmod +x .github/scripts/generate-changelog.sh
           ./.github/scripts/generate-changelog.sh golang HEAD > /tmp/release-notes.md
-          ./.github/scripts/generate-changelog.sh golang HEAD --write
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: .
         run: |
+          set -euo pipefail
           TAG_PREFIX="v2/golang/v"
-          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1)
+          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1 || true)
           if [ -z "$LATEST" ]; then
             NEW_TAG="${TAG_PREFIX}2.0.0"
           else
             NEW_TAG=$(echo "$LATEST" | awk -F. -v OFS=. '{$NF += 1 ; print}')
           fi
+          if git rev-parse -q --verify "refs/tags/${NEW_TAG}" >/dev/null; then
+            echo "Tag ${NEW_TAG} already exists — skipping release create."
+            exit 0
+          fi
+          # Source archive is attached automatically by GitHub for the tag.
           gh release create "$NEW_TAG" \
-            --title "Go SDK ${NEW_TAG#v2/golang/}" \
+            --title "Go SDK ${NEW_TAG#${TAG_PREFIX}}" \
             --notes-file /tmp/release-notes.md
-          echo "Go module published via tag: $NEW_TAG"
+          echo "Published GitHub Release: https://github.com/Yoven/AnhurDB-SDK/releases/tag/${NEW_TAG}"
+          echo "Install: go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@${NEW_TAG#${TAG_PREFIX}}"

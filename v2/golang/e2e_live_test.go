@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anhurdb/sdk-go/v2/client"
-	"github.com/anhurdb/sdk-go/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
 )
 
 const liveURL = "http://localhost:8000"

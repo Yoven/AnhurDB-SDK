@@ -17,7 +17,7 @@ net/http, crypto/sha256, encoding/json, and other stdlib packages.
 package anhurdb
 
 import (
-	"github.com/anhurdb/sdk-go/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
 )
 
 // NewMemory creates a new Memory instance connected to AnhurDB.

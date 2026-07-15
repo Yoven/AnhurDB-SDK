@@ -14,11 +14,13 @@ packages = [{include = "anhurdb"}]
 python = "^3.11"
 pydantic = "^2.8.0"
 aiohttp = "^3.11.0"
+requests = "^2.32.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
 pytest-asyncio = "^0.23.0"
 mypy = "^1.11.0"
+types-requests = "^2.32.0"
 
 [build-system]
 requires = ["poetry-core"]

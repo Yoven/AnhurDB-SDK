@@ -18,8 +18,11 @@ const results = await mem.search("what does this user do?");
 
 ## Installation
 
+Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/typescript/vX.Y.Z`).
+
 ```bash
-npm install anhurdb
+npm install \
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.0/anhurdb-2.0.0.tgz
 ```
 
 ## Usage

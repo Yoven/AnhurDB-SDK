@@ -11,7 +11,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/anhurdb/sdk-go/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
 )
 
 // Document represents a standard retrieved abstraction used in Go agentic frameworks.

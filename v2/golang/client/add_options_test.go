@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anhurdb/sdk-go/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
 )
 
 // TestRecentMemoriesEmptyEnvelope reproduces the empty-manifest crash: the

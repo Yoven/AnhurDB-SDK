@@ -22,7 +22,7 @@ keep two separate memories that never mix.
   per tenant** — nothing else.
 
 The engine is a **single static Go binary that dogfoods the official AnhurDB Go SDK**
-(`github.com/anhurdb/sdk-go/v2`) — so it inherits the SDK's HTTP transport and error handling,
+(`github.com/Yoven/AnhurDB-SDK/v2/golang/v2`) — so it inherits the SDK's HTTP transport and error handling,
 and has **zero runtime dependencies** (no python, no jq, no curl). The plugin also registers the
 AnhurDB **MCP tools** for explicit recall/store during a session.
 

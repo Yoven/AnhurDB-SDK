@@ -3,7 +3,7 @@ package client_test
 import (
 	"testing"
 
-	"github.com/anhurdb/sdk-go/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
 )
 
 
