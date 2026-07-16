@@ -19,12 +19,30 @@ GOFLAGS := -trimpath -ldflags=-s -ldflags=-w
 # Platforms whose prebuilt binaries ship (committed) in bin/. Keep in sync with the
 # wrapper's os/arch mapping and the CI matrix.
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
+# PREFIX is where `make install` puts the engine for the marketplace-free setup.
+PREFIX  ?= $(HOME)/.local
 
-.PHONY: build release-binaries deploy tidy clean
+.PHONY: build install release-binaries deploy tidy clean
 
 # build compiles the binary for THIS machine (local dogfood / dev).
 build:
 	CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o $(NATIVE) $(PKG)
+
+# install copies the engine to a STABLE path outside this git worktree, for the
+# marketplace-free setup (three hooks in settings.json invoking this binary directly).
+#
+# Junior Tip [why not just point the hooks at bin/, 2026-07-16]: because bin/ lives inside a
+# git worktree. Hooks that reference a path under version control break the moment anyone
+# rebases, renames, or checks out another branch — the memory silently stops recalling and
+# nothing announces it. That is exactly how this setup broke once: a marketplace registered
+# against the live worktree went dangling when a manifest was renamed, and the engine went
+# unloaded for hours before anyone noticed. Copying the binary OUT of the repo decouples the
+# user's long-term memory from day-to-day development of the repo that produces it.
+install: build
+	install -d $(PREFIX)/bin
+	install -m 755 $(NATIVE) $(PREFIX)/bin/anhur-claude-memory
+	@echo "installed -> $(PREFIX)/bin/anhur-claude-memory"
+	@echo "next: point three hooks (SessionStart/Stop/SessionEnd) at it — see README → Install → Option A"
 
 # release-binaries cross-compiles every shipped platform into bin/. The outputs are
 # committed; a marketplace install just runs the wrapper, no toolchain required.

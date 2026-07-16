@@ -88,8 +88,15 @@ type config struct {
 func loadConfig(plugin Config) config {
 	stateDir := envOr("ANHUR_STATE_DIR", filepath.Join(homeDir(), plugin.StateDirName))
 	return config{
-		apiKey:        os.Getenv("ANHUR_API_KEY"),
-		url:           envOr("ANHUR_URL", "http://localhost:8000"),
+		apiKey: os.Getenv("ANHUR_API_KEY"),
+		// Junior Tip [default to the real service, 2026-07-16]: this used to default to
+		// http://localhost:8000, which is a dead port on every machine that is not running a
+		// development stack. A key set without ANHUR_URL then dialled nothing, recall injected
+		// nothing, and the process still exited 0 — an unreachable default is indistinguishable
+		// from an empty memory. Defaulting to the hosted service means the out-of-the-box path
+		// works and a genuine failure is a real connection error someone can act on. Local
+		// development sets ANHUR_URL explicitly.
+		url:           envOr("ANHUR_URL", "https://anhurdb.yoven.ai"),
 		container:     envOr("ANHUR_CONTAINER", plugin.DefaultContainer),
 		stateDir:      stateDir,
 		httpTimeout:   time.Duration(envInt("ANHUR_HTTP_TIMEOUT", 15)) * time.Second,
@@ -172,7 +179,14 @@ func cmdRecall(ctx context.Context, cfg config, mem *client.Memory) {
 	block := formatMemory(cfg, profile)
 	if block != "" {
 		fmt.Println(block)
-		logLine(cfg, fmt.Sprintf("recall: injected memory block (bytes=%d)", len(block)))
+		// Junior Tip [say only what we can prove, 2026-07-16]: this used to read "injected memory
+		// block". It could not know that. Writing to stdout is ALL this process does; whether the
+		// block reaches the model depends on Claude Code having loaded the hook at all — which this
+		// process cannot observe. That one word cost real debugging time: with the engine unloaded
+		// and recalling nothing, every manual run still logged "injected", so the log read healthy
+		// while the memory was dead. A log line must describe the action taken, never an outcome
+		// owned by someone else.
+		logLine(cfg, fmt.Sprintf("recall: wrote memory block to stdout (bytes=%d)", len(block)))
 	}
 }
 

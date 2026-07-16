@@ -2,8 +2,12 @@
 bin/
 coverage.out
 *.test
-anhur-claude-memory
-anhur-hermes-memory
+# Stray dev binaries built at a plugin's root. These MUST stay anchored (leading slash):
+# an unanchored basename matches any path segment, and each plugin's SOURCE lives in a
+# directory of the same name (cmd/anhur-hermes-memory/). Unanchored, git never descends into
+# it — hermes' main.go was invisible to git and one `git clean -dx` from permanent loss.
+# claude's stray binary is already anchored by v2/plugins/claude/.gitignore.
+/v2/plugins/hermes/anhur-hermes-memory
 
 # Node
 node_modules/

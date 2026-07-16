@@ -214,8 +214,8 @@ if grep -q "authentication failed" "$recall_log" 2>/dev/null; then
   fail "recall logged an AUTH FAILURE (see $recall_log)"
 elif grep -q "profile failed" "$recall_log" 2>/dev/null; then
   fail "recall could not reach the backend (profile failed)"
-elif grep -q "injected memory block" "$recall_log" 2>/dev/null; then
-  pass "recall authenticated and injected the <anhur-memory> block"
+elif grep -q "wrote memory block to stdout" "$recall_log" 2>/dev/null; then
+  pass "recall authenticated and wrote the <anhur-memory> block to stdout"
 else
   pass "recall ran clean (no error logged)"
 fi

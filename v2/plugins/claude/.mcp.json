@@ -2,7 +2,7 @@
   "mcpServers": {
     "anhurdb": {
       "type": "http",
-      "url": "${ANHUR_MCP_URL:-http://localhost:8090/mcp}"
+      "url": "${ANHUR_MCP_URL:-https://anhurdb.yoven.ai/mcp}"
     }
   }
 }

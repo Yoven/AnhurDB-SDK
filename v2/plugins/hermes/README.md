@@ -16,7 +16,7 @@ keep two separate memories that never mix.
   `fact` / `preference` / `decision` / `risk` / `task` / `emotion` — whenever Smart Units are enabled
   on your AnhurDB (see [Structured memory](#structured-memory-smart-units) below).
 - **No silent loss at the boundary** — if AnhurDB is unreachable when a turn ends, the turn is
-  queued to disk and retried on the next session start. A crash risks at most the in-flight turn.
+  queued to disk and retried on the next persist or session start, whichever comes first. A crash risks at most the in-flight turn.
 - **The key never touches the transcript** — it lives only in `ANHUR_API_KEY` (env), sent as the
   `X-API-Key` header. This honors AnhurDB's auth model: a master key for services, **one API key
   per tenant** — nothing else.
@@ -31,7 +31,7 @@ AnhurDB **MCP tools** for explicit recall/store during a session.
 ```
 plugins/hermes/
 ├── .claude-plugin/plugin.json    # plugin manifest (name: anhurdb-memory-hermes)
-├── .mcp.json                     # registers the AnhurDB MCP server (anhur-mcp, :8090)
+├── .mcp.json                     # registers the AnhurDB MCP server (https://anhurdb.yoven.ai/mcp)
 ├── hooks/hooks.json              # SessionStart→recall, Stop+SessionEnd→persist
 ├── cmd/anhur-hermes-memory/      # thin main → core.Run with the Hermes identity
 │   └── main.go
@@ -44,7 +44,7 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
 
 ## Prerequisites
 
-- A running AnhurDB stack reachable at `ANHUR_URL` (the local docker-compose, or your deployment).
+- An AnhurDB endpoint at `ANHUR_URL` — `https://anhurdb.yoven.ai`.
 - **Go 1.24+** to build the binary once (the built binary itself needs nothing at runtime).
 - A **per-tenant** AnhurDB API key for the Hermes tenant (not the master key) — the same key the MCP
   tools accept.
@@ -63,7 +63,7 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
 2. **Configure** the environment (see `.env.example`). At minimum:
    ```bash
    export ANHUR_API_KEY="anhur_…your_hermes_tenant_key…"
-   export ANHUR_URL="http://localhost:8000"
+   export ANHUR_URL="https://anhurdb.yoven.ai"
    export ANHUR_CONTAINER="hermes-ltm"
    ```
    Put these where they reach the Claude Code process (shell profile, or a gitignored file you
@@ -86,7 +86,7 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
 ## Verify it works (without waiting for a session)
 
 ```bash
-export ANHUR_API_KEY="…" ANHUR_URL="http://localhost:8000" ANHUR_CONTAINER="hermes-ltm"
+export ANHUR_API_KEY="…" ANHUR_URL="https://anhurdb.yoven.ai" ANHUR_CONTAINER="hermes-ltm"
 
 # Recall: prints your <anhur-memory> block.
 ./bin/anhur-hermes-memory recall </dev/null
@@ -103,7 +103,7 @@ Diagnostics (never the key) go to `$ANHUR_STATE_DIR/plugin.log` (default `~/.anh
 SessionStart ─▶ recall  ─▶ flush any turns queued from a previous offline moment
                         └▶ read your profile, inject the <anhur-memory> block
    …turns…
-Stop (each)  ─▶ persist ─▶ save the new turn  (on failure: queue to disk, retry next start)
+Stop (each)  ─▶ persist ─▶ save the new turn  (on failure: queue to disk; every later persist retries)
 SessionEnd   ─▶ persist ─▶ final flush of any remaining turns
 ```
 
