@@ -105,22 +105,27 @@ type sessionsWrapper struct {
 // --------------------------------------------------------------------------
 
 // Entity is a Layer-2 named node (person, organisation, concept, location, …).
+//
+// Junior Tip [wire key 2026-07-16]: AnhurDB entityToResponse emits entity_type
+// (not type). type collides with record.type mentally and silently decoded as "".
 type Entity struct {
-	ID         int64                  `json:"id"`
-	Name       string                 `json:"name"`
-	EntityType string                 `json:"type"`
-	Summary    string                 `json:"summary,omitempty"`
-	Attributes map[string]interface{} `json:"attributes,omitempty"`
-	CreatedAt  *time.Time             `json:"created_at,omitempty"`
-	UpdatedAt  *time.Time             `json:"updated_at,omitempty"`
+	ID           int64                  `json:"id"`
+	Name         string                 `json:"name"`
+	EntityType   string                 `json:"entity_type"`
+	Summary      string                 `json:"summary,omitempty"`
+	Attributes   map[string]interface{} `json:"attributes,omitempty"`
+	Dimension    int                    `json:"dimension,omitempty"`
+	FirstSeen    string                 `json:"first_seen,omitempty"`
+	LastSeen     string                 `json:"last_seen,omitempty"`
+	MentionCount int                    `json:"mention_count,omitempty"`
+	Weight       float64                `json:"weight,omitempty"`
 }
 
-// EntityResult is returned by UpsertEntity — contains the created/updated
-// entity's ID.
+// EntityResult is returned by UpsertEntity — created/updated entity identity.
 type EntityResult struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Status string `json:"status,omitempty"`
+	ID         int64  `json:"id"`
+	Name       string `json:"name,omitempty"`
+	EntityType string `json:"entity_type,omitempty"`
 }
 
 // EntityGraphResult contains the BFS traversal output from the entity

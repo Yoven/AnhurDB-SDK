@@ -11,7 +11,7 @@ surface so power users can set score, weight, and related_ids. The
 """
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from datetime import datetime
 
 from .enums import MemoryType, MemoryStatus
@@ -121,17 +121,27 @@ class EntityModel(BaseModel):
     Real-world objects (people, organisations, concepts) linked to memory
     records. ``entity_type`` is NOT ``record.type`` (episodic/fact/decision) —
     the cross-layer link (``link_record_entity``) is the tag.
+
+    Wire key is ``entity_type`` (AnhurDB entityToResponse). ``type`` is accepted
+    only as a legacy alias for older upsert responses.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     id: Optional[int] = None
     name: str = ""
-    entity_type: str = Field(default="", alias="type")
+    entity_type: str = Field(
+        default="",
+        validation_alias=AliasChoices("entity_type", "type"),
+        serialization_alias="entity_type",
+    )
     summary: str = ""
     attributes: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    dimension: Optional[int] = None
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+    mention_count: Optional[int] = None
+    weight: Optional[float] = None
 
 
 class EntityEdge(BaseModel):

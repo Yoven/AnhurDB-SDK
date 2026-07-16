@@ -142,7 +142,7 @@ func TestLiveE2E(testHandle *testing.T) {
 	}
 	entDetail := ""
 	if entResult != nil {
-		entDetail = fmt.Sprintf("id=%d name=%s status=%s", entResult.ID, entResult.Name, entResult.Status)
+		entDetail = fmt.Sprintf("id=%d name=%s entity_type=%s", entResult.ID, entResult.Name, entResult.EntityType)
 	}
 	step(testHandle, "UpsertEntity", entErr, entDetail)
 

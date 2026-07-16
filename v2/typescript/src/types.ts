@@ -261,17 +261,20 @@ export interface SessionStats {
  * A named entity in the AnhurDB knowledge graph (Layer 2).
  *
  * Entities are real-world objects (people, organisations, concepts) linked to
- * memory records. `type` here is **entity_type** — not `record.type`
+ * memory records. Wire field is `entity_type` — not `record.type`
  * (episodic / fact / decision). The cross-layer link is the “tag”.
  */
 export interface EntityRecord {
   id: number;
   name: string;
-  type: string;
+  entity_type: string;
   summary?: string;
   attributes?: Record<string, unknown>;
-  created_at?: string;
-  updated_at?: string;
+  dimension?: number;
+  first_seen?: string;
+  last_seen?: string;
+  mention_count?: number;
+  weight?: number;
 }
 
 /**
