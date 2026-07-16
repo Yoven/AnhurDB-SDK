@@ -1,0 +1,113 @@
+name: Release Claude plugin
+
+# The AnhurDB Claude Code memory plugin ships PREBUILT per-platform binaries
+# (bin/anhur-claude-memory-<os>-<arch>, committed) so an install needs no Go
+# toolchain. This workflow gates on tests + a reproducible-build freshness check,
+# then tags and publishes a GitHub Release from the version in plugin.json.
+#
+# It does NOT publish to any package registry — a Claude Code plugin is installed
+# from the marketplace git repo (.claude-plugin/marketplace.json), unlike the
+# language SDKs (npm / PyPI / Go-tag).
+#
+# SDK coupling / release ORDER: the plugin builds against the SDK through the
+# monorepo `replace ../../golang`, so a plugin release is reproducible only from a
+# commit where the SDK is already at its intended version. Tag the SDK first
+# (Release Go SDK), then the plugin.
+#
+# To cut a release:
+#   1. bump "version" in v2/plugins/claude/.claude-plugin/plugin.json
+#   2. `cd v2/plugins/claude && make release-binaries` (go matching GO_VERSION below)
+#   3. commit the refreshed bin/ + the version bump, merge to main
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v2/plugins/**"
+      - ".github/workflows/release-plugin.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: release-plugin
+  cancel-in-progress: false
+
+env:
+  # Pinned to the toolchain the committed binaries are built with, so the
+  # reproducible-build freshness gate below is byte-exact. Bump here AND rebuild
+  # the committed binaries with the same version in the same PR.
+  GO_VERSION: "1.24.4"
+
+jobs:
+  release:
+    name: Release Claude plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Gate 1 — pure-logic tests for the shared engine and the plugin. test_e2e.sh
+      # is intentionally NOT run here: it drives the binary against a LIVE AnhurDB
+      # with a real tenant key, which CI does not (and must not) hold.
+      - name: Vet + unit tests
+        run: |
+          set -euo pipefail
+          (cd v2/plugins/core   && go vet ./... && go test ./...)
+          (cd v2/plugins/claude && go vet ./... && go test ./...)
+
+      # Gate 2 — the committed binaries must equal a fresh build. -trimpath makes
+      # the build reproducible, so any drift means someone changed the code without
+      # running `make release-binaries`. Fail loud rather than ship a stale binary.
+      - name: Committed binaries are fresh
+        run: |
+          set -euo pipefail
+          cd v2/plugins/claude
+          make release-binaries
+          if ! git diff --quiet -- bin/; then
+            echo "::error::Committed v2/plugins/claude/bin/ is stale — run 'make release-binaries' (go ${GO_VERSION}) and commit."
+            git --no-pager diff --stat -- bin/
+            exit 1
+          fi
+
+      # Tag = plugins/claude/v<version-from-plugin.json>. plugin.json's version is the
+      # single source of truth you bump by hand; an existing tag means you forgot to.
+      - name: Tag + GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version v2/plugins/claude/.claude-plugin/plugin.json)"
+          tag="plugins/claude/v${version}"
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists — bump 'version' in plugin.json to release a new build."
+            exit 0
+          fi
+          prev="$(git tag -l 'plugins/claude/v*' | sort -V | tail -n1 || true)"
+          {
+            echo "## anhurdb-memory ${version}"
+            echo
+            echo "Install: add the \`anhur\` marketplace, then install \`anhurdb-memory\`."
+            echo
+            echo "### Changes"
+            if [ -n "$prev" ]; then
+              git log --pretty='- %s' "${prev}..HEAD" -- v2/plugins v2/golang
+            else
+              git log --pretty='- %s' -n 20 -- v2/plugins
+            fi
+          } > /tmp/plugin-notes.md
+          git tag "${tag}"
+          git push origin "${tag}"
+          gh release create "${tag}" \
+            --title "anhurdb-memory ${version}" \
+            --notes-file /tmp/plugin-notes.md \
+            v2/plugins/claude/bin/anhur-claude-memory-darwin-amd64 \
+            v2/plugins/claude/bin/anhur-claude-memory-darwin-arm64 \
+            v2/plugins/claude/bin/anhur-claude-memory-linux-amd64 \
+            v2/plugins/claude/bin/anhur-claude-memory-linux-arm64

@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+# anhur-claude-memory — platform selector (committed, shipped).
+#
+# The marketplace-installed plugin must run with ZERO Go toolchain, so the hooks
+# call THIS wrapper, which execs the prebuilt binary for the current OS/arch
+# (anhur-claude-memory-<os>-<arch>, cross-compiled by `make release-binaries` and
+# committed next to this file). Fails loud if no binary matches — never silently.
+set -e
+
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+os=$(uname -s)
+case "$os" in
+	Darwin) os=darwin ;;
+	Linux) os=linux ;;
+	*) echo "anhur-claude-memory: unsupported OS '$os' (need Darwin or Linux)" >&2; exit 1 ;;
+esac
+
+arch=$(uname -m)
+case "$arch" in
+	arm64 | aarch64) arch=arm64 ;;
+	x86_64 | amd64) arch=amd64 ;;
+	*) echo "anhur-claude-memory: unsupported arch '$arch' (need arm64 or amd64)" >&2; exit 1 ;;
+esac
+
+target="$dir/anhur-claude-memory-$os-$arch"
+if [ ! -x "$target" ]; then
+	echo "anhur-claude-memory: no prebuilt binary for $os/$arch at $target" >&2
+	echo "  build it locally: (cd \"$dir/..\" && make build)" >&2
+	exit 1
+fi
+
+exec "$target" "$@"

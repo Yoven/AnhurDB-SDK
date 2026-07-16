@@ -1,0 +1,19 @@
+{
+  "name": "anhur",
+  "owner": {
+    "name": "Anhur",
+    "url": "https://anhur.yoven.ai"
+  },
+  "plugins": [
+    {
+      "name": "anhurdb-memory",
+      "source": "./v2/plugins/claude",
+      "description": "AnhurDB as Claude Code's persistent, sovereign long-term memory: auto-recall at session start, deterministic auto-persist each turn and at session end, no-silent-loss disk queue + retry. Bundles the AnhurDB MCP tools for explicit recall/store during a session."
+    },
+    {
+      "name": "anhurdb-memory-hermes",
+      "source": "./v2/plugins/hermes",
+      "description": "The Hermes memory identity: the same AnhurDB long-term-memory engine as anhurdb-memory, pointed at a SEPARATE tenant + container (hermes-ltm) + state dir (~/.anhur-hermes-memory) so a second agent's memory never mixes with the default. Auto-recall, deterministic auto-persist, no-silent-loss disk queue + retry, and the AnhurDB MCP tools."
+    }
+  ]
+}

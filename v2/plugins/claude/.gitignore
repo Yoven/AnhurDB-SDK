@@ -1,0 +1,13 @@
+# The SDK-root .gitignore ignores bin/ globally. This plugin SHIPS its runnable
+# binary so a marketplace install needs no Go toolchain — re-include the committed
+# wrapper and the prebuilt per-platform release binaries. Local `make build` writes
+# the same per-platform names, so there is nothing extra to leak.
+!bin/
+!bin/anhur-claude-memory
+!bin/anhur-claude-memory-darwin-amd64
+!bin/anhur-claude-memory-darwin-arm64
+!bin/anhur-claude-memory-linux-amd64
+!bin/anhur-claude-memory-linux-arm64
+
+# Stray pre-wrapper dev binary at the plugin root stays ignored.
+/anhur-claude-memory

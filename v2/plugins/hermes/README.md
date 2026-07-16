@@ -1,7 +1,7 @@
 # AnhurDB memory for Hermes
 
 Give a second, isolated agent identity — **Hermes** — a **persistent, sovereign long-term memory**
-backed by [AnhurDB](https://anhur.cloud).
+backed by [AnhurDB](https://anhur.yoven.ai).
 
 This plugin is the **same engine** as the default [`anhurdb-memory`](../claude) plugin (they share
 `github.com/anhurdb/anhur-memory-core` so they never drift). The only difference is **identity**: the

@@ -1,6 +1,6 @@
 # AnhurDB memory for Claude Code
 
-Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB](https://anhur.cloud).
+Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB](https://anhur.yoven.ai).
 
 - **Auto-recall** — at the start of every session, your AnhurDB profile (decisions, facts,
   preferences, recent topics) is injected into Claude's context. It wakes up remembering.
@@ -15,91 +15,108 @@ Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB
   per tenant** — nothing else.
 
 The engine is a **single static Go binary that dogfoods the official AnhurDB Go SDK**
-(`github.com/Yoven/AnhurDB-SDK/v2/golang/v2`) — so it inherits the SDK's HTTP transport and error handling,
-and has **zero runtime dependencies** (no python, no jq, no curl). The plugin also registers the
-AnhurDB **MCP tools** for explicit recall/store during a session.
+(`github.com/Yoven/AnhurDB-SDK/v2/golang/v2`) — so it inherits the SDK's HTTP transport and error
+handling, and has **zero runtime dependencies** (no python, no jq, no curl, and **no Go toolchain to
+install** — prebuilt binaries ship for macOS and Linux). The plugin also registers the AnhurDB
+**MCP tools** for explicit recall/store during a session.
 
-## What's in here
+## Requirements
 
-```
-plugins/claude/
-├── .claude-plugin/plugin.json    # plugin manifest
-├── .mcp.json                     # registers the AnhurDB MCP server (anhur-mcp, SSE :8090)
-├── hooks/hooks.json              # SessionStart→recall, Stop+SessionEnd→persist
-├── cmd/anhur-claude-memory/      # the hook engine (Go, uses sdk-go/v2)
-│   └── main.go
-├── go.mod / Makefile             # build → bin/anhur-claude-memory (static)
-├── bin/anhur-claude-memory       # built binary (run `make build`)
-└── .env.example                  # configuration template
-```
+- A running AnhurDB reachable at `ANHUR_URL` (local docker-compose, or a hosted deployment like
+  `https://anhurdb.yoven.ai`).
+- A **per-tenant** AnhurDB API key — an `anhur_…` token, **not** the master key. The same key the
+  MCP tools accept.
+- macOS (arm64/amd64) or Linux (arm64/amd64). Windows via WSL.
+- For **structured memory** (decisions/facts/emotions, not just raw turns), your AnhurDB must have
+  **Smart Units** enabled (its cognitive layer; on by default on hosted plans). Without them every
+  turn is still saved, but nothing is distilled. See [Structured memory](#structured-memory-smart-units).
 
-## Prerequisites
-
-- A running AnhurDB stack reachable at `ANHUR_URL` (the local docker-compose, or your deployment).
-- **Go 1.24+** to build the binary once (the built binary itself needs nothing at runtime).
-- A **per-tenant** AnhurDB API key (not the master key) — the same key the MCP tools accept.
-- For **structured memory** (decisions/facts/emotions — not just raw turns), your AnhurDB must have
-  **Smart Units** enabled (its cognitive layer; on by default on the hosted plans). Without them,
-  every turn is still saved, but nothing is distilled from it. See
-  [Structured memory](#structured-memory-smart-units).
+> No Go toolchain is required to **use** the plugin — the marketplace ships a prebuilt binary per
+> platform. Go 1.24+ is only for [development](#development).
 
 ## Install
 
-1. **Build the binary** (once):
-   ```bash
-   cd plugins/claude && make build      # → bin/anhur-claude-memory (static)
-   ```
+### 1. Add the marketplace and install the plugin
 
-2. **Configure** the environment (see `.env.example`). At minimum:
-   ```bash
-   export ANHUR_API_KEY="anhur_…your_tenant_key…"
-   export ANHUR_URL="http://localhost:8000"
-   export ANHUR_CONTAINER="claude-ltm"
-   ```
-   Put these where they reach the Claude Code process (shell profile, or a gitignored file you
-   `source`). **Never commit the key.** The hooks `source $HOME/.anhur-claude-memory/env` before
-   running the binary, so that 0600 file (outside the repo) is the canonical place for these vars.
+In Claude Code:
 
-   > **`ANHUR_CONTAINER` is your memory profile — choose it once and keep it stable.** The API key
-   > selects your *tenant*; `ANHUR_CONTAINER` names the memory profile **within** it that recall
-   > reads from. If you change it later, recall stops surfacing what was saved under the old name —
-   > nothing is lost (it's still there under the old name), it just isn't re-surfaced. So pick a
-   > stable value now.
+```
+/plugin marketplace add Yoven/AnhurDB-SDK
+/plugin install anhurdb-memory@anhur
+```
 
-3. **Enable the plugin.** Register this directory as a Claude Code plugin. The hooks reference the
-   binary via `${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory`; if your Claude Code build exposes the
-   plugin root under a different variable, adjust `hooks/hooks.json`.
+The `anhur` marketplace manifest is at the repo root, so the GitHub `owner/repo` shorthand works — no
+clone needed. (Working from a local checkout instead? `/plugin marketplace add .` from the repo root.)
 
-4. **Start a new session.** On startup your AnhurDB memory is injected; after each turn it persists.
+(The `anhur` marketplace also offers `anhurdb-memory-hermes` — the same engine pointed at a separate
+tenant/container, for a second, isolated agent identity.)
+
+A committed wrapper (`bin/anhur-claude-memory`) auto-selects the right prebuilt binary for your
+OS/arch, so there is **nothing to build**.
+
+### 2. Configure the environment
+
+The hooks `source $HOME/.anhur-claude-memory/env` before running, so that file (mode `0600`, **outside
+any repo**) is the canonical place for your config. Create it:
+
+```bash
+install -m 700 -d "$HOME/.anhur-claude-memory"
+umask 177
+cat > "$HOME/.anhur-claude-memory/env" <<'EOF'
+export ANHUR_API_KEY="anhur_…your_tenant_key…"
+export ANHUR_URL="https://anhurdb.yoven.ai"   # or http://localhost:8000 for local
+export ANHUR_CONTAINER="claude-ltm"           # your memory profile — pick once, keep stable
+EOF
+```
+
+- **Never commit the key.** It lives only in this file and is sent as the `X-API-Key` header.
+- **`ANHUR_CONTAINER` is your memory profile — choose it once and keep it stable.** The API key
+  selects your *tenant*; `ANHUR_CONTAINER` names the memory profile **within** it that recall reads
+  from. Change it later and recall stops surfacing what was saved under the old name — nothing is
+  lost (it's still there under the old name), it just isn't re-surfaced.
+
+Optional variables (see `.env.example`): `ANHUR_STATE_DIR` (queue/log location, default
+`~/.anhur-claude-memory`), `ANHUR_RECALL_LIMIT` (facts surfaced at recall, default 8), `ANHUR_ARCHIVE`
+(verbatim transcript archive, default on), and **`ANHUR_MCP_URL`** — the AnhurDB MCP server the bundled
+tools connect to (default `http://localhost:8090/mcp`; point it at your hosted MCP endpoint if you use
+one).
+
+> **MCP tools on the Desktop app:** `${ANHUR_MCP_URL:-…}` in `.mcp.json` is expanded by the Claude
+> Code **CLI** but **not** the macOS **Desktop app** — there the literal `${ANHUR_MCP_URL}` is sent and
+> the MCP tools fail to connect. On Desktop, edit `.mcp.json` to a hardcoded URL. This only affects the
+> optional MCP tools; the core recall/persist loop (which talks to `ANHUR_URL` via the SDK, not MCP) is
+> unaffected either way.
+
+### 3. Start a new session
+
+On startup your AnhurDB memory is injected as an `<anhur-memory>` block; after each turn it persists.
+That's it.
 
 ## Verify it works (without waiting for a session)
 
+The same binary the hooks run can be driven by hand:
+
 ```bash
-export ANHUR_API_KEY="…" ANHUR_URL="http://localhost:8000" ANHUR_CONTAINER="claude-ltm"
+. "$HOME/.anhur-claude-memory/env"
 
 # Recall: prints your <anhur-memory> block.
-./bin/anhur-claude-memory recall </dev/null
-
-# Persist: feed it a fake Stop payload pointing at a JSONL transcript.
-echo '{"session_id":"test","transcript_path":"/path/to/a.jsonl"}' | ./bin/anhur-claude-memory persist
+"$HOME/.claude/plugins/cache/anhur/anhurdb-memory"/*/bin/anhur-claude-memory recall </dev/null
 ```
 
-Diagnostics (never the key) go to `$ANHUR_STATE_DIR/plugin.log` (default `~/.anhur-claude-memory/plugin.log`).
+Diagnostics (never the key) go to `$ANHUR_STATE_DIR/plugin.log` (default
+`~/.anhur-claude-memory/plugin.log`).
 
-**Verify the *full* loop — not just storage.** `recall`/`persist` only prove the turn is being saved.
-To confirm AnhurDB is also distilling it into typed memories, save a sentence with a clear
-decision/fact, wait a few seconds (Smart Units work asynchronously), then recall:
+**Verify the *full* loop — not just storage.** `recall` proves reading; to confirm AnhurDB is also
+distilling turns into typed memories, save a sentence with a clear decision/fact, wait a few seconds
+(Smart Units are asynchronous), then recall:
 
 ```bash
-# 1. save one memory (the same way the plugin does)
 curl -s -X POST "$ANHUR_URL/api/v1/ingest" -H "X-API-Key: $ANHUR_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"content":"Decision: we will ship in June. Fact: the build uses Go 1.24.","container_tag":"'"$ANHUR_CONTAINER"'"}'
-
-# 2. wait a few seconds, then recall — the decision/fact should now be in the <anhur-memory> block:
-./bin/anhur-claude-memory recall </dev/null
+  -d '{"content":"Decision: we ship in June. Fact: the build uses Go 1.24.","container_tag":"'"$ANHUR_CONTAINER"'"}'
+# wait a few seconds, then recall — the decision/fact should appear in the <anhur-memory> block.
 ```
 
-If step 2 stays empty, Smart Units aren't enabled on your AnhurDB — see
+If it stays empty, Smart Units aren't enabled on your AnhurDB — see
 [Structured memory](#structured-memory-smart-units).
 
 ## How the memory loop works
@@ -113,8 +130,7 @@ SessionEnd   ─▶ persist ─▶ final flush of any remaining turns
 ```
 
 Each saved turn becomes a memory in AnhurDB. From there AnhurDB's **Smart Units** distill it into
-typed memories, keep them current, and retire contradicted facts so recall stays accurate over time —
-see [Structured memory](#structured-memory-smart-units).
+typed memories, keep them current, and retire contradicted facts so recall stays accurate over time.
 
 ## Structured memory (Smart Units)
 
@@ -122,32 +138,57 @@ Saving your turns is only half of it. Turning them into typed memories you can r
 `preference`, `decision`, `risk`, `task`, `emotion` — is done by AnhurDB's **Smart Units (SUs)**, its
 cognitive layer. The plugin saves every turn no matter what; the Smart Units distill it.
 
-**This is the most common "why is my memory empty?" surprise.** If Smart Units aren't enabled on your
-AnhurDB, your turns are still saved safely, but recall stays thin — you'll see few or no
-Decisions/Facts in the `<anhur-memory>` block, because nothing has been distilled yet.
+**This is the most common "why is my memory empty?" surprise.** If Smart Units aren't enabled, your
+turns are still saved safely, but recall stays thin — few or no Decisions/Facts in the block, because
+nothing has been distilled yet.
 
-- Enable Smart Units on your AnhurDB (see your AnhurDB setup guide; hosted plans have them on by
-  default).
-- Distillation is **asynchronous** — a saved turn becomes typed memories a short while later, not
-  instantly. Recall right after saving may not show them yet; check again shortly.
-- **Nothing is lost while you wait** — your raw turns are durable in AnhurDB, and the Smart Units
-  catch up.
+- Enable Smart Units on your AnhurDB (hosted plans have them on by default).
+- Distillation is **asynchronous** — a saved turn becomes typed memories a short while later.
+- **Nothing is lost while you wait** — your raw turns are durable; the Smart Units catch up.
 
 ## Honest limitations
 
-- **`SessionEnd` does not fire on a hard crash / `kill -9`.** The per-turn `Stop` hook is the
-  durable path; `SessionEnd` is only a final flush. Worst-case loss is the single in-flight turn.
+- **`SessionEnd` does not fire on a hard crash / `kill -9`.** The per-turn `Stop` hook is the durable
+  path; `SessionEnd` is only a final flush. Worst-case loss is the single in-flight turn.
 - **`SessionEnd` may not provide the transcript path.** `Stop` does; `SessionEnd` falls back to the
   documented transcript location, best-effort. Rely on `Stop` for durability.
-- **Structured memories aren't instant.** Your turns are saved immediately; the typed
-  facts/decisions appear a short while later, after the Smart Units distill them.
+- **Structured memories aren't instant.** Turns are saved immediately; typed facts/decisions appear a
+  short while later, after the Smart Units distill them.
 - **Hooks aren't retried by Claude Code.** That's why persistence is queued to disk and retried by
-  `recall` on the next start, rather than relying on the hook to retry.
+  `recall` on the next start.
 
-## Building / distributing
+## Development
 
-`make build` uses `CGO_ENABLED=0` for a fully static binary. For a standalone build outside this
-monorepo, drop the `replace` in `go.mod` and `go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2`, then `make build`.
+Build and iterate locally (needs **Go 1.24+**):
+
+```bash
+cd v2/plugins/claude
+make build     # native binary → bin/anhur-claude-memory-<os>-<arch>
+make deploy    # build + sync the wrapper and this binary into the installed plugin cache
+./test_e2e.sh  # end-to-end against the live AnhurDB in ~/.anhur-claude-memory/env
+```
+
+The plugin dogfoods the SDK via the monorepo `replace ../../golang` in `go.mod`. For a standalone
+build outside this repo, drop that `replace` and `go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2`.
+
+### Releasing
+
+Delivery is **prebuilt per-platform binaries committed in `bin/`**, selected at runtime by the
+`bin/anhur-claude-memory` wrapper — so a marketplace install needs no toolchain. Distribution is the
+`anhur` marketplace git repo, not a package registry.
+
+1. Bump `version` in `.claude-plugin/plugin.json` (semver).
+2. `make release-binaries` — cross-compiles darwin/linux × amd64/arm64 (reproducible via `-trimpath`).
+   Build with **go 1.24.4** to match CI's freshness gate.
+3. Commit the refreshed `bin/` + the version bump; merge to `main`.
+
+`.github/workflows/release-plugin.yml` then gates on `go vet` + unit tests + a reproducible-build
+freshness check (committed binaries must equal a fresh build), tags `plugins/claude/v<version>`, and
+publishes a GitHub Release with the four binaries attached.
+
+**Release order (SDK coupling):** the plugin builds against the SDK through the local `replace`, so
+cut a plugin release from a commit where the SDK is already at its intended version — tag the SDK
+first (`Release Go SDK`), then the plugin.
 
 ## Security
 
