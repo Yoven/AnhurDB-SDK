@@ -9,12 +9,13 @@
 //
 //	<binary> recall    # SessionStart: flush any queued writes, then print the agent's AnhurDB
 //	                   # profile so Claude Code injects it as context.
-//	<binary> persist   # Stop / SessionEnd: ingest the transcript delta since the last run;
-//	                   # on failure, queue to disk and retry on the next recall.
+//	<binary> persist   # Stop / SessionEnd: drain the queue, then ingest the transcript delta
+//	                   # since the last run; on failure, queue to disk.
 //
 // Design principle (mirrors AnhurDB's #1 rule — no silent loss): a turn we cannot persist is
-// queued to disk and recovered on the next session start, never dropped. Every error path exits 0
-// so a memory backend that is down can never block or crash the agent's session.
+// queued to disk and recovered by the next persist or the next session start — whichever comes
+// first — never dropped. Every error path exits 0 so a memory backend that is down can never block
+// or crash the agent's session.
 //
 // Junior Tip [why a shared core, 2026-07-07]: the `claude` and `hermes` plugins are the SAME engine
 // pointed at DIFFERENT memory identities (state dir + container + tenant key). Instead of copying
@@ -301,7 +302,7 @@ func cmdPersist(ctx context.Context, cfg config, mem *client.Memory) {
 		// consolidation produces one consolidated per conversation anchored at its
 		// first episodic. Recall still scopes to the whole tenant.
 		if _, addErr := mem.Add(ctx, chunk, client.WithSessionID(sessionID)); addErr != nil {
-			queueChunk(cfg, chunk) // DB down → queue; recall flushes it next start (no silent loss)
+			queueChunk(cfg, chunk) // DB down → queue; the next persist or recall drains it (no silent loss)
 			queued++
 		} else {
 			sent++
@@ -626,7 +627,7 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) {
 			// maximum of 500 records") looked identical to a transient DB-down retry —
 			// the queue sat "still failing" for 10 days before anyone saw the 409.
 			// The queue must never drop chunks, but it must FAIL LOUD about why.
-			logLine(cfg, fmt.Sprintf("flush still failing for %s (retry next start): %v", path, addErr))
+			logLine(cfg, fmt.Sprintf("flush still failing for %s (retried on every persist): %v", path, addErr))
 		}
 	}
 }

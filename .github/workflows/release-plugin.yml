@@ -1,23 +1,30 @@
-name: Release Claude plugin
+name: Gate plugins, release Claude plugin
 
-# The AnhurDB Claude Code memory plugin ships PREBUILT per-platform binaries
-# (bin/anhur-claude-memory-<os>-<arch>, committed) so an install needs no Go
-# toolchain. This workflow gates on tests + a reproducible-build freshness check,
-# then tags and publishes a GitHub Release from the version in plugin.json.
+# Both AnhurDB memory plugins (claude + hermes) ship PREBUILT per-platform binaries
+# (bin/anhur-<name>-memory-<os>-<arch>, committed) so an install needs no Go toolchain.
+# This workflow GATES BOTH on vet/tests + a reproducible-build freshness check, then
+# tags and publishes a GitHub Release for the CLAUDE plugin from the version in its
+# plugin.json.
 #
-# It does NOT publish to any package registry — a Claude Code plugin is installed
-# from the marketplace git repo (.claude-plugin/marketplace.json), unlike the
-# language SDKs (npm / PyPI / Go-tag).
+# Why gate hermes but not release it: both plugins import plugins/core via a `replace`,
+# so a core change can break hermes just as easily as claude, and no other workflow ever
+# compiles hermes. It is installed straight from the marketplace git repo, so it needs no
+# GitHub Release of its own — but its committed binaries must not be allowed to go stale.
 #
-# SDK coupling / release ORDER: the plugin builds against the SDK through the
-# monorepo `replace ../../golang`, so a plugin release is reproducible only from a
-# commit where the SDK is already at its intended version. Tag the SDK first
-# (Release Go SDK), then the plugin.
+# Neither publishes to a package registry — a Claude Code plugin is installed from the
+# marketplace git repo (.claude-plugin/marketplace.json), unlike the language SDKs
+# (npm / PyPI / Go-tag).
+#
+# SDK coupling / release ORDER: the plugins build against the SDK through the monorepo
+# `replace ../../golang`, so a plugin release is reproducible only from a commit where
+# the SDK is already at its intended version. Tag the SDK first (Release Go SDK), then
+# the plugin.
 #
 # To cut a release:
 #   1. bump "version" in v2/plugins/claude/.claude-plugin/plugin.json
 #   2. `cd v2/plugins/claude && make release-binaries` (go matching GO_VERSION below)
 #   3. commit the refreshed bin/ + the version bump, merge to main
+#   (touching plugins/core? rebuild BOTH plugins' bin/ — the freshness gate checks both)
 
 permissions:
   contents: write
@@ -56,25 +63,35 @@ jobs:
       # Gate 1 — pure-logic tests for the shared engine and the plugin. test_e2e.sh
       # is intentionally NOT run here: it drives the binary against a LIVE AnhurDB
       # with a real tenant key, which CI does not (and must not) hold.
+      # hermes is gated alongside claude on purpose: both import plugins/core through a
+      # `replace`, so a core change breaks hermes just as easily — and nothing else in CI
+      # ever compiles it. Gating only the plugin we happen to release is how hermes shipped
+      # for weeks with no binary at all.
       - name: Vet + unit tests
         run: |
           set -euo pipefail
           (cd v2/plugins/core   && go vet ./... && go test ./...)
           (cd v2/plugins/claude && go vet ./... && go test ./...)
+          (cd v2/plugins/hermes && go vet ./... && go test ./...)
 
       # Gate 2 — the committed binaries must equal a fresh build. -trimpath makes
       # the build reproducible, so any drift means someone changed the code without
       # running `make release-binaries`. Fail loud rather than ship a stale binary.
+      # Both plugins ship prebuilt binaries, so both are checked.
       - name: Committed binaries are fresh
         run: |
           set -euo pipefail
-          cd v2/plugins/claude
-          make release-binaries
-          if ! git diff --quiet -- bin/; then
-            echo "::error::Committed v2/plugins/claude/bin/ is stale — run 'make release-binaries' (go ${GO_VERSION}) and commit."
-            git --no-pager diff --stat -- bin/
-            exit 1
-          fi
+          for plugin in claude hermes; do
+            (
+              cd "v2/plugins/$plugin"
+              make release-binaries
+            )
+            if ! git diff --quiet -- "v2/plugins/$plugin/bin/"; then
+              echo "::error::Committed v2/plugins/$plugin/bin/ is stale — run 'make release-binaries' (go ${GO_VERSION}) in v2/plugins/$plugin and commit."
+              git --no-pager diff --stat -- "v2/plugins/$plugin/bin/"
+              exit 1
+            fi
+          done
 
       # Tag = plugins/claude/v<version-from-plugin.json>. plugin.json's version is the
       # single source of truth you bump by hand; an existing tag means you forgot to.

@@ -35,8 +35,9 @@ plugins/hermes/
 ├── hooks/hooks.json              # SessionStart→recall, Stop+SessionEnd→persist
 ├── cmd/anhur-hermes-memory/      # thin main → core.Run with the Hermes identity
 │   └── main.go
-├── go.mod / Makefile             # build → bin/anhur-hermes-memory (static)
-├── bin/anhur-hermes-memory       # built binary (run `make build`)
+├── go.mod / Makefile             # build → bin/anhur-hermes-memory-<os>-<arch> (static)
+├── bin/anhur-hermes-memory       # committed wrapper: execs the prebuilt binary for your OS/arch
+├── bin/anhur-hermes-memory-*     # prebuilt per-platform binaries (committed; no toolchain needed)
 └── .env.example                  # configuration template
 
 plugins/core/                     # the SHARED engine (imported by claude + hermes)
@@ -45,7 +46,8 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
 ## Prerequisites
 
 - An AnhurDB endpoint at `ANHUR_URL` — `https://anhurdb.yoven.ai`.
-- **Go 1.24+** to build the binary once (the built binary itself needs nothing at runtime).
+- **No Go toolchain** for a marketplace install — prebuilt binaries ship for macOS and Linux
+  (arm64/amd64). Go 1.24+ is only needed to build from source.
 - A **per-tenant** AnhurDB API key for the Hermes tenant (not the master key) — the same key the MCP
   tools accept.
 - For **structured memory** (decisions/facts/emotions — not just raw turns), your AnhurDB must have
@@ -55,9 +57,9 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
 
 ## Install
 
-1. **Build the binary** (once):
+1. **Build from source** (optional — the plugin ships prebuilt binaries):
    ```bash
-   cd plugins/hermes && make build      # → bin/anhur-hermes-memory (static)
+   cd plugins/hermes && make build      # → bin/anhur-hermes-memory-<os>-<arch> (static)
    ```
 
 2. **Configure** the environment (see `.env.example`). At minimum:
@@ -76,9 +78,14 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
    > nothing is lost (it's still there under the old name), it just isn't re-surfaced. So pick a
    > stable value now.
 
-3. **Enable the plugin.** Register this directory as a Claude Code plugin. The hooks reference the
-   binary via `${CLAUDE_PLUGIN_ROOT}/bin/anhur-hermes-memory`; if your Claude Code build exposes the
-   plugin root under a different variable, adjust `hooks/hooks.json`.
+3. **Install the plugin** from the `anhur` marketplace (its manifest is at the repo root):
+   ```
+   /plugin marketplace add Yoven/AnhurDB-SDK
+   /plugin install anhurdb-memory-hermes@anhur
+   ```
+   The hooks call `${CLAUDE_PLUGIN_ROOT}/bin/anhur-hermes-memory` — the committed wrapper, which
+   execs the prebuilt binary for your OS/arch. Prefer no marketplace at all? `make install` puts the
+   engine on a stable path and you wire three hooks yourself — see ../claude/README.md → Option A.
 
 4. **Start a new session.** On startup the Hermes AnhurDB memory is injected; after each turn it
    persists.
