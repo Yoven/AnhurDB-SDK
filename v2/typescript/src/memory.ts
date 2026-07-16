@@ -297,11 +297,11 @@ export class Memory {
   /**
    * Search for relevant memories using hybrid (vector + full-text) search.
    *
-   * Uses global search (not session-scoped) so it finds facts across
-   * ALL sessions for this user.
+   * Uses `POST /api/v1/search` with default scope `sessions` (all chat
+   * sessions for the tenant, excluding shared-library uuids).
    *
    * @param query   - Natural language query.
-   * @param options - Optional limit and type filter.
+   * @param options - Optional limit, type filter, and scope plane.
    * @returns Array of search results sorted by relevance.
    *
    * @example
@@ -321,6 +321,7 @@ export class Memory {
     const payload: SearchPayload = {
       text: query,
       limit: options?.limit ?? 10,
+      scope: options?.scope ?? "sessions",
     };
     if (options?.typeFilter) {
       payload.type_filter = options.typeFilter;
@@ -332,26 +333,48 @@ export class Memory {
         record?: Record<string, unknown>;
         similarity?: number;
       }>;
-    }>("/api/v1/search/global", payload);
+    }>("/api/v1/search", payload);
 
     return this.nestSearchResults(data.results);
+  }
+
+  /** Search chat sessions only (`scope=sessions`). */
+  async searchSessions(
+    query: string,
+    options?: SearchOptions): Promise<SearchResult[]> {
+    return this.search(query, { ...options, scope: "sessions" });
+  }
+
+  /** Search tenant-shared library docs (`scope=tenant_shared`). */
+  async searchTenantShared(
+    query: string,
+    options?: SearchOptions): Promise<SearchResult[]> {
+    return this.search(query, { ...options, scope: "tenant_shared" });
+  }
+
+  /** Search client-wide shared library (`scope=client_shared`). */
+  async searchClientShared(
+    query: string,
+    options?: SearchOptions): Promise<SearchResult[]> {
+    return this.search(query, { ...options, scope: "client_shared" });
+  }
+
+  /** Search both shared planes (`scope=shared_all`). */
+  async searchShared(
+    query: string,
+    options?: SearchOptions): Promise<SearchResult[]> {
+    return this.search(query, { ...options, scope: "shared_all" });
   }
 
   // ── searchSession() — session-scoped hybrid search ──────────
 
   /**
-   * Search for relevant memories WITHIN a single chat/session (scoped).
+   * Search for relevant memories WITHIN a single chat/session.
    *
-   * Unlike {@link search} (which fans out across every session via
-   * `/search/global`), this hits the session `POST /api/v1/search` endpoint with
-   * a `uuid`, so results come only from that one chat.
-   *
-   * Sends `text` (the natural-language query), scoping `uuid`, optional
-   * `limit`, and optional `type_filter`. Mirrors Python `search_session` and
-   * Go `SearchSession`.
+   * Uses `POST /api/v1/search` with `scope=sessions` and a session `uuid`.
    *
    * @param query       - Natural language query (sent as `text`).
-   * @param sessionUuid - Session UUID to scope to. Empty/omitted = tenant-wide.
+   * @param sessionUuid - Session UUID to scope to. Empty/omitted = current session.
    * @param options     - Optional limit and type filter.
    */
   async searchSession(
@@ -367,6 +390,7 @@ export class Memory {
       uuid: sessionUuid ?? this.sessionUuid,
       text: query,
       limit: options?.limit ?? 10,
+      scope: "sessions",
     };
     if (options?.typeFilter) {
       payload.type_filter = options.typeFilter;
@@ -487,9 +511,9 @@ export class Memory {
   }
 
   /**
-   * Recall memories via global search.
+   * Recall memories via session-plane search.
    *
-   * Explicit alias for `search()` that always uses the global endpoint.
+   * Explicit alias for `search()` (default `scope=sessions`).
    * Named to match the MCP `recall` tool.
    *
    * @param query - Natural language query.
@@ -498,23 +522,7 @@ export class Memory {
   async recall(
     query: string,
     limit?: number): Promise<SearchResult[]> {
-    if (!query) {
-      throw new Error("query cannot be empty");
-    }
-
-    const payload: SearchPayload = {
-      text: query,
-      limit: limit ?? 10,
-    };
-    // Read-shaped POST endpoint.
-    const data = await this.client.postRead<{
-      results?: Array<{
-        record?: Record<string, unknown>;
-        similarity?: number;
-      }>;
-    }>("/api/v1/search/global", payload);
-
-    return this.nestSearchResults(data.results);
+    return this.search(query, { limit: limit ?? 10 });
   }
 
   /**

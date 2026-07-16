@@ -64,8 +64,8 @@ async def handle_records(request):
     return web.json_response({"id": 100, "uuid": data.get("uuid", "")})
 
 
-async def handle_search_global(request):
-    """Simulates POST /api/v1/search/global."""
+async def handle_search(request):
+    """Simulates POST /api/v1/search."""
     data = await request.json()
     return web.json_response({
         "results": [
@@ -237,7 +237,7 @@ def create_app_cloud():
     app = web.Application()
     app.router.add_post("/api/v1/ingest", handle_ingest)
     app.router.add_post("/api/v1/records", handle_records)
-    app.router.add_post("/api/v1/search/global", handle_search_global)
+    app.router.add_post("/api/v1/search", handle_search)
     app.router.add_get("/api/v1/profile", handle_profile)
     app.router.add_get("/api/v1/records/{id}/content", handle_record_content)
     app.router.add_post("/api/v1/records/batch-content", handle_batch_content)
@@ -259,7 +259,7 @@ def create_app_oss():
     app = web.Application()
     app.router.add_post("/api/v1/ingest", handle_ingest_404)
     app.router.add_post("/api/v1/records", handle_records)
-    app.router.add_post("/api/v1/search/global", handle_search_global)
+    app.router.add_post("/api/v1/search", handle_search)
     app.router.add_get("/api/v1/profile", handle_profile_404)
     return app
 
@@ -269,7 +269,7 @@ def create_app_errors():
     app = web.Application()
     app.router.add_post("/api/v1/ingest", handle_auth_fail)
     app.router.add_post("/api/v1/records", handle_bad_request)
-    app.router.add_post("/api/v1/search/global", handle_server_error)
+    app.router.add_post("/api/v1/search", handle_server_error)
     app.router.add_get("/api/v1/profile", handle_redirect)
     app.router.add_get("/api/v1/manifest", handle_oversized)
     return app
@@ -595,7 +595,7 @@ class TestSecurityHeaders(AioHTTPTestCase):
                              "summary": "test"}, "similarity": 0.9}]
             })
 
-        app.router.add_post("/api/v1/search/global", capture_headers)
+        app.router.add_post("/api/v1/search", capture_headers)
         return app
 
     @unittest_run_loop
@@ -638,7 +638,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
 
         app.router.add_post("/api/v1/records", handle_409)
         app.router.add_post("/api/v1/upload", handle_415)
-        app.router.add_post("/api/v1/search/global", handle_429)
+        app.router.add_post("/api/v1/search", handle_429)
         app.router.add_get("/api/v1/profile", handle_403)
         return app
 

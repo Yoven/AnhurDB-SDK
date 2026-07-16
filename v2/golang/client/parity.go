@@ -125,9 +125,9 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 // --------------------------------------------------------------------------
 
 // SearchSession runs a hybrid (vector + full-text) search scoped to a single
-// session UUID via POST /api/v1/search. Unlike Search (which fans out across
-// every session for the container tag via /api/v1/search/global), this confines
-// results to one chat — the MCP semantic_search(uuid=...) contract.
+// session UUID via POST /api/v1/search with scope=sessions. Unlike Search
+// (tenant-wide sessions plane), this confines results to one chat — the MCP
+// semantic_search(uuid=...) contract.
 //
 // An empty sessionUUID is allowed and means "unscoped within tenant" (the
 // server treats an empty uuid as no session filter), but the common call passes
@@ -153,6 +153,7 @@ func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, o
 		"uuid":  sessionUUID,
 		"text":  query,
 		"limit": limit,
+		"scope": "sessions",
 	}
 	if cfg.typeFilter != "" {
 		payload["type_filter"] = cfg.typeFilter

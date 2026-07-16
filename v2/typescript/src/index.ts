@@ -41,6 +41,7 @@ export type {
   AddRecordSummary,
   CreateOptions,
   SearchOptions,
+  SearchScope,
   SearchResult,
   ProfileResult,
   // Extended

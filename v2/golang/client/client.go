@@ -457,9 +457,8 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 
 // Search finds relevant memories using hybrid (vector + full-text) search.
 //
-// Uses global search (not session-scoped) so Memory finds facts across
-// ALL sessions for this user, not just the current one.
-//
+// Uses POST /api/v1/search with default scope "sessions" (all chat sessions
+// for the tenant, excluding shared-library uuids).
 func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -468,7 +467,7 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 		return nil, ErrEmptyInput
 	}
 
-	cfg := &searchConfig{limit: 10}
+	cfg := &searchConfig{limit: 10, scope: "sessions"}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -476,12 +475,13 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 	payload := map[string]interface{}{
 		"text":  query,
 		"limit": cfg.limit,
+		"scope": cfg.scope,
 	}
 	if cfg.typeFilter != "" {
 		payload["type_filter"] = cfg.typeFilter
 	}
 
-	respBytes, err := m.conn.PostRead(ctx, "/api/v1/search/global", payload)
+	respBytes, err := m.conn.PostRead(ctx, "/api/v1/search", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -500,6 +500,26 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 		return []SearchResult{}, nil
 	}
 	return resp.Results, nil
+}
+
+// SearchSessions searches chat sessions only (scope=sessions).
+func (m *Memory) SearchSessions(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, append([]SearchOption{WithScope("sessions")}, opts...)...)
+}
+
+// SearchTenantShared searches tenant-shared library docs (scope=tenant_shared).
+func (m *Memory) SearchTenantShared(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, append([]SearchOption{WithScope("tenant_shared")}, opts...)...)
+}
+
+// SearchClientShared searches the client-wide shared library (scope=client_shared).
+func (m *Memory) SearchClientShared(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, append([]SearchOption{WithScope("client_shared")}, opts...)...)
+}
+
+// SearchShared searches both shared planes (scope=shared_all).
+func (m *Memory) SearchShared(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, append([]SearchOption{WithScope("shared_all")}, opts...)...)
 }
 
 // Profile retrieves the memory profile for this container tag.
@@ -618,7 +638,7 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts 
 	return m.conn.Get(ctx, "/api/v1/search/smart", params)
 }
 
-// Recall searches for memories using global search with a wider scope.
+// Recall searches for memories using the default session search plane.
 // Functionally identical to Search but named "Recall" to match the MCP
 // tool set naming. Extra read options are forwarded.
 func (m *Memory) Recall(ctx context.Context, query string, limit int, opts ...ReadOption) ([]SearchResult, error) {

@@ -122,12 +122,21 @@ export interface AddResult {
 
 // ── search() ─────────────────────────────────────────────────
 
+/** Search scope planes for POST /api/v1/search. */
+export type SearchScope =
+  | "sessions"
+  | "tenant_shared"
+  | "client_shared"
+  | "shared_all";
+
 /** Options for `Memory.search()`. */
 export interface SearchOptions {
   /** Maximum results to return (default 10). */
   limit?: number;
   /** Filter by memory type. */
   typeFilter?: MemoryType;
+  /** Search plane (default `sessions`). */
+  scope?: SearchScope;
 }
 
 /**
@@ -398,19 +407,20 @@ export interface RecordPayload {
   valid_until?: string;
 }
 
-/** Payload sent to POST /api/v1/search/global (cross-session search). */
+/** Payload sent to POST /api/v1/search (scope planes + optional session uuid). */
 export interface SearchPayload {
   // was being sent alongside and silently ignored. Removed so the wire payload
   // is exactly what the handler consumes, matching Go/Python.
   text: string;
   limit: number;
+  scope: SearchScope;
   type_filter?: string;
 }
 
 /**
- * Payload sent to POST /api/v1/search (session-scoped hybrid search).
+ * Payload sent to POST /api/v1/search for a single-session query.
  *
- * `uuid` scopes the search to a single chat; an empty uuid is tenant-wide.
+ * `uuid` scopes the search to a single chat; `scope` is `sessions`.
  * The SDK sends `text`, `limit`, and optionally `type_filter`.
  */
 export interface SearchSessionPayload {
@@ -418,6 +428,7 @@ export interface SearchSessionPayload {
   text?: string;
   type_filter?: string;
   limit?: number;
+  scope: "sessions";
 }
 
 // ── query() — AST query engine ───────────────────────────────

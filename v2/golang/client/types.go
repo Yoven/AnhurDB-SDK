@@ -360,6 +360,10 @@ type SearchOption = ReadOption
 type searchConfig struct {
 	limit      int
 	typeFilter string
+	// scope is the search plane for POST /api/v1/search (sessions,
+	// tenant_shared, client_shared, shared_all). Empty means the Search
+	// method applies its own default ("sessions").
+	scope string
 	// keyword is an optional free-text filter (query param "q") honoured by
 	// SearchByType. Empty means omit.
 	keyword string
@@ -406,6 +410,13 @@ func WithLimit(n int) SearchOption {
 func WithTypeFilter(t string) SearchOption {
 	return func(cfg *searchConfig) {
 		cfg.typeFilter = t
+	}
+}
+
+// WithScope selects the search plane for POST /api/v1/search.
+func WithScope(scope string) SearchOption {
+	return func(cfg *searchConfig) {
+		cfg.scope = scope
 	}
 }
 
@@ -520,8 +531,7 @@ type recordCreateResponse struct {
 	ID int64 `json:"id"`
 }
 
-// searchResponse is the wire format returned by the hybrid search endpoints
-// (POST /api/v1/search/global, POST /api/v1/search):
+// searchResponse is the wire format returned by POST /api/v1/search:
 // {"results":[{"record":{...},"similarity":...}, ...]}.
 //
 type searchResponse struct {

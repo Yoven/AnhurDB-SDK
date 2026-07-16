@@ -29,8 +29,8 @@ API. This document is the public contract; deviations are bugs.
 | supersede_record | `Supersede` / `supersede` / `supersede` | `POST /api/v1/records/supersede` |
 | read_content | `ReadContent` / `read_content` / `readContent` | `GET /api/v1/records/{id}/content` |
 | get_memory_context | `GetContext` / `get_context` / `getContext` | `GET /api/v1/records/{id}/topology` |
-| recall | `Recall` / `recall` / `recall` | `POST /api/v1/search/global` |
-| semantic_search (global) | `Search` / `search` / `search` | `POST /api/v1/search/global` |
+| recall | `Recall` / `recall` / `recall` | `POST /api/v1/search` (`scope=sessions` default) |
+| semantic_search (sessions plane) | `Search` / `search` / `search` | `POST /api/v1/search` (`scope=sessions` default) |
 | semantic_search (session) | `SearchSession` / `search_session` / `searchSession` | `POST /api/v1/search` |
 | search_by_type | `SearchByType` / `search_by_type` / `searchByType` | `GET /api/v1/search/type` |
 | smart_search | `SmartSearch` / `smart_search` / `smartSearch` | `GET /api/v1/search/smart` |

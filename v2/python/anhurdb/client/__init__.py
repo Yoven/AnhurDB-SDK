@@ -132,7 +132,7 @@ class Memory:
 
     Core methods:
         - ``add(text)``    — store a memory
-        - ``search(query)`` — find relevant memories (global)
+        - ``search(query)`` — find relevant memories (default scope: sessions)
         - ``profile()``    — get user/agent profile
 
     Full surface matches the Go/TypeScript SDKs (see ``v2/PARITY_SPEC.md``):
@@ -447,16 +447,19 @@ class Memory:
         *,
         limit: int = 10,
         type_filter: Optional[str] = None,
+        scope: str = "sessions",
     ) -> List[SearchResult]:
-        """Global semantic search across ALL sessions (safe memory types only).
+        """Hybrid semantic search via ``POST /api/v1/search``.
 
-        Uses global search (not session-scoped) so it finds facts across
-        every session for this user.
+        Default ``scope`` is ``sessions`` (all chat sessions for the tenant,
+        excluding shared-library uuids). Use the scope helpers or pass
+        ``tenant_shared``, ``client_shared``, or ``shared_all`` explicitly.
 
         Args:
             query:       Natural language query (required).
             limit:       Maximum results (default 10).
             type_filter: Optional memory type filter.
+            scope:       Search plane (default ``sessions``).
 
         Returns:
             List of typed ``SearchResult`` objects (nested ``.record`` +
@@ -465,13 +468,31 @@ class Memory:
         Example::
 
             hits = await mem.search("what does this user do?", limit=5)"""
-        payload: Dict[str, Any] = {"text": query, "limit": limit}
+        payload: Dict[str, Any] = {"text": query, "limit": limit, "scope": scope}
         if type_filter:
             payload["type_filter"] = type_filter
-        data = await self._connection.post(
-            "/api/v1/search/global", payload
-        )
+        data = await self._connection.post("/api/v1/search", payload)
         return _parse_search_results(data)
+
+    async def search_sessions(self, query: str, **kwargs: Any) -> List[SearchResult]:
+        """Search chat sessions only (``scope=sessions``)."""
+        return await self.search(query, scope="sessions", **kwargs)
+
+    async def search_tenant_shared(
+        self, query: str, **kwargs: Any
+    ) -> List[SearchResult]:
+        """Search tenant-shared library docs (``scope=tenant_shared``)."""
+        return await self.search(query, scope="tenant_shared", **kwargs)
+
+    async def search_client_shared(
+        self, query: str, **kwargs: Any
+    ) -> List[SearchResult]:
+        """Search client-wide shared library (``scope=client_shared``)."""
+        return await self.search(query, scope="client_shared", **kwargs)
+
+    async def search_shared(self, query: str, **kwargs: Any) -> List[SearchResult]:
+        """Search both shared planes (``scope=shared_all``)."""
+        return await self.search(query, scope="shared_all", **kwargs)
 
     async def search_by_type(
         self,
@@ -509,9 +530,8 @@ class Memory:
     ) -> List[SearchResult]:
         """Search within a single session (all record types, including recent).
 
-        Unlike ``search()`` (global, safe types only), this returns ALL types
-        — including recent episodic records and in-progress tasks — scoped to
-        one session.
+        Uses ``POST /api/v1/search`` with ``scope=sessions`` and a session
+        ``uuid`` so results come from one chat only.
 
         Args:
             query:        Natural language query.
@@ -523,12 +543,15 @@ class Memory:
             List of typed ``SearchResult`` objects (nested ``.record`` +
             ``.similarity``)."""
         target_uuid = session_uuid if session_uuid is not None else self._session_uuid
-        payload: Dict[str, Any] = {"uuid": target_uuid, "text": query, "limit": limit}
+        payload: Dict[str, Any] = {
+            "uuid": target_uuid,
+            "text": query,
+            "limit": limit,
+            "scope": "sessions",
+        }
         if type_filter:
             payload["type_filter"] = type_filter
-        data = await self._connection.post(
-            "/api/v1/search", payload
-        )
+        data = await self._connection.post("/api/v1/search", payload)
         return _parse_search_results(data)
 
     async def smart_search(
@@ -562,12 +585,13 @@ class Memory:
         query: str,
         limit: int = 10,
     ) -> List[SearchResult]:
-        """Recall memories via global search.
+        """Recall memories via tenant session search.
 
-        Delegates directly to ``search()`` (``POST /api/v1/search/global``).
-        There is no server-side recall endpoint or fan-out — the name mirrors
-        the MCP ``recall`` tool convention (whose 4-way fan-out + RRF lives in
-        the MCP server, not the data plane). Identical across the three SDKs.
+        Delegates directly to ``search()`` (``POST /api/v1/search``,
+        default ``scope=sessions``). There is no server-side recall endpoint
+        or fan-out — the name mirrors the MCP ``recall`` tool convention
+        (whose 4-way fan-out + RRF lives in the MCP server, not the data
+        plane). Identical across the three SDKs.
 
         Args:
             query:     Natural language query.
