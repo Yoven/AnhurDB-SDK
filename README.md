@@ -111,8 +111,10 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
 | `walk(seed_id, depth)` | BFS graph traversal | POST /api/v1/walk |
-| `walk_semantic(seed_id, depth)` | Semantic graph walk (vector-weighted edges) | POST /api/v1/walk/semantic |
+| `walk_semantic(seed_id, …)` | **Advanced:** goal-directed walk from a seed — not day-to-day RAG (prefer `smart_search` / `recall`) | POST /api/v1/walk/semantic |
 | `get_context(record_id)` | Get record + 1-hop neighbors | GET /api/v1/records/{id}/topology |
+
+**Power tools (not default RAG):** SDK `query()` / `QueryBuilder` (MCP `execute_ast` / `sdk_query`) and `walk_semantic` (MCP `semantic_walk`) are for exact filters and seed-directed graph walks. For “what do we know about X?” use `smart_search` / `recall` / `search` with `scope`.
 
 ### Record CRUD
 

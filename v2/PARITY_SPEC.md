@@ -39,7 +39,7 @@ API. This document is the public contract; deviations are bugs.
 | search_by_type | `SearchByType` / `search_by_type` / `searchByType` | `GET /api/v1/search/type` |
 | smart_search | `SmartSearch` / `smart_search` / `smartSearch` | `GET /api/v1/search/smart` (`scope` query, default `sessions`) |
 | recent_memories | `Recent` / `recent` / `recent` | `GET /api/v1/manifest` or `/recent` |
-| execute_ast | `Query` / `query` / `query` | `POST /api/v1/query` |
+| execute_ast | `Query` / `query` / `query` | `POST /api/v1/query` — **advanced / not day-to-day RAG**; prefer `smart_search` / `recall` for chat recall |
 | manifest_global | `ManifestGlobal` / `manifest_global` / `manifestGlobal` | `GET /api/v1/manifest` |
 | manifest_session | `ManifestSession` / `manifest_session` / `manifestSession` | `GET /api/v1/chats/{uuid}/manifest` |
 | list_chat | `ListChat` / `list_chat` / `listChat` | `GET /api/v1/chats/{uuid}` |
@@ -49,7 +49,7 @@ API. This document is the public contract; deviations are bugs.
 | get_chat_history | `GetSessionHistory` / `get_session_history` / `getSessionHistory` | `GET /api/v1/sessions/{uuid}/history` |
 | get_session_clusters | `GetSessionClusters` / `get_session_clusters` / `getSessionClusters` | `GET /api/v1/sessions/{uuid}/clusters` |
 | walk_graph | `Walk` / `walk` / `walk` | `POST /api/v1/walk` |
-| walk_semantic | `WalkSemantic` / `walk_semantic` / `walkSemantic` | `POST /api/v1/walk/semantic` |
+| walk_semantic | `WalkSemantic` / `walk_semantic` / `walkSemantic` | `POST /api/v1/walk/semantic` — **advanced / not day-to-day RAG**; need `seed_id` + goal, not free-text search |
 | get_grounding | `GetGrounding` / `get_grounding` / `getGrounding` | `GET /api/v1/records/{id}/grounding` |
 | batch_read_content | `BatchReadContent` / `batch_read_content` / `batchReadContent` | `POST /api/v1/records/batch-content` |
 | batch_update_status | `BatchUpdateStatus` / `batch_update_status` / `batchUpdateStatus` | `PATCH /api/v1/records/mark-consolidated` |
