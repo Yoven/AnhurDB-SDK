@@ -90,14 +90,14 @@ func loadConfig(plugin Config) config {
 	stateDir := envOr("ANHUR_STATE_DIR", filepath.Join(homeDir(), plugin.StateDirName))
 	return config{
 		apiKey: os.Getenv("ANHUR_API_KEY"),
-		// Junior Tip [default to the real service, 2026-07-16]: this used to default to
-		// http://localhost:8000, which is a dead port on every machine that is not running a
-		// development stack. A key set without ANHUR_URL then dialled nothing, recall injected
-		// nothing, and the process still exited 0 — an unreachable default is indistinguishable
-		// from an empty memory. Defaulting to the hosted service means the out-of-the-box path
-		// works and a genuine failure is a real connection error someone can act on. Local
-		// development sets ANHUR_URL explicitly.
-		url:           envOr("ANHUR_URL", "https://anhurdb.yoven.ai"),
+		// Junior Tip [the SDK owns the default, 2026-07-17]: this used to default to
+		// http://localhost:8000 — a dead port on every machine not running a dev stack, so a key
+		// set without ANHUR_URL dialled nothing, recall injected nothing, and the process still
+		// exited 0 (an unreachable default is indistinguishable from an empty memory). Rather than
+		// hardcode the hosted URL here, take client.DefaultCloudURL: this plugin dogfoods the SDK,
+		// and duplicating the constant would leave the plugin pointing at a stale endpoint the day
+		// the SDK moves. Local development sets ANHUR_URL explicitly.
+		url:           envOr("ANHUR_URL", client.DefaultCloudURL),
 		container:     envOr("ANHUR_CONTAINER", plugin.DefaultContainer),
 		stateDir:      stateDir,
 		httpTimeout:   time.Duration(envInt("ANHUR_HTTP_TIMEOUT", 15)) * time.Second,

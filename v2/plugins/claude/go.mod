@@ -4,7 +4,7 @@ go 1.24
 
 require github.com/anhurdb/anhur-memory-core v0.0.0
 
-require github.com/Yoven/AnhurDB-SDK/v2/golang/v2 v2.0.0 // indirect
+require github.com/Yoven/AnhurDB-SDK/v2/golang/v2 v2.0.6 // indirect
 
 // Local dogfood: the engine (shared with the hermes plugin) and the canonical SDK both ship in this
 // repo. Replace directives only apply from the MAIN module, so each plugin must re-declare the SDK
