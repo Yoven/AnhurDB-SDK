@@ -11,7 +11,7 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.1
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.5
 ```
 
 ## Quick Start

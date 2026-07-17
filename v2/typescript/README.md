@@ -22,7 +22,7 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.0/anhurdb-2.0.0.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.4/anhurdb-2.0.4.tgz
 ```
 
 ## Usage
