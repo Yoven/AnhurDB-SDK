@@ -53,11 +53,20 @@ records: typed payload → one record → enrichment embed only
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/search` | Session-scoped hybrid search |
-| POST | `/api/v1/search/global` | Cross-session search |
-| GET | `/api/v1/search/smart` | Smart search with cognitive weighting |
+| POST | `/api/v1/search` | **Canonical** hybrid search. Body field `scope`: `sessions` (default) \| `tenant_shared` \| `client_shared` \| `shared_all`. Optional `uuid` only with `scope=sessions`. |
+| POST | `/api/v1/search/global` | **Deprecated alias** of `/api/v1/search` (same handler, same `scope` semantics). Prefer `/search`. |
+| GET | `/api/v1/search/smart` | Smart search with cognitive weighting; query param `scope` (same enum, default `sessions`) |
 | GET | `/api/v1/search/type` | Filter by memory type |
 | POST | `/api/v1/query` | Structured query (SDK Query Builder) |
+
+**Plane behaviour**
+
+| `scope` | Store | What you get |
+|---------|-------|--------------|
+| `sessions` (omit/`""`) | `{client}_{tenant}` | Chat sessions only — excludes `shared-*` uuids |
+| `tenant_shared` | `{client}_{tenant}` | Tenant Shared Data session only |
+| `client_shared` | `{client}_shared` | Client-wide Shared Data session only |
+| `shared_all` | both shared stores | Union with per-hit `provenance` |
 
 ### Graph
 

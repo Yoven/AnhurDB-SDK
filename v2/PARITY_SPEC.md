@@ -29,11 +29,15 @@ API. This document is the public contract; deviations are bugs.
 | supersede_record | `Supersede` / `supersede` / `supersede` | `POST /api/v1/records/supersede` |
 | read_content | `ReadContent` / `read_content` / `readContent` | `GET /api/v1/records/{id}/content` |
 | get_memory_context | `GetContext` / `get_context` / `getContext` | `GET /api/v1/records/{id}/topology` |
-| recall | `Recall` / `recall` / `recall` | `POST /api/v1/search` (`scope=sessions` default) |
-| semantic_search (sessions plane) | `Search` / `search` / `search` | `POST /api/v1/search` (`scope=sessions` default) |
-| semantic_search (session) | `SearchSession` / `search_session` / `searchSession` | `POST /api/v1/search` |
+| recall | `Recall` / `recall` / `recall` | `POST /api/v1/search` (`scope=sessions` default; same `scope` as search) |
+| semantic_search | `Search` / `search` / `search` | `POST /api/v1/search` (`scope=sessions` default) |
+| search_sessions | `SearchSessions` / `search_sessions` / `searchSessions` | `POST /api/v1/search` (`scope=sessions`) |
+| search_tenant_shared | `SearchTenantShared` / `search_tenant_shared` / `searchTenantShared` | `POST /api/v1/search` (`scope=tenant_shared`) |
+| search_client_shared | `SearchClientShared` / `search_client_shared` / `searchClientShared` | `POST /api/v1/search` (`scope=client_shared`) |
+| search_shared | `SearchShared` / `search_shared` / `searchShared` | `POST /api/v1/search` (`scope=shared_all`) |
+| semantic_search (one chat) | `SearchSession` / `search_session` / `searchSession` | `POST /api/v1/search` (`scope=sessions` + `uuid`) |
 | search_by_type | `SearchByType` / `search_by_type` / `searchByType` | `GET /api/v1/search/type` |
-| smart_search | `SmartSearch` / `smart_search` / `smartSearch` | `GET /api/v1/search/smart` |
+| smart_search | `SmartSearch` / `smart_search` / `smartSearch` | `GET /api/v1/search/smart` (`scope` query, default `sessions`) |
 | recent_memories | `Recent` / `recent` / `recent` | `GET /api/v1/manifest` or `/recent` |
 | execute_ast | `Query` / `query` / `query` | `POST /api/v1/query` |
 | manifest_global | `ManifestGlobal` / `manifest_global` / `manifestGlobal` | `GET /api/v1/manifest` |
@@ -70,7 +74,9 @@ API. This document is the public contract; deviations are bugs.
 
 | Topic | Behavior |
 |---|---|
-| `recall` | Alias of global search in all SDKs. |
+| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. |
+| `smart_search` | Same scope enum via `?scope=` (default `sessions`). |
+| `/search/global` | Server deprecated alias only — SDKs must not call it. |
 | `count_by_type` | Implemented by paging the manifest. |
 | `create` | Python uses `CreateRequest`; Go uses options; TypeScript uses `CreateOptions`. |
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |

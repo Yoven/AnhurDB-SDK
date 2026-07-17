@@ -617,7 +617,8 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 
 // SmartSearch performs full-text search with cognitive weight boosting.
 //
-// combination of text relevance and cognitive importance (score).
+// Uses GET /api/v1/search/smart with the same memory-plane scope as Search
+// (default "sessions"). Pass WithScope to select a shared plane.
 func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts ...ReadOption) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -627,10 +628,15 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts 
 	}
 
 	cfg := applyReadOptions(opts)
+	scope := cfg.scope
+	if scope == "" {
+		scope = "sessions"
+	}
 
 	params := url.Values{}
 	params.Set("q", query)
 	params.Set("limit", strconv.Itoa(limit))
+	params.Set("scope", scope)
 	if cfg.typeFilter != "" {
 		params.Set("type", cfg.typeFilter)
 	}
@@ -638,11 +644,11 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts 
 	return m.conn.Get(ctx, "/api/v1/search/smart", params)
 }
 
-// Recall searches for memories using the default session search plane.
+// Recall searches for memories using plane-aware search (default sessions).
 // Functionally identical to Search but named "Recall" to match the MCP
-// tool set naming. Extra read options are forwarded.
-func (m *Memory) Recall(ctx context.Context, query string, limit int, opts ...ReadOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, append([]ReadOption{WithLimit(limit)}, opts...)...)
+// tool set naming. Extra search options (including WithScope) are forwarded.
+func (m *Memory) Recall(ctx context.Context, query string, limit int, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, append([]SearchOption{WithLimit(limit)}, opts...)...)
 }
 
 // Walk performs a BFS graph traversal starting from a given record.

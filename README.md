@@ -56,10 +56,14 @@ mem.create(typed...)             CALLER PATH
     <--------------------------+  No extraction LLM
                                   └─ async: enrichment embed only
 
-mem.search("query")
-    |  POST /api/v1/search/global
-    +-------------------------->  Hybrid search across sessions
-    <--------------------------+  Ranked results with similarity scores
+mem.search("query")              # default scope=sessions
+    |  POST /api/v1/search
+    +-------------------------->  Hybrid search on one memory plane
+    <--------------------------+  Ranked results (+ provenance on shared scopes)
+
+mem.search_tenant_shared(...)    # Shared Data specialty docs
+mem.search_client_shared(...)
+mem.search_shared(...)           # both shared planes (shared_all)
 ```
 
 **Billing tip:** prefer `create` when you already have a typed atom (no
@@ -78,17 +82,24 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 |--------|-------------|----------|
 | `add(text)` | Platform path: episodic + async extraction (LLM+embed billed) | POST /api/v1/ingest |
 | `create(...)` | Caller path: one typed record, no extraction (embed only) | POST /api/v1/records |
-| `search(query)` | Find relevant memories (global, cross-session) | POST /api/v1/search/global |
+| `search(query, scope=sessions)` | Hybrid search on a memory plane (default: tenant chat) | POST /api/v1/search |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
 
 ### Search & Discovery
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
+| `search_sessions(query)` | Chat sessions only (`scope=sessions`) | POST /api/v1/search |
+| `search_tenant_shared(query)` | Tenant Shared Data library | POST /api/v1/search |
+| `search_client_shared(query)` | Client-wide Shared Data library | POST /api/v1/search |
+| `search_shared(query)` | Both shared planes (`scope=shared_all`) | POST /api/v1/search |
 | `search_by_type(type)` | Filter by memory type (fact, preference, etc.) | GET /api/v1/search/type |
-| `smart_search(query)` | Full-text search with cognitive weight boosting | GET /api/v1/search/smart |
-| `recall(query)` | Broad fan-out search (alias for global search) | POST /api/v1/search/global |
+| `smart_search(query, scope=sessions)` | Full-text + cognitive weight (same `scope` planes) | GET /api/v1/search/smart |
+| `recall(query, scope=sessions)` | Alias of `search` (SDK); MCP recall still fans out server-side | POST /api/v1/search |
 | `recent(limit)` | Most recent memories | GET /api/v1/recent |
+
+**Scope planes:** `sessions` (default) \| `tenant_shared` \| `client_shared` \| `shared_all`.
+Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated alias of `/search`.
 
 ### Graph Traversal
 
