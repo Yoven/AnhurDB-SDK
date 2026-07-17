@@ -329,6 +329,48 @@ describe("Memory.search (nested SearchResult shape)", () => {
     assert.ok(!("id" in results[0]));
   });
 
+  it("search() posts /api/v1/search with default scope=sessions", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl = "";
+    let capturedBody: { scope?: string } = {};
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedBody = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify(serverEnvelope), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      await mem.search("q");
+      assert.ok(capturedUrl.includes("/api/v1/search"));
+      assert.ok(!capturedUrl.includes("/search/global"));
+      assert.equal(capturedBody.scope, "sessions");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("searchTenantShared() sends scope=tenant_shared", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: { scope?: string } = {};
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify(serverEnvelope), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      await mem.searchTenantShared("Nomad");
+      assert.equal(capturedBody.scope, "tenant_shared");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("recall() returns the same nested shape", async () => {
     const results = (await withMockedFetch((mem) =>
       mem.recall("google"),
@@ -341,7 +383,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
   it("searchByType() reads the bare `records` envelope and nests each record", async () => {
     // Junior Tip [real contract, 2026-07-04]: GET /api/v1/search/type returns a BARE
     // `{records:[<Record>],count}` array — NOT the `{results:[{record,similarity}]}`
-    // envelope of search/global. The
+    // envelope of POST /api/v1/search. The
     // SDK must read `records` and wrap each into a SearchResult; reading `results`
     // (the old bug) returned [] for every call. A type filter carries no semantic
     // distance, so `similarity` is 0.

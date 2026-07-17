@@ -64,8 +64,8 @@ async def handle_records(request):
     return web.json_response({"id": 100, "uuid": data.get("uuid", "")})
 
 
-async def handle_search_global(request):
-    """Simulates POST /api/v1/search/global."""
+async def handle_search(request):
+    """Simulates POST /api/v1/search."""
     data = await request.json()
     return web.json_response({
         "results": [
@@ -237,7 +237,7 @@ def create_app_cloud():
     app = web.Application()
     app.router.add_post("/api/v1/ingest", handle_ingest)
     app.router.add_post("/api/v1/records", handle_records)
-    app.router.add_post("/api/v1/search/global", handle_search_global)
+    app.router.add_post("/api/v1/search", handle_search)
     app.router.add_get("/api/v1/profile", handle_profile)
     app.router.add_get("/api/v1/records/{id}/content", handle_record_content)
     app.router.add_post("/api/v1/records/batch-content", handle_batch_content)
@@ -259,7 +259,7 @@ def create_app_oss():
     app = web.Application()
     app.router.add_post("/api/v1/ingest", handle_ingest_404)
     app.router.add_post("/api/v1/records", handle_records)
-    app.router.add_post("/api/v1/search/global", handle_search_global)
+    app.router.add_post("/api/v1/search", handle_search)
     app.router.add_get("/api/v1/profile", handle_profile_404)
     return app
 
@@ -269,7 +269,7 @@ def create_app_errors():
     app = web.Application()
     app.router.add_post("/api/v1/ingest", handle_auth_fail)
     app.router.add_post("/api/v1/records", handle_bad_request)
-    app.router.add_post("/api/v1/search/global", handle_server_error)
+    app.router.add_post("/api/v1/search", handle_server_error)
     app.router.add_get("/api/v1/profile", handle_redirect)
     app.router.add_get("/api/v1/manifest", handle_oversized)
     return app
@@ -580,6 +580,69 @@ class TestErrorHandling(AioHTTPTestCase):
             self.assertIn("redirect", str(ctx.exception).lower())
 
 
+class TestSearchScopePlanes(AioHTTPTestCase):
+    """SDK must hit POST /api/v1/search with scope planes (never /search/global)."""
+
+    async def get_application(self):
+        app = web.Application()
+        app["captured"] = {}
+        app["captured_smart"] = {}
+
+        async def capture_search(request):
+            body = await request.json()
+            app["captured"] = {"path": request.path, "body": body}
+            return web.json_response({
+                "results": [{
+                    "record": {"id": 1, "type": "fact", "summary": "test"},
+                    "similarity": 0.9,
+                }],
+                "scope": body.get("scope", "sessions"),
+            })
+
+        async def capture_smart(request):
+            app["captured_smart"] = {
+                "path": request.path,
+                "query": dict(request.query),
+            }
+            return web.json_response({"results": [], "count": 0})
+
+        app.router.add_post("/api/v1/search", capture_search)
+        app.router.add_get("/api/v1/search/smart", capture_smart)
+        return app
+
+    @unittest_run_loop
+    async def test_search_defaults_scope_sessions_on_canonical_path(self):
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="key", url=url, user_id="u1") as mem:
+            await mem.search("hello")
+            captured = self.app["captured"]
+            self.assertEqual(captured["path"], "/api/v1/search")
+            self.assertEqual(captured["body"].get("scope"), "sessions")
+
+    @unittest_run_loop
+    async def test_search_tenant_shared_helper(self):
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="key", url=url, user_id="u1") as mem:
+            await mem.search_tenant_shared("Nomad")
+            self.assertEqual(self.app["captured"]["body"].get("scope"), "tenant_shared")
+
+    @unittest_run_loop
+    async def test_smart_search_sends_scope_query(self):
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="key", url=url, user_id="u1") as mem:
+            await mem.smart_search("engineering", scope="client_shared")
+            smart = self.app["captured_smart"]
+            self.assertEqual(smart["path"], "/api/v1/search/smart")
+            self.assertEqual(smart["query"].get("scope"), "client_shared")
+
+    @unittest_run_loop
+    async def test_recall_forwards_scope(self):
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="key", url=url, user_id="u1") as mem:
+            await mem.recall("hello", scope="shared_all")
+            self.assertEqual(self.app["captured"]["body"].get("scope"), "shared_all")
+
+
 class TestSecurityHeaders(AioHTTPTestCase):
     """Verify that security headers are set correctly."""
 
@@ -595,7 +658,7 @@ class TestSecurityHeaders(AioHTTPTestCase):
                              "summary": "test"}, "similarity": 0.9}]
             })
 
-        app.router.add_post("/api/v1/search/global", capture_headers)
+        app.router.add_post("/api/v1/search", capture_headers)
         return app
 
     @unittest_run_loop
@@ -638,7 +701,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
 
         app.router.add_post("/api/v1/records", handle_409)
         app.router.add_post("/api/v1/upload", handle_415)
-        app.router.add_post("/api/v1/search/global", handle_429)
+        app.router.add_post("/api/v1/search", handle_429)
         app.router.add_get("/api/v1/profile", handle_403)
         return app
 

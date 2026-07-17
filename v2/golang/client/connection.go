@@ -228,7 +228,7 @@ func (c *HTTPConnection) PostMultipart(
 }
 
 // PostRead sends a POST request for a READ-shaped endpoint (e.g.
-// /api/v1/search/global, /api/v1/walk).
+// /api/v1/search, /api/v1/walk).
 func (c *HTTPConnection) PostRead(ctx context.Context, path string, body interface{}) ([]byte, error) {
 	return c.post(ctx, path, body)
 }

@@ -106,7 +106,7 @@ class SearchResult(BaseModel):
     """
     A single search hit combining a record with its relevance score.
 
-    Returned by ``/api/v1/search/global``, ``/api/v1/search/type``,
+    Returned by ``/api/v1/search``, ``/api/v1/search/type``,
     and ``/api/v1/search/smart``.
     """
 
