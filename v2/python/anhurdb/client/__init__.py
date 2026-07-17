@@ -449,14 +449,18 @@ class Memory:
         type_filter: Optional[str] = None,
         scope: str = "sessions",
     ) -> List[SearchResult]:
-        """Hybrid semantic search via ``POST /api/v1/search``.
+        """Hybrid plane search via ``POST /api/v1/search``.
 
         Default ``scope`` is ``sessions`` (all chat sessions for the tenant,
         excluding shared-library uuids). Use the scope helpers or pass
         ``tenant_shared``, ``client_shared``, or ``shared_all`` explicitly.
 
+        Agent UX — text is not semantic: ``query`` is sent as body ``text``
+        (FTS5 exact-word matching), not an embedding. For conceptual RAG
+        without a vector, prefer ``smart_search`` (or MCP ``recall``).
+
         Args:
-            query:       Natural language query (required).
+            query:       Query string sent as FTS ``text`` (required).
             limit:       Maximum results (default 10).
             type_filter: Optional memory type filter.
             scope:       Search plane (default ``sessions``).
@@ -500,9 +504,13 @@ class Memory:
         limit: int = 20,
         query: Optional[str] = None,
     ) -> List[SearchResult]:
-        """Search filtered by cognitive type with optional keyword query.
+        """List/filter records by cognitive type in the tenant store.
 
-        Faster than semantic search when you know the exact type.
+        Faster than plane search when you know the exact type.
+
+        Agent UX — not a plane switch: no ``scope`` parameter. Does **not**
+        search Shared Data. For specialty docs use ``search_tenant_shared`` /
+        ``search_client_shared`` / ``search_shared`` (or ``search(..., scope=...)``).
 
         Args:
             memory_type: Type to filter (e.g. ``"fact"``, ``"risk"``).
@@ -564,9 +572,9 @@ class Memory:
     ) -> Any:
         """Full-text search with cognitive weight boosting.
 
-        Ranks results by a combination of text relevance and cognitive
-        importance (score × weight). Same memory-plane ``scope`` as
-        ``search()`` (default ``sessions``).
+        Prefer this over ``search()`` for conceptual text queries (no
+        embedding required). Ranks by text relevance × cognitive weight.
+        Same memory-plane ``scope`` as ``search()`` (default ``sessions``).
 
         Args:
             query:       Search query.

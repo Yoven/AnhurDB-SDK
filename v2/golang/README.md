@@ -74,7 +74,7 @@ mem := anhurdb.NewMemory("key",
 
 ```go
 result, err := mem.Add(ctx, "text")                    // Store memory
-hits, err := mem.Search(ctx, "query")                  // Hybrid search
+hits, err := mem.Search(ctx, "query")                  // Plane search (query=FTS text; prefer SmartSearch for conceptual RAG)
 hits, err := mem.Search(ctx, "query", WithLimit(20))   // With options
 profile, err := mem.Profile(ctx)                       // User profile
 ```
@@ -82,8 +82,8 @@ profile, err := mem.Profile(ctx)                       // User profile
 ### Search & Discovery
 
 ```go
-hits, err := mem.SearchByType(ctx, "fact", 50)         // Filter by type
-raw, err := mem.SmartSearch(ctx, "query", 10)          // Cognitive-weighted
+hits, err := mem.SearchByType(ctx, "fact", 50)         // Tenant type filter only — not a Shared Data plane switch
+raw, err := mem.SmartSearch(ctx, "query", 10)          // Prefer for conceptual text (weight-boosted FTS)
 hits, err := mem.Recall(ctx, "query", 20)              // Global alias
 records, err := mem.Recent(ctx, 5)                     // Most recent
 ```

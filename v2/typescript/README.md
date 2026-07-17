@@ -69,12 +69,13 @@ console.log(profile.static);  // identity, preferences
 ### Search & Discovery
 
 ```typescript
-// Filter by cognitive type
+// Tenant type filter only — not a Shared Data plane switch
 const facts = await mem.searchByType("fact", 50);
 
+// Prefer for conceptual text (weight-boosted FTS; search() sends query as FTS text)
 const smart = await mem.smartSearch("engineering experience", 10);
 
-// Global recall
+// Plane-aware recall (SDK alias of search; default scope=sessions)
 const broad = await mem.recall("engineering", 20);
 
 // Most recent records

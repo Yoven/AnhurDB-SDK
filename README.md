@@ -82,7 +82,7 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 |--------|-------------|----------|
 | `add(text)` | Platform path: episodic + async extraction (LLM+embed billed) | POST /api/v1/ingest |
 | `create(...)` | Caller path: one typed record, no extraction (embed only) | POST /api/v1/records |
-| `search(query, scope=sessions)` | Hybrid search on a memory plane (default: tenant chat) | POST /api/v1/search |
+| `search(query, scope=sessions)` | Hybrid plane search — query is FTS `text` (prefer `smart_search` for conceptual RAG) | POST /api/v1/search |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
 
 ### Search & Discovery
@@ -93,8 +93,8 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 | `search_tenant_shared(query)` | Tenant Shared Data library | POST /api/v1/search |
 | `search_client_shared(query)` | Client-wide Shared Data library | POST /api/v1/search |
 | `search_shared(query)` | Both shared planes (`scope=shared_all`) | POST /api/v1/search |
-| `search_by_type(type)` | Filter by memory type (fact, preference, etc.) | GET /api/v1/search/type |
-| `smart_search(query, scope=sessions)` | Full-text + cognitive weight (same `scope` planes) | GET /api/v1/search/smart |
+| `search_by_type(type)` | Type filter in tenant store only — **not** a Shared Data plane switch | GET /api/v1/search/type |
+| `smart_search(query, scope=sessions)` | Full-text + cognitive weight (prefer for conceptual text; same `scope` planes) | GET /api/v1/search/smart |
 | `recall(query, scope=sessions)` | Alias of `search` (SDK); MCP recall still fans out server-side | POST /api/v1/search |
 | `recent(limit)` | Most recent memories | GET /api/v1/recent |
 

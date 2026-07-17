@@ -101,15 +101,15 @@ Memory(
 | Method | Description | Returns |
 |--------|-------------|---------|
 | `add(text, score=5, type="episodic")` | Store a memory | `dict` with session_id, records, mode |
-| `search(query, limit=10, type_filter=None)` | Hybrid search across all sessions | `list[dict]` |
+| `search(query, limit=10, type_filter=None, scope="sessions")` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG) | `list[SearchResult]` |
 | `profile()` | Get user/agent memory profile | `dict` with static, dynamic, stats |
 
 ### Search & Discovery
 
 | Method | Description |
 |--------|-------------|
-| `search_by_type(type, limit=20)` | Filter by cognitive type |
-| `smart_search(query, limit=10)` | Full-text + cognitive weight boosting |
+| `search_by_type(type, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
+| `smart_search(query, limit=10, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text) |
 | `recall(query, limit=10)` | Global search alias |
 | `recent(limit=20)` | Most recent records |
 

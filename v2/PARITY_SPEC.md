@@ -74,8 +74,9 @@ API. This document is the public contract; deviations are bugs.
 
 | Topic | Behavior |
 |---|---|
-| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. |
-| `smart_search` | Same scope enum via `?scope=` (default `sessions`). |
+| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. **Agent UX:** query string is sent as `text` (FTS5) — not embedding similarity; prefer `smart_search` / MCP `recall` for conceptual RAG without a vector. |
+| `smart_search` | Same scope enum via `?scope=` (default `sessions`). Prefer for conceptual text queries (weight-boosted FTS). |
+| `search_by_type` | Tenant-store type index only — **no `scope` / not a Shared Data plane switch**. Use `search_*` helpers or `scope=` for specialty docs. |
 | `/search/global` | Server deprecated alias only — SDKs must not call it. |
 | `count_by_type` | Implemented by paging the manifest. |
 | `create` | Python uses `CreateRequest`; Go uses options; TypeScript uses `CreateOptions`. |

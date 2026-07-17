@@ -296,12 +296,15 @@ export class Memory {
   // ── search() — find relevant memories ───────────────────────
 
   /**
-   * Search for relevant memories using hybrid (vector + full-text) search.
+   * Hybrid plane search via `POST /api/v1/search`.
    *
-   * Uses `POST /api/v1/search` with default scope `sessions` (all chat
-   * sessions for the tenant, excluding shared-library uuids).
+   * Default scope `sessions` (tenant chat; excludes shared-library uuids).
    *
-   * @param query   - Natural language query.
+   * Agent UX — text is not semantic: `query` is sent as body `text` (FTS5
+   * exact-word matching), not an embedding. For conceptual RAG without a
+   * vector, prefer {@link smartSearch} (or MCP `recall`).
+   *
+   * @param query   - Query string sent as FTS `text`.
    * @param options - Optional limit, type filter, and scope plane.
    * @returns Array of search results sorted by relevance.
    *
@@ -455,9 +458,13 @@ export class Memory {
   // ══════════════════════════════════════════════════════════════
 
   /**
-   * Search for memories filtered by cognitive type.
+   * List/filter records by cognitive type in the tenant store.
    *
-   * Faster than semantic search when you know the exact type.
+   * Faster than plane search when you know the exact type.
+   *
+   * Agent UX — not a plane switch: no `scope` parameter. Does **not** search
+   * Shared Data. For specialty docs use {@link searchTenantShared} /
+   * {@link searchClientShared} / {@link searchShared} (or `search` with scope).
    *
    * @param type  - The memory type to filter by (e.g. "fact", "episodic").
    * @param limit - Maximum results to return (default 20).
@@ -499,8 +506,9 @@ export class Memory {
   /**
    * Full-text search with cognitive weight boosting.
    *
-   * Uses `GET /api/v1/search/smart` with the same memory-plane `scope` as
-   * {@link search} (default `sessions`).
+   * Prefer over {@link search} for conceptual text queries (no embedding
+   * required). Uses `GET /api/v1/search/smart` with the same memory-plane
+   * `scope` as {@link search} (default `sessions`).
    *
    * @param query - Search query.
    * @param limit - Maximum results (default 10).

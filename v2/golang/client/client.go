@@ -455,10 +455,14 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 	}, nil
 }
 
-// Search finds relevant memories using hybrid (vector + full-text) search.
+// Search finds relevant memories using hybrid plane search.
 //
 // Uses POST /api/v1/search with default scope "sessions" (all chat sessions
 // for the tenant, excluding shared-library uuids).
+//
+// Agent UX — text is not semantic: query is sent as body "text" (FTS5
+// exact-word matching), not an embedding. For conceptual RAG without a
+// vector, prefer SmartSearch (or MCP recall).
 func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -574,10 +578,14 @@ func (m *Memory) Profile(ctx context.Context, opts ...ReadOption) (*ProfileResul
 // Extended methods — full REST tool set
 // --------------------------------------------------------------------------
 
-// SearchByType retrieves records filtered by memory type.
+// SearchByType retrieves records filtered by memory type in the tenant store.
 //
-// Hits GET /api/v1/search/type which is a simple type-based index lookup —
-// much faster than semantic search when you know the exact type you want.
+// Hits GET /api/v1/search/type — a type-index lookup, faster than plane search
+// when you know the exact type.
+//
+// Agent UX — not a plane switch: no scope parameter. Does not search Shared
+// Data. For specialty docs use SearchTenantShared / SearchClientShared /
+// SearchShared (or Search with WithScope).
 func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, opts ...ReadOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -617,6 +625,7 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 
 // SmartSearch performs full-text search with cognitive weight boosting.
 //
+// Prefer over Search for conceptual text queries (no embedding required).
 // Uses GET /api/v1/search/smart with the same memory-plane scope as Search
 // (default "sessions"). Pass WithScope to select a shared plane.
 func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts ...ReadOption) ([]byte, error) {
