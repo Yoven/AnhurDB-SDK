@@ -247,23 +247,24 @@ class Memory:
         metadata: Optional[Dict[str, Any]] = None,
         session_id: str = "",
     ) -> Dict[str, Any]:
-        """Store a memory. Simplest way to save information.
+        """Store raw text via the ingest write path (default).
 
-        ``/api/v1/ingest`` accepts ONLY ``content`` + ``container_tag`` — it
-        stores type as episodic and does not persist score/type/metadata.
-        Sending them there drops them silently. So when the caller explicitly
-        sets ``score``, ``type``, or ``metadata`` we MUST go straight to
-        ``/api/v1/records``, which is the only write path that persists those
-        columns. Plain ``add(text)`` with no options still prefers the ingest
-        pipeline (auto-embedding + extraction).
+        Agent UX — pick the write path once:
+        - Raw chat/notes/"remember this" → plain ``add(text)`` → ``POST /ingest``
+          (1 episodic now + async satellites; extraction LLM billed).
+        - Already know one typed atom → ``create(...)`` → ``POST /records``
+          (no extraction). MCP: ``ingest_memory`` vs ``create_memory``.
+
+        Trap: pinning ``score``, ``type``, or ``metadata`` skips ingest and
+        forces ``/records`` (create path — no extraction). Ingest only accepts
+        ``content`` + ``container_tag`` (+ optional session); those pins would
+        be dropped if sent to ingest, so the SDK routes to records instead.
 
         Args:
             text:     The text to remember (required, non-empty).
-            score:    Importance rating 1-10. ``None`` = let the server/pipeline
-                      decide (defaults to 5 on the direct path).
-            type:     Memory type. ``None`` = ``episodic``.
-            metadata: Optional caller metadata merged into the record's
-                      metadata JSON alongside the ``container_tag`` envelope.
+            score:    Importance 1-10. Setting this forces the create path.
+            type:     Memory type. Setting this forces the create path.
+            metadata: Optional metadata. Setting this forces the create path.
 
         Returns:
             Dict with ``session_id``, ``records``, and ``mode``
@@ -274,8 +275,11 @@ class Memory:
 
         Example::
 
-            result = await mem.add("User prefers dark mode", score=8,
-                                   type=MemoryType.PREFERENCE)"""
+            # ingest (extraction):
+            await mem.add("User prefers dark mode")
+            # create path (no extraction) — use create() instead when possible:
+            await mem.add("User prefers dark mode", score=8,
+                          type=MemoryType.PREFERENCE)"""
         if not text:
             raise ValueError("text cannot be empty")
 
@@ -297,11 +301,12 @@ class Memory:
     # ── Memory CRUD ────────────────────────────────────────────────
 
     async def create(self, req: CreateRequest) -> Dict[str, Any]:
-        """Create a new memory record (full-fidelity, caller-owned).
+        """Create exactly one typed record (no extraction).
 
-        Unlike ``add()`` (which auto-manages the session/anchor), ``create()``
-        sends the ``CreateRequest`` straight to ``POST /api/v1/records`` — the
-        caller supplies ``uuid``, ``type``, ``score``, ``related_ids`` etc.
+        Agent UX — write path: use when you already know ``type`` + content.
+        For raw text use plain ``add(text)`` / MCP ``ingest_memory`` instead.
+        Hits ``POST /api/v1/records`` — caller supplies ``uuid``, ``type``,
+        ``score``, ``related_ids``, etc. No satellite LLM job.
 
         Args:
             req: ``CreateRequest`` with at minimum ``uuid`` and ``content``.

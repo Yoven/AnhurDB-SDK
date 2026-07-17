@@ -235,22 +235,20 @@ export class Memory {
   // ── add() — store a memory ──────────────────────────────────
 
   /**
-   * Add a memory. Simplest way to store information.
+   * Store raw text via the ingest write path (default).
    *
-   * Tries the cloud `/api/v1/ingest` endpoint first (which handles
-   * embedding + extraction automatically). If that returns 404,
-   * falls back to `/api/v1/records` (OSS mode, stores as text).
+   * Agent UX — pick the write path once:
+   * - Raw chat/notes → plain `add(text)` → `POST /ingest` (episodic + async
+   *   satellites; extraction LLM billed). MCP: `ingest_memory`.
+   * - Already know one typed atom → {@link create} → `POST /records`
+   *   (no extraction). MCP: `create_memory`.
    *
-   * Cloud `/api/v1/ingest` owns salience scoring and type classification —
-   * it stores type as episodic and does not persist caller-supplied score/type.
-   * When the caller explicitly pins `score` OR `type`, skip ingest and use
-   * synchronous `/api/v1/records`, which writes those values verbatim.
-   * Plain `add(text)` with no score/type still prefers ingest (auto-embedding +
-   * extraction). `metadata` alone does NOT force the records path, because
-   * ingest preserves caller metadata — this mirrors the Go/Python SDKs.
+   * Trap: pinning `score`, `type`, or `metadata` skips ingest and forces
+   * `/records` (create path — no extraction). Plain `add(text)` prefers
+   * ingest; 404 falls back to `/records` (OSS).
    *
    * @param text    - The text to remember.
-   * @param options - Optional score (1-10) and memory type.
+   * @param options - Optional score/type/metadata (any pin → create path).
    * @returns A result containing the session ID and created records.
    *
    * @example
@@ -1187,26 +1185,15 @@ export class Memory {
   }
 
   /**
-   * Create a record with FULL fidelity via `POST /api/v1/records`.
+   * Create exactly one typed record via `POST /api/v1/records` (no extraction).
    *
-   * Unlike {@link add} (whose cloud-ingest path owns its own type/score and
-   * silently drops caller-pinned values), `create()` always takes the
-   * synchronous records path, so every supplied field — type, score,
-   * related_ids, valid_from/valid_until, metadata — is persisted verbatim.
+   * Agent UX — write path: use when you already know `type` + content.
+   * For raw text use plain {@link add} / MCP `ingest_memory` instead.
+   * Every supplied field (type, score, related_ids, valid_from/until, metadata)
+   * is persisted verbatim — no satellite LLM job.
    *
-   * parity spec asks for (type/score/related_ids/valid_from via the options
-   * object), mirroring Go `Create(text, opts...)` and Python `create(req)`.
-   * `createInSession` is kept as the text-only convenience wrapper. Metadata is
-   * routed through the canonical JSON envelope ({@link buildMetadataJson}) so a
-   * caller key can never clobber `container_tag` — the 2026-05-22 corruption
-   * bug. `weight` is derived from `score/10` to match {@link createRecord}.
-   *
-   * with no episodic anchor is HTTP 422 server-side ("create an episodic record
-   * first"). The SDK does NOT fabricate that anchor — {@link createRecord} makes
-   * ONE request and surfaces the typed {@link AnhurQueryError}, so a
-   * `create(text, { type: "fact" })` into a genuinely-empty session fails
-   * honestly. Callers write an episodic record first (the agents and memory
-   * plugin already do); when one exists the server auto-links the anchor.
+   * Empty session + derived type → HTTP 422 ("create an episodic first").
+   * The SDK does not fabricate that anchor. MCP: `create_memory`.
    *
    * @param text    - Record text (stored in summary + content).
    * @param options - Full-fidelity fields (all optional).

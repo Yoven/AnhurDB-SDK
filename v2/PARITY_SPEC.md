@@ -79,6 +79,7 @@ API. This document is the public contract; deviations are bugs.
 | `search_by_type` | Tenant-store type index only — **no `scope` / not a Shared Data plane switch**. Use `search_*` helpers or `scope=` for specialty docs. |
 | `/search/global` | Server deprecated alias only — SDKs must not call it. |
 | `count_by_type` | Implemented by paging the manifest. |
+| `add` vs `create` | **Write paths:** plain `add(text)` → `POST /ingest` (episodic + async extraction, LLM billed). `create(...)` → `POST /records` (one typed record, no extraction). **Trap:** `add` with pinned `type`/`score`/`metadata` skips ingest and hits `/records`. Never both for the same turn. |
 | `create` | Python uses `CreateRequest`; Go uses options; TypeScript uses `CreateOptions`. |
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |

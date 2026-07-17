@@ -17,13 +17,17 @@ import (
 // Create — full-fidelity record creation (POST /api/v1/records)
 // --------------------------------------------------------------------------
 
-// Create writes a single record via POST /api/v1/records and returns the new
-// record id. It is the canonical full-fidelity create: the caller controls type,
-// full-fidelity create: the caller controls type, score, related_ids, metadata,
-// status, and valid_from through functional options, while a bare
-// Create(ctx, sessionUUID, content) keeps episodic/score-5/saved defaults.
+// Create writes exactly one typed record via POST /api/v1/records (no extraction).
 //
-//	mem.Create(ctx, "chat-42", "user asked about pricing")                      // defaults
+// Agent UX — write path: use when you already know type + content. For raw text
+// use plain Add(ctx, text) / MCP ingest_memory instead. No satellite LLM job;
+// billing is embed-only for this one record.
+//
+// Caller controls type, score, related_ids, metadata, status, and valid_from
+// through functional options. Bare Create(ctx, sessionUUID, content) defaults
+// to episodic / score 5 / saved.
+//
+//	mem.Create(ctx, "chat-42", "user asked about pricing") // defaults
 //	mem.Create(ctx, "chat-42", "Paulo works at Yoven",
 //	    client.WithCreateType("fact"),
 //	    client.WithCreateScore(9),

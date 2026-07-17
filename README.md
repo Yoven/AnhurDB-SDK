@@ -39,11 +39,20 @@ go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.5
 
 ## How It Works
 
+**Write path — ask once:** do you already know the exact typed atom (`type` + content)?
+
+| Answer | SDK | MCP | REST | What you get |
+|--------|-----|-----|------|--------------|
+| **No** — raw chat/notes | `add(text)` plain | `ingest_memory` | `POST /ingest` | episodic + async satellites (LLM billed) |
+| **Yes** — typed atom | `create(...)` | `create_memory` | `POST /records` | exactly 1 record (embed only) |
+
+**Trap:** `add` with pinned `type` / `score` / `metadata` skips ingest → `/records`. Never call both for the same turn.
+
 ```
 Your App                         AnhurDB
 ========                         =======
 
-mem.add("text")                  PLATFORM PATH
+mem.add("text")                  PLATFORM PATH (default write)
     |  POST /api/v1/ingest
     +-------------------------->  Write 1 episodic now
     <--------------------------+  Return episodic id
@@ -66,10 +75,6 @@ mem.search_client_shared(...)
 mem.search_shared(...)           # both shared planes (shared_all)
 ```
 
-**Billing tip:** prefer `create` when you already have a typed atom (no
-extraction LLM). Prefer `add` / ingest for raw chat/notes — satellites are
-created by the platform and those LLM tokens are metered on your tenant.
-
 ---
 
 ## Full API Reference
@@ -80,8 +85,8 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `add(text)` | Platform path: episodic + async extraction (LLM+embed billed) | POST /api/v1/ingest |
-| `create(...)` | Caller path: one typed record, no extraction (embed only) | POST /api/v1/records |
+| `add(text)` | **Default raw write:** episodic + async extraction (LLM+embed billed). Pins → create path | POST /api/v1/ingest |
+| `create(...)` | **Typed atom only:** one record, no extraction (embed only) | POST /api/v1/records |
 | `search(query, scope=sessions)` | Hybrid plane search — query is FTS `text` (prefer `smart_search` for conceptual RAG) | POST /api/v1/search |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
 

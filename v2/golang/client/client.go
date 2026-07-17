@@ -189,19 +189,20 @@ func buildMetadataJSONWith(containerTag string, extra map[string]interface{}) st
 	return string(encoded)
 }
 
-// Add stores a memory. This is the simplest way to save information.
+// Add stores raw text via the ingest write path (default).
 //
-// It tries the cloud /api/v1/ingest endpoint first (which handles
-// embedding + extraction automatically). If that returns 404, it
-// falls back to /api/v1/records (OSS mode, stores as text).
+// Agent UX — pick the write path once:
+//   - Raw chat/notes → Add(ctx, text) → POST /ingest (1 episodic + async
+//     satellites; extraction LLM billed). MCP: ingest_memory.
+//   - Already know one typed atom → Create(...) → POST /records (no
+//     extraction). MCP: create_memory.
 //
-// Optional functional options let the caller control the record's score,
-// type, and metadata while keeping Add(ctx, text) — with no options —
-// fully backward compatible:
+// Trap: WithScore / WithType / WithMetadata skips ingest and forces /records
+// (create path — no extraction). Plain Add(ctx, text) prefers ingest; 404
+// falls back to /records (OSS).
 //
-//	mem.Add(ctx, "plain text")                                  // defaults
-//	mem.Add(ctx, "fact", client.WithScore(9), client.WithType("semantic"))
-//	mem.Add(ctx, "x", client.WithMetadata(map[string]any{"source": "import"}))
+//	mem.Add(ctx, "plain text") // ingest
+//	mem.Add(ctx, "fact", client.WithScore(9), client.WithType("fact")) // create path
 //
 func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddResult, error) {
 	if m.conn == nil {
