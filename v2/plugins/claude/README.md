@@ -16,9 +16,9 @@ Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB
   per tenant** — nothing else.
 
 Underneath, this is **one static Go binary and three hooks** — `recall` on `SessionStart`, `persist`
-on `Stop` and `SessionEnd`. That is the entire mechanism; everything else in this directory is
-packaging for people who would rather not build it themselves. You can skip all of it and
-[wire the binary directly](#option-a--direct-one-binary-three-hooks).
+on `Stop` and `SessionEnd`. That is the entire mechanism; the plugin is how it gets installed,
+updated, and shipped, and [installing it](#option-a--the-plugin-recommended) is all you should need to
+do.
 
 The binary **dogfoods the official AnhurDB Go SDK** (`github.com/Yoven/AnhurDB-SDK/v2/golang/v2`), so
 it inherits the SDK's HTTP transport and error handling, and has **zero runtime dependencies** — no
@@ -41,23 +41,68 @@ recall/store during a session.
 
 ## Install
 
-There are two ways in, and they produce the **same memory** — the same binary, the same hooks, the
-same records. They differ only in how much machinery sits between you and the engine:
+**Install the plugin.** [Option A](#option-a--the-plugin-recommended) is the supported path and the
+one to use. [Option B](#option-b--direct-one-binary-three-hooks) wires the same engine by hand — it
+exists for setups that cannot take a marketplace (locked-down machines, config management), not as a
+way to avoid the plugin. Both produce the **same memory**: same binary, same hooks, same records.
 
-| | [Direct](#option-a--direct-one-binary-three-hooks) | [Marketplace](#option-b--marketplace-plugin) |
+| | [Plugin](#option-a--the-plugin-recommended) | [Direct](#option-b--direct-one-binary-three-hooks) |
 |---|---|---|
-| What you manage | one binary + three hooks | a marketplace, an install, a cache, a scope |
-| Needs a Go toolchain | yes (or grab a release binary) | no — prebuilt binaries ship |
-| Bundles the MCP tools | no (add `.mcp.json` yourself) | yes |
-| Updates | you rebuild | `/plugin update` |
-| Ways it can silently break | essentially none | dangling marketplace, stale cache, wrong scope |
+| What you manage | one install | one binary + three hooks |
+| Needs a Go toolchain | no — prebuilt binaries ship | yes |
+| Bundles the MCP tools | yes | no (add `.mcp.json` yourself) |
+| Updates | `/plugin update` | you rebuild |
 
-**Pick Direct if you hack on this repo.** Pick Marketplace if you just want the memory and never
-intend to touch the source.
+> **If you develop this plugin, run this plugin.** It is tempting to wire the binary directly and skip
+> the marketplace — it has fewer moving parts, and the maintainers are the ones who know how. Do not.
+> The people working on it are the only ones exercising it before customers do; take them off it and
+> nobody is running what ships. That is not hypothetical: this plugin once stopped loading entirely and
+> went unnoticed for hours precisely because its failure was silent and nobody was watching from the
+> outside. Worse, running both at once double-writes every turn and fragments the memory.
 
-### Option A — direct: one binary, three hooks
+### Option A — the plugin (recommended)
 
-Nothing to register, nothing to cache, nothing to go stale. A hook either runs or it doesn't.
+In Claude Code:
+
+```
+/plugin marketplace add Yoven/AnhurDB-SDK
+/plugin install anhurdb-memory@anhur
+```
+
+The `anhur` marketplace manifest is at the repo root, so the GitHub `owner/repo` shorthand works — no
+clone needed. A committed wrapper (`bin/anhur-claude-memory`) auto-selects the right prebuilt binary
+for your OS/arch, so there is **nothing to build**. This also registers the AnhurDB MCP tools via the
+bundled `.mcp.json`.
+
+Install at **user scope** unless you have a reason not to: this is a *long-term memory*, and scoping it
+to one repository means it forgets everywhere else.
+
+(The `anhur` marketplace also offers `anhurdb-memory-hermes` — the same engine pointed at a separate
+tenant/container, for a second, isolated agent identity.)
+
+Then [configure the environment](#configure-the-environment) and start a new session.
+
+#### Working on the plugin itself
+
+Point the marketplace at your clone (`/plugin marketplace add /path/to/AnhurDB-SDK`) and know the two
+rules that bite:
+
+- **An install is a snapshot.** The plugin is *copied* into `~/.claude/plugins/cache/` at install time.
+  Editing the source changes nothing about what runs. To ship a change: `make release-binaries`, **bump
+  `version` in `.claude-plugin/plugin.json`** (the version is what invalidates the cache), reinstall.
+- **A `directory` marketplace reads the live worktree.** Its `.claude-plugin/marketplace.json` must
+  exist at the registered path on every load. Move or rename it — an ordinary refactor — and the
+  marketplace goes dangling, the plugin stops loading, and **every hook silently stops firing**. No
+  error reaches the session; the memory just quietly stops. That exact failure happened here and went
+  unnoticed for hours. Diagnose it with `claude plugin list` (look for `✘ failed to load`).
+
+Prefer your memory to track *releases* rather than your working tree? Install from GitHub
+(`Yoven/AnhurDB-SDK`) — then a rebase can never touch it.
+
+### Option B — direct: one binary, three hooks
+
+For machines that cannot take a marketplace. Same engine, wired by hand — **not** a way to skip the
+plugin (see the warning above).
 
 **1. Build and install the engine.** It lands on a stable path *outside* any git worktree:
 
@@ -103,52 +148,14 @@ That is the whole integration. Details that matter:
   `~/.local/bin` on `PATH`.
 - **`. $HOME/.anhur-claude-memory/env`** is what loads the API key. `2>/dev/null` swallows the
   shell's error on stderr if that file is missing.
-- **Never point a hook at a path inside a git worktree.** See [the trap](#the-trap-worktree-paths).
+- **Never point a hook at a path inside a git worktree.** A rebase, rename, or branch switch then
+  breaks the memory silently. That is why step 1 copies the binary out of the repo.
 
 **4. Want the MCP tools too?** They are independent of the memory loop — add an `.mcp.json` to your
 project (or `~/.claude.json`):
 
 ```json
 { "mcpServers": { "anhurdb": { "type": "http", "url": "https://anhurdb.yoven.ai/mcp" } } }
-```
-
-### Option B — marketplace plugin
-
-In Claude Code:
-
-```
-/plugin marketplace add Yoven/AnhurDB-SDK
-/plugin install anhurdb-memory@anhur
-```
-
-The `anhur` marketplace manifest is at the repo root, so the GitHub `owner/repo` shorthand works — no
-clone needed. A committed wrapper (`bin/anhur-claude-memory`) auto-selects the right prebuilt binary
-for your OS/arch, so there is **nothing to build**. This route also registers the AnhurDB MCP tools
-via the bundled `.mcp.json`.
-
-(The `anhur` marketplace also offers `anhurdb-memory-hermes` — the same engine pointed at a separate
-tenant/container, for a second, isolated agent identity.)
-
-Then configure the environment below and start a new session.
-
-#### The trap: worktree paths
-
-**Do not install this plugin from a `directory` marketplace pointing at a clone you actively develop
-in** (`/plugin marketplace add .` from your working copy). A `directory` marketplace is read **in
-place**: its `.claude-plugin/marketplace.json` must exist at the registered path on every load. Rename
-or move that manifest — an ordinary refactor — and the marketplace goes dangling, the plugin stops
-loading, and **every hook silently stops firing**. No error reaches the session; the memory just
-quietly stops. That exact failure happened here, and it went unnoticed for hours.
-
-If you develop this repo, use [Option A](#option-a--direct-one-binary-three-hooks): a binary at a
-fixed path cannot be broken by a rebase. If you want to dogfood the real customer path, install from
-GitHub (`Yoven/AnhurDB-SDK`) so your memory tracks *releases*, not your working tree.
-
-Diagnose a suspected load failure with:
-
-```bash
-claude plugin list                        # look for: Status ✘ failed to load
-claude plugin validate .                  # validate a marketplace/plugin manifest
 ```
 
 ### Configure the environment
@@ -194,11 +201,18 @@ block, and every turn persists from then on. That's it.
 Three checks, in ascending order of what they actually prove. **Only the third proves the memory
 reaches the model** — the first two are necessary but routinely fooled anyone who stopped there.
 
-### 1. The engine runs and can reach AnhurDB
+### 1. The plugin loads, and its engine can reach AnhurDB
+
+```bash
+claude plugin list          # anhurdb-memory@anhur must say: Status ✔ enabled
+```
+
+`✘ failed to load` means no hook is registered and the memory is dead — the most common cause is a
+dangling `directory` marketplace. Then run the same binary the hooks run:
 
 ```bash
 . "$HOME/.anhur-claude-memory/env"
-"$HOME/.local/bin/anhur-claude-memory" recall </dev/null    # direct install
+"$HOME"/.claude/plugins/cache/anhur/anhurdb-memory/*/bin/anhur-claude-memory recall </dev/null
 ```
 
 Should print your `<anhur-memory>` block and exit 0. Diagnostics (never the key) go to
@@ -207,7 +221,8 @@ Should print your `<anhur-memory>` block and exit 0. Diagnostics (never the key)
 ### 2. The hooks actually fire
 
 The log cannot tell you this on its own — a line there proves only that *something* ran the binary,
-and running it by hand looks identical to a hook running it. Correlate with a **session start**:
+and running it by hand (as in check 1) looks identical to a hook running it. Correlate with a
+**session start**:
 
 ```bash
 tail -3 ~/.anhur-claude-memory/plugin.log
@@ -302,19 +317,24 @@ Build and iterate locally (needs **Go 1.24+**):
 ```bash
 cd v2/plugins/claude
 make build     # native binary → bin/anhur-claude-memory-<os>-<arch>  (inside the worktree)
-make install   # build + copy to ~/.local/bin  (stable path, for the direct setup)
 ./test_e2e.sh  # end-to-end against the live AnhurDB in ~/.anhur-claude-memory/env
+make deploy    # push this build into the installed plugin's cache (see the caveat below)
 ```
 
 The engine lives in the shared `plugins/core` package so `claude` and `hermes` never drift — fix a
 bug once, both get it. `go.mod` carries two `replace` directives (`../core` and `../../golang`), so
 the plugin builds from within this monorepo.
 
-**If you run your own memory off this repo, use `make install`, not `make deploy`.** `make deploy`
-hand-copies the fresh binary into an installed plugin's cache; it exists for the marketplace route,
-but it also *masks* the fact that the cache is a snapshot — every other file in it (manifest,
-`.mcp.json`, README) stays stale, and the cache only ever refreshes on a version bump or a reinstall.
-`make install` has no cache to desynchronise.
+**Run the plugin while you work on it.** Its failures are silent by nature, so the people building it
+are the only ones who will catch them before customers do. Do not wire the binary by hand to avoid the
+marketplace — you would take the product out of test and, if you leave both wired, double-write every
+turn.
+
+**`make deploy` is a debugging shortcut, not a way to ship.** It hand-copies your fresh binary over the
+installed plugin's cached one, which is handy for a tight edit-run loop — but it *masks* the fact that
+the cache is a **snapshot**: every other file in it (manifest, `.mcp.json`, README) stays stale, and it
+only truly refreshes on a version bump or a reinstall. Trusting `deploy` is how the installed cache sat
+a month behind the source. To validate what a user will actually get, bump `version` and reinstall.
 
 ### Releasing
 
