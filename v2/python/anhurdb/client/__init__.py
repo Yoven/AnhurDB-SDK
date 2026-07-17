@@ -560,20 +560,27 @@ class Memory:
         *,
         limit: int = 10,
         memory_type: Optional[str] = None,
+        scope: str = "sessions",
     ) -> Any:
         """Full-text search with cognitive weight boosting.
 
         Ranks results by a combination of text relevance and cognitive
-        importance (score × weight).
+        importance (score × weight). Same memory-plane ``scope`` as
+        ``search()`` (default ``sessions``).
 
         Args:
             query:       Search query.
             limit:       Maximum results (default 10).
             memory_type: Optional type filter.
+            scope:       Search plane (default ``sessions``).
 
         Returns:
             Search results ranked by cognitive relevance."""
-        params: Dict[str, str] = {"q": query, "limit": str(limit)}
+        params: Dict[str, str] = {
+            "q": query,
+            "limit": str(limit),
+            "scope": scope,
+        }
         if memory_type:
             params["type"] = memory_type
         return await self._connection.get(
@@ -584,8 +591,10 @@ class Memory:
         self,
         query: str,
         limit: int = 10,
+        *,
+        scope: str = "sessions",
     ) -> List[SearchResult]:
-        """Recall memories via tenant session search.
+        """Recall memories via plane-aware search.
 
         Delegates directly to ``search()`` (``POST /api/v1/search``,
         default ``scope=sessions``). There is no server-side recall endpoint
@@ -596,10 +605,11 @@ class Memory:
         Args:
             query:     Natural language query.
             limit:     Maximum results (default 10).
+            scope:     Search plane (default ``sessions``).
 
         Returns:
             List of typed ``SearchResult`` objects (inherited from ``search``)."""
-        return await self.search(query, limit=limit)
+        return await self.search(query, limit=limit, scope=scope)
 
     async def query(
         self,

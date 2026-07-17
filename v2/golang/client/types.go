@@ -413,7 +413,8 @@ func WithTypeFilter(t string) SearchOption {
 	}
 }
 
-// WithScope selects the search plane for POST /api/v1/search.
+// WithScope selects the search plane for POST /api/v1/search and
+// GET /api/v1/search/smart (sessions | tenant_shared | client_shared | shared_all).
 func WithScope(scope string) SearchOption {
 	return func(cfg *searchConfig) {
 		cfg.scope = scope

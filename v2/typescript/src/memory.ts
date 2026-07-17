@@ -35,6 +35,7 @@ import type {
   SearchOptions,
   SearchPayload,
   SearchResult,
+  SearchScope,
   SearchSessionPayload,
   SessionStats,
   UploadResult,
@@ -495,13 +496,26 @@ export class Memory {
    * @param limit - Maximum results (default 10).
    * @param type  - Optional memory type filter.
    */
+  /**
+   * Full-text search with cognitive weight boosting.
+   *
+   * Uses `GET /api/v1/search/smart` with the same memory-plane `scope` as
+   * {@link search} (default `sessions`).
+   *
+   * @param query - Search query.
+   * @param limit - Maximum results (default 10).
+   * @param type - Optional memory type filter.
+   * @param scope - Search plane (default `sessions`).
+   */
   async smartSearch(
     query: string,
     limit?: number,
-    type?: MemoryType): Promise<unknown> {
+    type?: MemoryType,
+    scope?: SearchScope): Promise<unknown> {
     const params: Record<string, string> = {
       q: query,
       limit: String(limit ?? 10),
+      scope: scope ?? "sessions",
     };
     if (type) params.type = type;
 
@@ -511,18 +525,24 @@ export class Memory {
   }
 
   /**
-   * Recall memories via session-plane search.
+   * Recall memories via plane-aware search.
    *
    * Explicit alias for `search()` (default `scope=sessions`).
    * Named to match the MCP `recall` tool.
    *
    * @param query - Natural language query.
    * @param limit - Maximum results (default 10).
+   * @param options - Optional scope (and other search options except limit).
    */
   async recall(
     query: string,
-    limit?: number): Promise<SearchResult[]> {
-    return this.search(query, { limit: limit ?? 10 });
+    limit?: number,
+    options?: Omit<SearchOptions, "limit">): Promise<SearchResult[]> {
+    return this.search(query, {
+      limit: limit ?? 10,
+      scope: options?.scope ?? "sessions",
+      typeFilter: options?.typeFilter,
+    });
   }
 
   /**
