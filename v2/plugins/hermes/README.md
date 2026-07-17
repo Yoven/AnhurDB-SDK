@@ -59,7 +59,7 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
 
 1. **Build from source** (optional — the plugin ships prebuilt binaries):
    ```bash
-   cd plugins/hermes && make build      # → bin/anhur-hermes-memory-<os>-<arch> (static)
+   cd v2/plugins/hermes && make build   # → bin/anhur-hermes-memory-<os>-<arch> (static)
    ```
 
 2. **Configure** the environment (see `.env.example`). At minimum:
@@ -85,7 +85,7 @@ plugins/core/                     # the SHARED engine (imported by claude + herm
    ```
    The hooks call `${CLAUDE_PLUGIN_ROOT}/bin/anhur-hermes-memory` — the committed wrapper, which
    execs the prebuilt binary for your OS/arch. Prefer no marketplace at all? `make install` puts the
-   engine on a stable path and you wire three hooks yourself — see ../claude/README.md → Option A.
+   engine on a stable path and you wire three hooks yourself — see ../claude/README.md → Option B.
 
 4. **Start a new session.** On startup the Hermes AnhurDB memory is injected; after each turn it
    persists.

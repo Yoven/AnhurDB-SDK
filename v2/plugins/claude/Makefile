@@ -42,7 +42,7 @@ install: build
 	install -d $(PREFIX)/bin
 	install -m 755 $(NATIVE) $(PREFIX)/bin/anhur-claude-memory
 	@echo "installed -> $(PREFIX)/bin/anhur-claude-memory"
-	@echo "next: point three hooks (SessionStart/Stop/SessionEnd) at it — see README → Install → Option A"
+	@echo "next: point three hooks (SessionStart/Stop/SessionEnd) at it — see README → Install → Option B"
 
 # release-binaries cross-compiles every shipped platform into bin/. The outputs are
 # committed; a marketplace install just runs the wrapper, no toolchain required.

@@ -34,6 +34,11 @@ on:
     branches: [main]
     paths:
       - "v2/plugins/**"
+      # The SDK is linked into both plugins via `replace ../../golang`, so an SDK-only
+      # commit changes the binaries the plugins ship. Without this path the freshness
+      # gate never runs on that commit and bin/ goes stale silently — which is exactly
+      # what happened when the scope-planes work landed under v2/golang.
+      - "v2/golang/**"
       - ".github/workflows/release-plugin.yml"
   workflow_dispatch:
 

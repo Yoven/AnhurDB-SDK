@@ -38,8 +38,10 @@ No Claude Code:
 
 Não precisa de Go nem compilar nada — o plugin já traz o binário pronto para cada plataforma.
 
-> **Prefere sem plugin?** São um binário e três hooks, e essa é a opção com menos peças móveis.
-> Veja [v2/plugins/claude/README.md](../../v2/plugins/claude/README.md) → *Install → Option A*.
+> **Não dá para usar marketplace na sua máquina?** Dá para ligar o mesmo binário na mão, em três hooks —
+> veja [v2/plugins/claude/README.md](../../v2/plugins/claude/README.md) → *Install → Option B*. Só faça
+> isso se o plugin realmente não for uma opção: rodar os dois ao mesmo tempo grava cada turno **duas
+> vezes** e fragmenta sua memória.
 
 ---
 
