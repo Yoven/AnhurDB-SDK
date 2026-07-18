@@ -22,7 +22,9 @@ class CreateRequest(BaseModel):
     Payload for creating a new memory record.
 
     Required:
-        uuid: Session identifier.
+        session_id (preferred) or uuid — both identify the write session from
+        ``create_session`` / ``POST /api/v1/sessions``. The wire field sent to
+        the server may be ``session_id`` or legacy ``uuid`` (same value).
 
     The server automatically computes embeddings and search indexes when
     ``dimension=0`` (default). Set ``dimension``, ``vector``, and ``prefix``
@@ -31,7 +33,10 @@ class CreateRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    uuid: str
+    # Junior Tip [session_id parity]: prefer session_id=...; uuid= remains for
+    # older call sites. Both serialize — create() posts session_id when set.
+    uuid: str = Field(default="", description="Legacy alias for session_id")
+    session_id: str = Field(default="", description="Preferred session from create_session")
     type: MemoryType = Field(default=MemoryType.EPISODIC)
 
     summary: str = Field(default="")

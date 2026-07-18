@@ -66,3 +66,21 @@ var WithType = client.WithType
 
 // WithMetadata merges caller-supplied keys into the added record's metadata.
 var WithMetadata = client.WithMetadata
+
+// WithSessionID pins the session uuid for Add (must be registered via CreateSession).
+var WithSessionID = client.WithSessionID
+
+// WithMode selects Add write path: "ingest" (default) or "regular" (/records).
+var WithMode = client.WithMode
+
+// WithCreateSessionID registers an explicit session uuid in CreateSession.
+var WithCreateSessionID = client.WithCreateSessionID
+
+// WithCreateSessionMetadata sets optional metadata on CreateSession.
+var WithCreateSessionMetadata = client.WithCreateSessionMetadata
+
+// WithCreateType sets the record type for Memory.Create.
+var WithCreateType = client.WithCreateType
+
+// WithCreateScore sets the score for Memory.Create.
+var WithCreateScore = client.WithCreateScore

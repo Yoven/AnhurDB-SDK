@@ -11,7 +11,7 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.5
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.10
 ```
 
 ## Quick Start
@@ -153,12 +153,14 @@ err = mem.Supersede(ctx, 42, 99)
 ### Session Management
 
 ```go
+sessionID, err := mem.CreateSession(ctx)                   // Required before Add/Create
 sessions, err := mem.ListSessions(ctx)                     // All sessions with stats
 history, err := mem.GetSessionHistory(ctx, "uuid", 50, 0)  // Paginated history
 clusters, err := mem.GetSessionClusters(ctx, "uuid")       // Thematic clusters
-mem.NewSession()                                           // Rotate session UUID
-fmt.Println(mem.SessionID())                               // Current session
-fmt.Println(mem.ContainerTag())                            // User identifier
+localID := mem.NewSession()                                // Local rotate only (not registered)
+_, err = mem.OpenSession(ctx)                              // Local generate + register
+fmt.Println(mem.SessionID(), sessionID, localID)
+fmt.Println(mem.ContainerTag())                            // Recall/profile tag (not a session)
 ```
 
 ### Record CRUD

@@ -2,12 +2,12 @@
 Unit tests for the 2026-06 SDK hardening fixes (mock-server based, no live DB).
 
 Covers:
-  1. add(score=, type=, metadata=) routes to /api/v1/records and SENDS the
-     score, type, and merged metadata in the payload (the cloud-ingest path
-     dropped them silently).
-  2. _request is a transparent pipe: it makes exactly ONE request and surfaces
+  1. add(mode="regular", score=, type=, metadata=) routes to /api/v1/records
+     and SENDS score, type, and merged metadata in the payload.
+  2. add(mode="ingest") always sends session_id on /api/v1/ingest.
+  3. _request is a transparent pipe: it makes exactly ONE request and surfaces
      every 5xx immediately with NO client-side retry.
-  3. read_content returns a verbatim plain-text body instead of wrapping it in
+  4. read_content returns a verbatim plain-text body instead of wrapping it in
      {"message": text[:1000]} and truncating at 1000 chars.
 """
 
@@ -18,6 +18,13 @@ from anhurdb import Memory, AnhurClient, MemoryType, AnhurError
 
 
 # ── Mock handlers that capture what the SDK sends ────────────────────────────
+
+async def handle_sessions_create(request):
+    data = await request.json() if request.can_read_body and request.content_length else {}
+    session_id = data.get("session_id") or "server-generated"
+    request.app.setdefault("sessions_created", []).append(session_id)
+    return web.json_response({"session_id": session_id, "metadata": {}}, status=201)
+
 
 async def handle_records_capture(request):
     body = await request.json()
@@ -46,6 +53,7 @@ async def handle_plain_content(request):
 
 def app_capture():
     app = web.Application()
+    app.router.add_post("/api/v1/sessions", handle_sessions_create)
     app.router.add_post("/api/v1/ingest", handle_ingest_capture)
     app.router.add_post("/api/v1/records", handle_records_capture)
     app.router.add_get("/api/v1/records/{id}/content", handle_plain_content)
@@ -60,8 +68,12 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
     async def test_explicit_score_type_routes_to_records(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="k", url=url, user_id="u1") as mem:
+            await mem.create_session()
             result = await mem.add(
-                "likes dark mode", score=8, type=MemoryType.PREFERENCE
+                "likes dark mode",
+                mode="regular",
+                score=8,
+                type=MemoryType.PREFERENCE,
             )
             # Routed to the records (oss) path, not cloud ingest.
             self.assertEqual(result["mode"], "oss")
@@ -69,14 +81,8 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
             sent = self.app["last_record"]
             self.assertEqual(sent["type"], "preference")
             self.assertEqual(sent["score"], 8)
-            # Anchor-seed REMOVED (2026-07-06): a derived add() issues exactly
-            # ONE request — the SDK no longer fabricates a synthetic episodic
-            # anchor client-side. The server auto-links the real anchor (Rule 3a)
-            # and returns an honest 422 when the session has none.
-            types = [r["type"] for r in self.app["records"]]
+            types = [record["type"] for record in self.app["records"]]
             self.assertEqual(types, ["preference"])
-            # No client-side anchor link is fabricated — related_ids stays empty
-            # and the server does the linking.
             self.assertEqual(sent.get("related_ids", []), [])
 
     @unittest_run_loop
@@ -84,8 +90,12 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
         import json
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="k", url=url, user_id="u1") as mem:
+            await mem.create_session()
             await mem.add(
-                "kickoff", type=MemoryType.FACT, metadata={"project": "apollo"}
+                "kickoff",
+                mode="regular",
+                type=MemoryType.FACT,
+                metadata={"project": "apollo"},
             )
             meta = json.loads(self.app["last_record"]["metadata"])
             self.assertEqual(meta["project"], "apollo")
@@ -95,14 +105,29 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
     async def test_plain_add_still_uses_ingest(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="k", url=url, user_id="u1") as mem:
+            await mem.create_session()
             result = await mem.add("plain text, no options")
             self.assertEqual(result["mode"], "cloud")
-            # Ingest payload only carries content + container_tag (server drops
-            # the rest), so we must NOT have sent a score/type there.
+            ingest_payload = self.app["last_ingest"]
             self.assertEqual(
-                set(self.app["last_ingest"].keys()),
-                {"content", "container_tag"},
+                set(ingest_payload.keys()),
+                {"content", "container_tag", "session_id"},
             )
+            self.assertEqual(ingest_payload["session_id"], mem.session_id)
+            self.assertEqual(ingest_payload["container_tag"], "u1")
+
+    @unittest_run_loop
+    async def test_score_type_with_default_mode_still_uses_ingest(self):
+        """mode defaults to ingest — score/type are ignored, not rerouted."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="k", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add(
+                "plain with pins", score=8, type=MemoryType.PREFERENCE
+            )
+            self.assertEqual(result["mode"], "cloud")
+            self.assertIn("last_ingest", self.app)
+            self.assertNotIn("last_record", self.app)
 
     @unittest_run_loop
     async def test_read_content_plain_text_verbatim(self):

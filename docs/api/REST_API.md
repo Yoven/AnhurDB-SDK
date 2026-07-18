@@ -10,6 +10,30 @@ X-API-Key: your-api-key
 X-Tenant-ID: my-tenant     (optional, multi-tenant)
 ```
 
+## Session-first writes
+
+Every write path requires a **registered session UUID** before ingest, create, or
+upload (chat mode):
+
+1. **Create session** — `POST /api/v1/sessions` (optional `session_id`, optional
+   `metadata` JSON object copied onto records in this session).
+2. **Write** — pass the returned `session_id` on ingest/create/upload.
+
+`container_tag` is a **recall/profile aggregation tag only** — it is stored in
+record metadata and groups cross-session recall via `GET /api/v1/profile`. It is
+**never** a session substitute.
+
+Missing `session_id` on ingest/create returns **400**:
+
+```
+session_id is required — create a session first (POST /api/v1/sessions)
+```
+
+**SDK:** call `create_session()` / `CreateSession` / `createSession` **before**
+`add(text, mode="ingest")` or `add(..., mode="regular")` / `create(...)`.
+SDKs do **not** auto-register on first write — missing registration returns 400.
+(The Claude Code memory plugin calls `CreateSession` before each persist.)
+
 ## Endpoints
 
 ### System
@@ -29,7 +53,8 @@ and **token billing** differ.
 | MCP | `ingest_memory` | `create_memory` |
 | Immediate write | **1 episodic** | **Exactly 1** typed record |
 | Satellites (fact, preference, …) | **Platform** extraction agent (async NATS) | **Caller** only — no extraction job |
-| Body | `content` + `container_tag` (+ optional `session_id`) | Full create payload (`uuid`, `type`, `content`, …) |
+| Body | `content` + `container_tag` + **`session_id`** (required) | Typed payload with **`session_id`** (or legacy `uuid`) + `type`, `content`, … |
+| Prerequisite | `POST /api/v1/sessions` first | `POST /api/v1/sessions` first — same `session_id` |
 | Billing | Extraction **LLM** tokens + embed tokens for episodic **and** each satellite | **No** extraction LLM; embed tokens for that one record |
 
 ```
@@ -79,6 +104,8 @@ records: typed payload → one record → enrichment embed only
 
 | Method | Path | Description |
 |--------|------|-------------|
+| POST | `/api/v1/sessions` | **Create a write session** (optional `session_id`, optional `metadata`). Required before ingest/create/upload. |
+| GET | `/api/v1/sessions` | List all session UUIDs |
 | GET | `/api/v1/sessions/stats` | Session statistics |
 | GET | `/api/v1/sessions/{uuid}/history` | Paginated session history |
 | GET | `/api/v1/sessions/{uuid}/clusters` | Thematic session clusters |
@@ -115,8 +142,8 @@ records: typed payload → one record → enrichment embed only
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/ingest` | Platform path: episodic + async extraction (LLM + embed billed) |
-| GET | `/api/v1/profile` | User or agent profile |
+| POST | `/api/v1/ingest` | Platform path: episodic + async extraction (LLM + embed billed). Body: `content`, `container_tag`, **`session_id`** (required). |
+| GET | `/api/v1/profile` | Aggregated profile for a `container_tag` (recall scope — not a session id) |
 
 ### File upload
 
@@ -136,7 +163,8 @@ full method list. Open Beta default URL: `https://anhurdb.yoven.ai`.
 from anhurdb import Memory, CreateRequest
 
 async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
-    await mem.add("text")
+    session_id = await mem.create_session()
+    await mem.add("text", mode="ingest", session_id=session_id)
     await mem.search("query")
     await mem.search_session("session-uuid", "query")
     await mem.create(CreateRequest(uuid="s1", content="..."))
@@ -150,7 +178,8 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
 import { Memory } from "anhurdb";
 
 const mem = new Memory({ apiKey: "anhur_xxx", url: "https://anhurdb.yoven.ai" });
-await mem.add("text");
+const sessionId = await mem.createSession();
+await mem.add("text", { mode: "ingest", sessionId });
 await mem.search("query");
 await mem.searchSession("session-uuid", "query");
 await mem.create("content", { type: "fact" });
@@ -168,7 +197,8 @@ import (
 
 mem := anhurdb.NewMemory("anhur_xxx", anhurdb.WithURL("https://anhurdb.yoven.ai"))
 ctx := context.Background()
-mem.Add(ctx, "text")
+sessionID, _ := mem.CreateSession(ctx)
+mem.Add(ctx, "text", anhurdb.WithSessionID(sessionID), anhurdb.WithAddMode("ingest"))
 mem.Search(ctx, "query")
 mem.SearchSession(ctx, "session-uuid", "query")
 mem.Create(ctx, "session-uuid", "content", anhurdb.WithCreateType("fact"))

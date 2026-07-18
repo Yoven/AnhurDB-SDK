@@ -122,6 +122,18 @@ describe("Memory.newSession()", () => {
   });
 });
 
+describe("Memory.createSession()", () => {
+  it("accepts optional sessionId and mode on add (parity surface)", () => {
+    const mem = new Memory({ apiKey: "key", userId: "u" });
+    const createCall = (): Promise<string> =>
+      mem.createSession({ sessionId: "sess-1", metadata: { agent: "test" } });
+    const addCall = (): Promise<unknown> =>
+      mem.add("hello", { mode: "regular", sessionId: "sess-1" });
+    assert.equal(typeof createCall, "function");
+    assert.equal(typeof addCall, "function");
+  });
+});
+
 // ── Error hierarchy tests ─────────────────────────────────────
 
 describe("Error types", () => {
@@ -431,6 +443,27 @@ describe("Memory.search (nested SearchResult shape)", () => {
 // AnhurQueryError unchanged; the caller (agents/plugin) writes an episodic
 // record first. These tests lock that: request count == 1, and the error type.
 describe("Memory.create (no anchor seeding)", () => {
+  it("fails loud before HTTP when createSession was never called", async () => {
+    const originalFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount++;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      await assert.rejects(
+        () => mem.create("some fact", { type: "fact" }),
+        (err: unknown) =>
+          err instanceof Error &&
+          err.message.includes("create a session first"),
+      );
+      assert.equal(callCount, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("makes exactly one request and surfaces the typed 422, no synthetic seed", async () => {
     const originalFetch = globalThis.fetch;
     let callCount = 0;
@@ -446,7 +479,8 @@ describe("Memory.create (no anchor seeding)", () => {
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
       await assert.rejects(
-        () => mem.create("some fact", { type: "fact" }),
+        () =>
+          mem.create("some fact", { type: "fact", sessionId: "registered-sess" }),
         // A 422 maps to AnhurQueryError (see HttpClient.request).
         (err: unknown) => err instanceof AnhurQueryError,
       );
@@ -472,7 +506,11 @@ describe("Memory.create (no anchor seeding)", () => {
       const mem = new Memory({ apiKey: "key", userId: "u" });
       // A pinned type forces the synchronous /records path (createRecord).
       await assert.rejects(
-        () => mem.add("a decision", { type: "decision" }),
+        () =>
+          mem.add("a decision", {
+            type: "decision",
+            sessionId: "registered-sess",
+          }),
         (err: unknown) => err instanceof AnhurQueryError,
       );
       assert.equal(callCount, 1);

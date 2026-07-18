@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
@@ -59,7 +60,10 @@ type Memory struct {
 	conn            *HTTPConnection
 	containerTag    string
 	sessionUUID     string
-	ingestAvailable *bool // nil = untested, true = yes, false = no
+	// sessionRegistered is true only after CreateSession/OpenSession succeeds.
+	// A local sessionUUID alone must not be sent on writes.
+	sessionRegistered bool
+	ingestAvailable   *bool // nil = untested, true = yes, false = no
 }
 
 // NewMemory creates a new Memory client.
@@ -108,9 +112,10 @@ func NewMemory(apiKey string, opts ...Option) *Memory {
 	sessionUUID := deriveSessionUUID(containerTag)
 
 	return &Memory{
-		conn:         conn,
-		containerTag: containerTag,
-		sessionUUID:  sessionUUID,
+		conn:              conn,
+		containerTag:      containerTag,
+		sessionUUID:       sessionUUID,
+		sessionRegistered: false,
 	}
 }
 
@@ -191,18 +196,21 @@ func buildMetadataJSONWith(containerTag string, extra map[string]interface{}) st
 
 // Add stores raw text via the ingest write path (default).
 //
-// Agent UX — pick the write path once:
-//   - Raw chat/notes → Add(ctx, text) → POST /ingest (1 episodic + async
-//     satellites; extraction LLM billed). MCP: ingest_memory.
-//   - Already know one typed atom → Create(...) → POST /records (no
-//     extraction). MCP: create_memory.
+// Session-first servers require CreateSession before Add succeeds.
 //
-// Trap: WithScore / WithType / WithMetadata skips ingest and forces /records
+// Agent UX — pick the write path once:
+//   - Raw chat/notes → Add(ctx, text) or WithMode("ingest") → POST /ingest
+//     (1 episodic + async satellites; extraction LLM billed). MCP: ingest_memory.
+//   - Direct episodic record → Add(ctx, text, WithMode("regular")) or
+//     Create(...) → POST /records (no extraction). MCP: create_memory.
+//
+// Trap: WithScore / WithType / WithMetadata also forces /records on ingest mode
 // (create path — no extraction). Plain Add(ctx, text) prefers ingest; 404
 // falls back to /records (OSS).
 //
 //	mem.Add(ctx, "plain text") // ingest
-//	mem.Add(ctx, "fact", client.WithScore(9), client.WithType("fact")) // create path
+//	mem.Add(ctx, "fact", client.WithMode("regular")) // records path
+//	mem.Add(ctx, "fact", client.WithScore(9), client.WithType("fact")) // records path
 //
 func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddResult, error) {
 	if m.conn == nil {
@@ -217,59 +225,89 @@ func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddR
 		opt(cfg)
 	}
 
-	// When the caller pins score, type, OR metadata, the cloud ingest endpoint
-	// would silently drop them — its request struct is exactly {content,
-	// synchronous records path that persists all three.
-	//
-	forceRecordsPath := cfg.score != nil || cfg.memType != nil || len(cfg.metadata) > 0
+	writeMode := "ingest"
+	if cfg.writeMode != "" {
+		writeMode = cfg.writeMode
+	}
 
-	// Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
-	// score/type. Once we know ingest is unavailable (404), we skip it on
-	// subsequent calls to avoid unnecessary round-trips.
+	// When the caller pins score, type, OR metadata, the cloud ingest endpoint
+	// would silently drop them — route to the synchronous records path that
+	// persists all three.
 	//
-	if !forceRecordsPath && (m.ingestAvailable == nil || *m.ingestAvailable) {
-		result, err := m.tryIngest(ctx, text, cfg)
+	forceRecordsPath := writeMode == "regular" ||
+		cfg.score != nil || cfg.memType != nil || len(cfg.metadata) > 0
+
+	if forceRecordsPath {
+		return m.createRecord(ctx, text, cfg)
+	}
+
+	// Try cloud ingest first (has auto-embedding). Once we know ingest is
+	// unavailable (404), we skip it on subsequent calls to avoid unnecessary
+	// round-trips.
+	//
+	if m.ingestAvailable == nil || *m.ingestAvailable {
+		result, ingestErr := m.tryIngest(ctx, text, cfg)
 		if result != nil {
 			return result, nil
 		}
 		// Only propagate non-404 errors.
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return nil, err
+		if ingestErr != nil && !errors.Is(ingestErr, ErrNotFound) {
+			return nil, ingestErr
 		}
 	}
 
-	// Synchronous record creation: OSS/self-hosted fallback, OR the
-	// score/type-pinned path that ingest cannot honour.
+	// Synchronous record creation: OSS/self-hosted fallback when ingest 404s.
 	return m.createRecord(ctx, text, cfg)
+}
+
+// resolveWriteSessionID returns the session uuid for a write.
+// Explicit WithSessionID wins (server validates registration). Otherwise the
+// client session must already be registered via CreateSession/OpenSession.
+//
+func (m *Memory) resolveWriteSessionID(cfg *addConfig) (string, error) {
+	if cfg != nil {
+		explicitSessionID := strings.TrimSpace(cfg.sessionID)
+		if explicitSessionID != "" {
+			return explicitSessionID, nil
+		}
+	}
+	if !m.sessionRegistered || m.sessionUUID == "" {
+		return "", fmt.Errorf(
+			"session_id is required — create a session first (POST /api/v1/sessions)",
+		)
+	}
+	return m.sessionUUID, nil
 }
 
 // tryIngest attempts the cloud ingest endpoint.
 // Returns (nil, ErrNotFound) if the endpoint doesn't exist.
 func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*AddResult, error) {
+	resolvedSessionID, resolveErr := m.resolveWriteSessionID(cfg)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
 	payload := map[string]interface{}{
 		"content":       text,
 		"container_tag": m.containerTag,
-	}
-	if cfg != nil && cfg.sessionID != "" {
-		payload["session_id"] = cfg.sessionID
+		"session_id":    resolvedSessionID,
 	}
 
-	respBytes, err := m.conn.Post(ctx, "/api/v1/ingest", payload)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			f := false
-			m.ingestAvailable = &f
+	respBytes, postErr := m.conn.Post(ctx, "/api/v1/ingest", payload)
+	if postErr != nil {
+		if errors.Is(postErr, ErrNotFound) {
+			ingestUnavailable := false
+			m.ingestAvailable = &ingestUnavailable
 			return nil, ErrNotFound
 		}
-		return nil, err
+		return nil, postErr
 	}
 
-	t := true
-	m.ingestAvailable = &t
+	ingestAvailable := true
+	m.ingestAvailable = &ingestAvailable
 
 	var resp ingestResponse
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return nil, fmt.Errorf("parsing ingest response: %w", err)
+	if unmarshalErr := json.Unmarshal(respBytes, &resp); unmarshalErr != nil {
+		return nil, fmt.Errorf("parsing ingest response: %w", unmarshalErr)
 	}
 
 	records := resp.Records
@@ -280,7 +318,7 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 
 	return &AddResult{
 		ID:        firstID,
-		SessionID: m.sessionUUID,
+		SessionID: resolvedSessionID,
 		Records:   records,
 		Status:    "ok",
 		Mode:      "cloud",
@@ -288,9 +326,8 @@ func (m *Memory) tryIngest(ctx context.Context, text string, cfg *addConfig) (*A
 }
 
 // CreateInSession stores `text` directly via POST /api/v1/records as an
-// episodic record under the supplied sessionUUID — bypassing m.sessionUUID
-// and any auto-session assignment in /api/v1/ingest.
-//
+// episodic record under the supplied sessionUUID. The session must exist
+// (POST /api/v1/sessions first on session-first servers).
 func (m *Memory) CreateInSession(ctx context.Context, text string, sessionUUID string) (*AddResult, error) {
 	return m.Create(ctx, sessionUUID, text)
 }
@@ -402,6 +439,10 @@ func (m *Memory) UpdateConsolidateIDs(ctx context.Context, ids []int64, consolid
 // defaults of score=5, type="episodic", and the bare container_tag envelope.
 func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) (*AddResult, error) {
 	summary := truncateSummary(text)
+	resolvedSessionID, resolveErr := m.resolveWriteSessionID(cfg)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
 
 	// Apply defaults, then let caller overrides win. score 0 and type "" are
 	// legal explicit values, so we only override when the option was actually
@@ -420,7 +461,7 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 	}
 
 	payload := map[string]interface{}{
-		"uuid":           m.sessionUUID,
+		"uuid":           resolvedSessionID,
 		"type":           recordType,
 		"dimension":      0,
 		"prefix":         "",
@@ -437,19 +478,19 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 		"status":         "saved",
 	}
 
-	respBytes, err := m.conn.Post(ctx, "/api/v1/records", payload)
-	if err != nil {
-		return nil, err
+	respBytes, postErr := m.conn.Post(ctx, "/api/v1/records", payload)
+	if postErr != nil {
+		return nil, postErr
 	}
 
 	var resp recordCreateResponse
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return nil, fmt.Errorf("parsing record response: %w", err)
+	if unmarshalErr := json.Unmarshal(respBytes, &resp); unmarshalErr != nil {
+		return nil, fmt.Errorf("parsing record response: %w", unmarshalErr)
 	}
 
 	return &AddResult{
 		ID:        resp.ID,
-		SessionID: m.sessionUUID,
+		SessionID: resolvedSessionID,
 		Records:   []RecordSummary{{ID: resp.ID, Type: recordType, Summary: summary}},
 		Status:    "ok",
 		Mode:      "oss",
@@ -1393,11 +1434,76 @@ func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string, opt
 // Session management
 // --------------------------------------------------------------------------
 
-// NewSession rotates the session UUID (generates a fresh random suffix).
-// All subsequent Add() calls will be grouped under the new session.
+// CreateSession registers a write session via POST /api/v1/sessions.
 //
-func (m *Memory) NewSession() {
+// Session-first servers reject ingest and record writes until this succeeds.
+// Call once per conversation before Add.
+//
+// Junior Tip [parity with Python/TS/MCP]: omit WithCreateSessionID → server
+// generates a new UUID (empty JSON body). To register a caller-chosen id:
+// NewSession() then CreateSession(ctx, WithCreateSessionID(m.SessionID())).
+//
+func (m *Memory) CreateSession(ctx context.Context, opts ...CreateSessionOption) (string, error) {
+	if m.conn == nil {
+		return "", ErrEmptyAPIKey
+	}
+
+	cfg := &createSessionConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	// Only send session_id when explicitly requested — same as Python/MCP.
+	sessionIDToRegister := strings.TrimSpace(cfg.sessionID)
+
+	payload := map[string]interface{}{}
+	if sessionIDToRegister != "" {
+		payload["session_id"] = sessionIDToRegister
+	}
+	if len(cfg.metadata) > 0 {
+		payload["metadata"] = cfg.metadata
+	}
+
+	respBytes, postErr := m.conn.Post(ctx, "/api/v1/sessions", payload)
+	if postErr != nil {
+		return "", postErr
+	}
+
+	var resp createSessionResponse
+	if unmarshalErr := json.Unmarshal(respBytes, &resp); unmarshalErr != nil {
+		return "", fmt.Errorf("parsing create session response: %w", unmarshalErr)
+	}
+
+	registeredSessionID := resp.SessionID
+	if registeredSessionID == "" {
+		registeredSessionID = sessionIDToRegister
+	}
+	if registeredSessionID == "" {
+		return "", fmt.Errorf("create session: server returned empty session_id")
+	}
+	m.sessionUUID = registeredSessionID
+	m.sessionRegistered = true
+	return registeredSessionID, nil
+}
+
+// OpenSession generates a fresh local session id and registers it (Python open_session).
+// Equivalent to NewSession() then CreateSession(ctx, WithCreateSessionID(...)).
+//
+func (m *Memory) OpenSession(ctx context.Context, opts ...CreateSessionOption) (string, error) {
+	localSessionID := m.NewSession()
+	combinedOpts := append([]CreateSessionOption{WithCreateSessionID(localSessionID)}, opts...)
+	return m.CreateSession(ctx, combinedOpts...)
+}
+
+// NewSession rotates the local session UUID (generates a fresh random suffix).
+// This does NOT register the session on the server — call CreateSession before
+// Add on session-first deployments. Returns the new local id (parity with
+// Python new_session / TypeScript newSession).
+//
+func (m *Memory) NewSession() string {
 	m.sessionUUID = deriveSessionUUID(m.containerTag)
+	m.sessionRegistered = false
+	return m.sessionUUID
 }
 
 // SessionID returns the current session UUID (read-only).

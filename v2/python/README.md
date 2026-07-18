@@ -23,7 +23,7 @@ Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) 
 
 ```bash
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.6/anhurdb-2.0.6-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.11/anhurdb-2.0.11-py3-none-any.whl
 ```
 
 ## Quick Start — Memory (Simple API)
@@ -31,12 +31,18 @@ pip install \
 ```python
 from anhurdb import Memory
 
-async with Memory(api_key="anhur_xxx") as mem:
-    # add() → /ingest: episodic + platform extraction (LLM billed)
-    # create() → /records: one typed record, no extraction LLM
-    await mem.add("I'm a data scientist at Google working on NLP")
+async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
+    # 1) Register a write session (required before ingest/create)
+    session_id = await mem.create_session()
+    # 2) add(mode="ingest") → /ingest: episodic + platform extraction (LLM billed)
+    #    create() → /records: one typed record, no extraction LLM
+    await mem.add(
+        "I'm a data scientist at Google working on NLP",
+        mode="ingest",
+        session_id=session_id,
+    )
 
-    # Search across all sessions
+    # Search across all sessions (reads do not need create_session)
     results = await mem.search("what does this user do?")
     for r in results:
         print(f"{r['summary']} (score: {r['score']:.2f})")
@@ -169,7 +175,9 @@ Memory(
 
 | Method | Description |
 |--------|-------------|
-| `new_session()` | Generate fresh session UUID |
+| `create_session()` | Register a write session (`POST /api/v1/sessions`); omit id → server generates |
+| `open_session()` | Local generate + register (new_session + create_session) |
+| `new_session()` | Local id only — does **not** register |
 | `list_sessions()` | All sessions with stats |
 | `get_session_history(uuid, limit, offset)` | Paginated session history |
 | `get_session_clusters(uuid)` | Thematic clusters |
@@ -179,7 +187,7 @@ Memory(
 | Property | Description |
 |----------|-------------|
 | `session_id` | Current session UUID |
-| `container_tag` | User/agent identifier |
+| `container_tag` | Recall/profile aggregation tag |
 
 ## API Reference — full surface (on `Memory`)
 
@@ -193,7 +201,7 @@ Memory(
 - **Entity**: `search_entities`, `upsert_entity`, `entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
 - **Upload**: `upload_file`, `upload_status`
 - **Temporal**: `supersede`
-- **Session**: `list_sessions`, `get_session_history`, `get_session_clusters`, `new_session`
+- **Session**: `create_session`, `open_session`, `new_session`, `list_sessions`, `get_session_history`, `get_session_clusters`
 - **Profile**: `profile`
 
 ## Query Builder
@@ -229,7 +237,10 @@ Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
 from anhurdb import AnhurError, AnhurAuthError, AnhurQueryError, AnhurConnectionError
 
 try:
-    await mem.add("something")
+    session_id = await mem.create_session()
+    await mem.add("something", mode="ingest", session_id=session_id)
+except ValueError as e:
+    print(f"Client contract: {e}")  # e.g. missing create_session
 except AnhurAuthError:
     print("Invalid API key")
 except AnhurConnectionError:

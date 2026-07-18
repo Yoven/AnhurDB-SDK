@@ -22,7 +22,7 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.4/anhurdb-2.0.4.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.9/anhurdb-2.0.9.tgz
 ```
 
 ## Usage
@@ -159,10 +159,14 @@ await mem.supersede(42, 99);
 ### Session Management
 
 ```typescript
-// Current session
-console.log(mem.sessionId);
+// Register a write session (required before add/create)
+const sessionId = await mem.createSession();
+console.log(mem.sessionId); // server-registered id
 
-// Start new session
+// Local rotate + register in one call
+await mem.openSession();
+
+// Local id only (does NOT register — call createSession after)
 await mem.newSession();
 
 // List all sessions with stats

@@ -125,10 +125,9 @@ class Memory:
     """The one AnhurDB client. Dead-simple to start with, complete underneath.
 
     Handles session management, container tagging, and cloud/OSS fallback
-    automatically (the simple ergonomics) while ALSO exposing every AnhurDB
-    REST endpoint directly on the same object (the full surface). Mirrors the
-    TypeScript ``Memory`` class and Go ``client.Memory`` struct
-    method-for-method.
+    automatically. **Session-first writes:** call ``await create_session()``
+    before ``add()`` / ``create()``. ``container_tag`` aggregates recall/profile
+    only — it is never a session substitute.
 
     Core methods:
         - ``add(text)``    — store a memory
@@ -177,15 +176,12 @@ class Memory:
         else:
             self._container_tag = _derive_container_tag(key)
 
-        # Session UUID: container_tag + UTC timestamp + 6 random hex chars.
-        # timestamp alone (``%Y%m%d-%H%M%S``) has 1-second resolution, so two
-        # Memory clients constructed in the same second under the same
-        # container_tag would derive the SAME session_uuid and cross-write each
-        # other's session. Appending 3 bytes of crypto-random hex
-        # (``secrets.token_hex(3)`` → 6 lowercase hex chars) makes the default
-        # session_uuid effectively unique. Format is byte-for-byte identical to
-        # the Go and TS SDKs: ``<container_tag>-<YYYYMMDD-HHMMSS>-<6 hex>``.
-        self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
+        # Local session id (container_tag + UTC timestamp + 6 random hex).
+        # Junior Tip [sessionRegistered]: a local uuid is NOT enough to write.
+        # create_session() / open_session() flip _session_registered after the
+        # server ledger accepts it. container_tag is never a session fallback.
+        self._session_uuid = self._generate_session_id()
+        self._session_registered = False
 
         # Derived add()/create() issue exactly one request. When a session has
         # no episodic yet, the server returns HTTP 422 ("create an episodic
@@ -221,7 +217,10 @@ class Memory:
 
     @property
     def container_tag(self) -> str:
-        """Container tag identifying this user/agent."""
+        """Container tag for recall/profile aggregation only.
+
+        This is NOT a session identifier and is never substituted for
+        ``session_id`` on write paths."""
         return self._container_tag
 
     # ── Health ─────────────────────────────────────────────────────
@@ -242,61 +241,64 @@ class Memory:
         self,
         text: str,
         *,
+        mode: str = "ingest",
         score: Optional[int] = None,
         type: Optional[MemoryType] = None,
         metadata: Optional[Dict[str, Any]] = None,
         session_id: str = "",
     ) -> Dict[str, Any]:
-        """Store raw text via the ingest write path (default).
+        """Store text in the current session (session-first write contract).
 
-        Agent UX — pick the write path once:
-        - Raw chat/notes/"remember this" → plain ``add(text)`` → ``POST /ingest``
-          (1 episodic now + async satellites; extraction LLM billed).
-        - Already know one typed atom → ``create(...)`` → ``POST /records``
-          (no extraction). MCP: ``ingest_memory`` vs ``create_memory``.
+        Call ``await create_session()`` (or ``await open_session()``) before the
+        first write. ``session_id`` is always sent — from the ``session_id``
+        argument or ``self.session_id``.
 
-        Trap: pinning ``score``, ``type``, or ``metadata`` skips ingest and
-        forces ``/records`` (create path — no extraction). Ingest only accepts
-        ``content`` + ``container_tag`` (+ optional session); those pins would
-        be dropped if sent to ingest, so the SDK routes to records instead.
+        Agent UX — pick the write path explicitly via ``mode``:
+        - ``mode="ingest"`` (default) → ``POST /api/v1/ingest`` with
+          ``content``, ``container_tag``, ``session_id`` (extraction LLM).
+        - ``mode="regular"`` → ``POST /api/v1/records`` (typed create;
+          default type episodic). Use when you need ``score`` / ``type`` /
+          ``metadata`` persisted without extraction.
+
+        When ``mode="ingest"`` and the server returns 404 (OSS), the SDK falls
+        back to ``/records`` automatically.
 
         Args:
-            text:     The text to remember (required, non-empty).
-            score:    Importance 1-10. Setting this forces the create path.
-            type:     Memory type. Setting this forces the create path.
-            metadata: Optional metadata. Setting this forces the create path.
+            text:       The text to remember (required, non-empty).
+            mode:       ``"ingest"`` or ``"regular"``.
+            score:      Importance 1-10 (``mode="regular"`` only).
+            type:       Memory type (``mode="regular"`` only).
+            metadata:   Optional metadata (``mode="regular"`` only).
+            session_id: Override session; defaults to ``self.session_id``.
 
         Returns:
             Dict with ``session_id``, ``records``, and ``mode``
             (``"cloud"`` or ``"oss"``).
 
         Raises:
-            ValueError: If ``text`` is empty.
+            ValueError: If ``text`` is empty or ``mode`` is invalid.
 
         Example::
 
-            # ingest (extraction):
+            await mem.create_session()
             await mem.add("User prefers dark mode")
-            # create path (no extraction) — use create() instead when possible:
-            await mem.add("User prefers dark mode", score=8,
+            await mem.add("Pinned fact", mode="regular", score=8,
                           type=MemoryType.PREFERENCE)"""
         if not text:
             raise ValueError("text cannot be empty")
+        if mode not in ("ingest", "regular"):
+            raise ValueError('mode must be "ingest" or "regular"')
 
-        # When score/type/metadata are explicitly requested, the ingest endpoint
-        # cannot honour them — go directly to the records path which persists
-        # all three. This is the parity contract shared with the Go/TS SDKs.
-        wants_explicit_fields = (
-            score is not None or type is not None or metadata is not None
-        )
+        if mode == "ingest":
+            if self._ingest_available is not False:
+                ingest_result = await self._try_ingest(text, session_id)
+                if ingest_result is not None:
+                    return ingest_result
+            return await self._create_record(
+                text, score, type, metadata, session_id
+            )
 
-        if not wants_explicit_fields and self._ingest_available is not False:
-            result = await self._try_ingest(text, score, type, metadata, session_id)
-            if result is not None:
-                return result
-
-        # Direct record creation — honours score, type, and metadata.
-        return await self._create_record(text, score, type, metadata)
+        return await self._create_record(text, score, type, metadata, session_id)
 
     # ── Memory CRUD ────────────────────────────────────────────────
 
@@ -304,12 +306,13 @@ class Memory:
         """Create exactly one typed record (no extraction).
 
         Agent UX — write path: use when you already know ``type`` + content.
-        For raw text use plain ``add(text)`` / MCP ``ingest_memory`` instead.
-        Hits ``POST /api/v1/records`` — caller supplies ``uuid``, ``type``,
-        ``score``, ``related_ids``, etc. No satellite LLM job.
+        For raw text use ``add(text, mode="ingest")`` / MCP ``ingest_memory``.
+        Hits ``POST /api/v1/records`` — caller supplies ``session_id`` (or
+        legacy ``uuid``), ``type``, ``score``, ``related_ids``, etc.
 
         Args:
-            req: ``CreateRequest`` with at minimum ``uuid`` and ``content``.
+            req: ``CreateRequest`` with ``session_id`` (preferred) or ``uuid``,
+                plus ``content``.
 
         Returns:
             Server response dict (the created record). Includes ``id``."""
@@ -317,6 +320,15 @@ class Memory:
         # the Go/TS create paths) so records stay visible to container-scoped
         # search/profile.
         payload = req.model_dump(exclude_none=True)
+        session_id = (req.session_id or req.uuid or "").strip()
+        if not session_id:
+            raise ValueError(
+                "session_id is required — create a session first "
+                "(await create_session())"
+            )
+        # Prefer session_id on the wire; keep uuid for older servers.
+        payload["session_id"] = session_id
+        payload["uuid"] = session_id
         # Seed weight from score/10 when the caller did not set weight, matching
         # add()/_create_record and the Go/TS create defaults.
         if "weight" not in req.model_fields_set:
@@ -949,18 +961,103 @@ class Memory:
 
     # ── Session Management ─────────────────────────────────────────
 
-    def new_session(self) -> str:
-        """Start a new session (generates a fresh UUID).
+    def _generate_session_id(self) -> str:
+        """Generate a local session id (does not register on the server).
 
-        All subsequent ``add()`` calls will be grouped under this session.
+        Format: ``<container_tag>-<YYYYMMDD-HHMMSS>-<6hex>``, byte-for-byte
+        identical to Go ``NewSession`` and TS ``newSession``."""
+        return (
+            f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
+        )
+
+    def _resolve_write_session_id(self, session_id: str = "") -> str:
+        """Return the session id to attach to write payloads.
+
+        Explicit ``session_id`` is passed through (server validates registration).
+        Otherwise the client session must already be registered via
+        ``create_session`` / ``open_session``.
+        """
+        explicit_session_id = (session_id or "").strip()
+        if explicit_session_id:
+            return explicit_session_id
+        if not self._session_registered or not self._session_uuid:
+            raise ValueError(
+                "session_id is required — create a session first "
+                "(POST /api/v1/sessions)"
+            )
+        return self._session_uuid
+
+    async def create_session(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Register a write session with the server (required before writes).
+
+        Posts ``POST /api/v1/sessions`` with optional ``session_id`` / ``metadata``.
+        When ``session_id`` is omitted the server generates one (same as TypeScript
+        ``createSession()``, Go ``CreateSession``, MCP ``create_session``).
+        Sets ``self.session_id`` from the response.
+
+        To register a caller-chosen id after ``new_session()``::
+
+            await mem.create_session(session_id=mem.new_session())
+
+        Or use ``open_session()`` (local generate + register in one call).
+
+        Args:
+            metadata:   Optional JSON object copied onto session records.
+            session_id: Optional uuid to register (e.g. from ``new_session()``).
 
         Returns:
-            The new session UUID."""
-        # default session_uuid — <container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 random hex>.
-        # The random suffix (secrets.token_hex(3)) is what stops two rotations in the
-        # same UTC second from colliding onto one session (cross-contamination), and it
-        # keeps this path byte-for-byte with Go NewSession and TS newSession.
-        self._session_uuid = f"{self._container_tag}-{_utc_timestamp()}-{secrets.token_hex(3)}"
+            The registered session id."""
+        payload: Dict[str, Any] = {}
+        if session_id:
+            payload["session_id"] = session_id
+        if metadata is not None:
+            payload["metadata"] = metadata
+
+        response_data = await self._connection.post(
+            "/api/v1/sessions",
+            payload,
+        )
+        registered_session_id = str(response_data.get("session_id", ""))
+        if not registered_session_id:
+            raise AnhurQueryError(
+                "create_session: server returned empty session_id"
+            )
+        self._session_uuid = registered_session_id
+        self._session_registered = True
+        return registered_session_id
+
+    async def open_session(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Generate a fresh session id locally and register it on the server.
+
+        Convenience wrapper around ``new_session()`` + ``create_session()``.
+
+        Returns:
+            The registered session id."""
+        local_session_id = self._generate_session_id()
+        return await self.create_session(
+            metadata=metadata,
+            session_id=local_session_id,
+        )
+
+    def new_session(self) -> str:
+        """Generate a fresh local session id (does NOT register on the server).
+
+        Prefer ``await create_session()`` or ``await open_session()`` before
+        writes. To reuse this id, pass it to ``create_session(session_id=...)``:
+
+        ``await mem.create_session(session_id=mem.new_session())``
+
+        Returns:
+            The new local session UUID."""
+        self._session_uuid = self._generate_session_id()
+        self._session_registered = False
         return self._session_uuid
 
     async def list_sessions(
@@ -1209,7 +1306,8 @@ class Memory:
         Args:
             filename:   Original filename (used for format detection).
             content:    Raw file bytes.
-            session_id: Optional session UUID to associate with.
+            session_id: Session UUID from ``create_session()`` (required for
+                chat-mode uploads; server returns 400 if missing).
 
         Returns:
             Dict with ``record_id``, ``uuid``, ``filename``, ``status``.
@@ -1481,8 +1579,10 @@ class Memory:
         text: str,
         session_uuid: str,
     ) -> Dict[str, Any]:
-        """Store ``text`` directly as an episodic record under ``session_uuid``,
-        bypassing the auto-session assignment of the ingest path.
+        """Store ``text`` directly as an episodic record under ``session_uuid``.
+
+        The session must be registered via ``create_session()`` / POST
+        ``/api/v1/sessions`` before calling this on session-first servers.
 
         Args:
             text:         Record text (stored in both summary and content).
@@ -1583,18 +1683,18 @@ class Memory:
     async def _try_ingest(
         self,
         text: str,
-        score: Optional[int],
-        mem_type: Optional[MemoryType],
-        metadata: Optional[Dict[str, Any]],
         session_id: str = "",
     ) -> Optional[Dict[str, Any]]:
         """Attempt cloud ingest at ``/api/v1/ingest``.
 
-        Returns None if the endpoint doesn't exist (404), allowing the
-        caller to fall back to direct record creation."""
-        payload = {"content": text, "container_tag": self._container_tag}
-        if session_id:
-            payload["session_id"] = session_id
+        Always sends ``session_id``. Returns None if the endpoint doesn't
+        exist (404), allowing the caller to fall back to direct record creation."""
+        effective_session_id = self._resolve_write_session_id(session_id)
+        payload = {
+            "content": text,
+            "container_tag": self._container_tag,
+            "session_id": effective_session_id,
+        }
 
         try:
             data = await self._connection.post("/api/v1/ingest", payload)
@@ -1604,7 +1704,7 @@ class Memory:
                                              "type": "episodic",
                                              "summary": text[:200]}])
             return {
-                "session_id": self._session_uuid,
+                "session_id": data.get("session_id", effective_session_id),
                 "records": records,
                 "mode": "cloud",
             }
@@ -1620,6 +1720,7 @@ class Memory:
         score: Optional[int],
         mem_type: Optional[MemoryType],
         metadata: Optional[Dict[str, Any]],
+        session_id: str = "",
     ) -> Dict[str, Any]:
         """Create a record directly via ``POST /api/v1/records``.
 
@@ -1631,15 +1732,10 @@ class Memory:
 
         effective_score = 5 if score is None else score
         effective_type = MemoryType.EPISODIC if mem_type is None else mem_type
+        effective_session_id = self._resolve_write_session_id(session_id)
 
-        # longer probes/creates a session anchor before writing. It issues ONE
-        # request and sends NO synthetic related_ids link; the server auto-links
-        # the REAL episodic anchor (server auto-link on create),
-        # Rule 3a). On a session that genuinely has no episodic yet, the server
-        # returns an honest HTTP 422 that surfaces to the caller as a typed
-        # AnhurQueryError (write the episodic first). Fabricating an anchor from
         req = CreateRequest(
-            uuid=self._session_uuid,
+            uuid=effective_session_id,
             type=effective_type,
             summary=summary,
             content=text,
@@ -1654,7 +1750,7 @@ class Memory:
         )
 
         return {
-            "session_id": self._session_uuid,
+            "session_id": effective_session_id,
             "records": [{"id": data.get("id", 0), "type": effective_type.value,
                           "summary": summary}],
             "mode": "oss",

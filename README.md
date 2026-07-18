@@ -5,8 +5,13 @@
 ```python
 from anhurdb import Memory
 
-async with Memory(api_key="anhur_xxx") as mem:
-    await mem.add("I'm a data scientist at Google working on NLP")
+async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
+    session_id = await mem.create_session()
+    await mem.add(
+        "I'm a data scientist at Google working on NLP",
+        mode="ingest",
+        session_id=session_id,
+    )
     context = await mem.search("what does this user do?")
 ```
 
@@ -23,14 +28,14 @@ Packages ship on **[GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releas
 ```bash
 # Python — wheel from the Python SDK release assets
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.6/anhurdb-2.0.6-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.11/anhurdb-2.0.11-py3-none-any.whl
 
 # TypeScript — tarball from the TypeScript SDK release assets
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.4/anhurdb-2.0.4.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.9/anhurdb-2.0.9.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.5
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.10
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
@@ -85,7 +90,8 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `add(text)` | **Default raw write:** episodic + async extraction (LLM+embed billed). Pins → create path | POST /api/v1/ingest |
+| `create_session()` | Register a write session (required before ingest/create) | POST /api/v1/sessions |
+| `add(text, mode="ingest")` | **Default raw write:** episodic + async extraction (LLM+embed billed). Requires session. Pins → create path | POST /api/v1/ingest |
 | `create(...)` | **Typed atom only:** one record, no extraction (embed only) | POST /api/v1/records |
 | `search(query, scope=sessions)` | Hybrid plane search — query is FTS `text` (prefer `smart_search` for conceptual RAG) | POST /api/v1/search |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
@@ -165,9 +171,9 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `new_session()` | Start a fresh session UUID | — |
+| `create_session()` | Register a write session (required before ingest/create/upload) | POST /api/v1/sessions |
 | `session_id` | Current session ID | — |
-| `container_tag` | User/agent identifier (derived from API key) | — |
+| `container_tag` | Recall/profile aggregation tag (derived from API key or `user_id`) | — |
 | `list_sessions()` | List all sessions with stats | GET /api/v1/sessions/stats |
 | `get_session_history(uuid)` | Paginated full-text session history | GET /api/v1/sessions/{uuid}/history |
 | `get_session_clusters(uuid)` | Thematic clusters within a session | GET /api/v1/sessions/{uuid}/clusters |
@@ -182,8 +188,9 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 from anhurdb import Memory
 
 async with Memory(api_key="anhur_xxx") as mem:
-    # Core
-    result = await mem.add("I'm a senior engineer. I prefer Go over Python.")
+    session_id = await mem.create_session()
+    # Core — session-first writes
+    result = await mem.add("I'm a senior engineer. I prefer Go over Python.", mode="ingest", session_id=session_id)
     results = await mem.search("what language does this user prefer?")
     profile = await mem.profile()
 
@@ -218,11 +225,11 @@ async with Memory(api_key="anhur_xxx") as mem:
     # Temporal versioning
     await mem.supersede(old_id=42, new_id=99)
 
-    # Sessions
+    # Sessions — create_session registers on the server (session-first writes)
+    session_id = await mem.create_session()
     sessions = await mem.list_sessions()
-    history = await mem.get_session_history("session-uuid", limit=50)
-    clusters = await mem.get_session_clusters("session-uuid")
-    mem.new_session()
+    history = await mem.get_session_history(session_id, limit=50)
+    clusters = await mem.get_session_clusters(session_id)
     print(mem.session_id, mem.container_tag)
 
     # Mutate
@@ -240,10 +247,14 @@ async with Memory(api_key="anhur_xxx") as mem:
 ```typescript
 import { Memory } from 'anhurdb';
 
-const mem = new Memory({ apiKey: 'anhur_xxx' });
+const mem = new Memory({ apiKey: 'anhur_xxx', url: 'https://anhurdb.yoven.ai' });
 
-// Core
-const result = await mem.add("I'm a senior engineer.");
+// Core — session-first writes
+const sessionId = await mem.createSession();
+const result = await mem.add("I'm a senior engineer.", {
+  mode: 'ingest',
+  sessionId,
+});
 const results = await mem.search("what language?");
 const profile = await mem.profile();
 
@@ -282,6 +293,7 @@ await mem.supersede(42, 99);
 const sessions = await mem.listSessions();
 const history = await mem.getSessionHistory("session-uuid");
 const clusters = await mem.getSessionClusters("session-uuid");
+// Local rotate only — register with createSession({ sessionId }) or openSession()
 await mem.newSession();
 
 // AST query (QueryBuilder)
@@ -313,12 +325,17 @@ func main() {
     ctx := context.Background()
 
     // Connect
-    mem := anhurdb.NewMemory("anhur_xxx")
-    // or: anhurdb.NewMemory("key", anhurdb.WithURL("http://localhost:8000"))
+    mem := anhurdb.NewMemory("anhur_xxx",
+        anhurdb.WithURL("https://anhurdb.yoven.ai"),
+    )
     // or: anhurdb.NewMemory("key", anhurdb.WithUserID("user-123"))
 
-    // Core
-    result, _ := mem.Add(ctx, "I'm a senior engineer.")
+    // Core — session-first writes
+    sessionID, _ := mem.CreateSession(ctx)
+    result, _ := mem.Add(ctx, "I'm a senior engineer.",
+        anhurdb.WithMode("ingest"),
+        anhurdb.WithSessionID(sessionID),
+    )
     hits, _ := mem.Search(ctx, "what language?")
     profile, _ := mem.Profile(ctx)
 
@@ -358,7 +375,8 @@ func main() {
     sessions, _ := mem.ListSessions(ctx)
     history, _ := mem.GetSessionHistory(ctx, "session-uuid", 50, 0)
     clusters, _ := mem.GetSessionClusters(ctx, "session-uuid")
-    mem.NewSession()
+    // Local rotate only — register with CreateSession(WithCreateSessionID) or OpenSession
+    _ = mem.NewSession()
     fmt.Println(mem.SessionID(), mem.ContainerTag())
 
     // AST query (NewQuery fluent builder)
@@ -396,7 +414,8 @@ Then point the SDK to your local instance:
 
 ```python
 async with Memory(url="http://localhost:8000", api_key="your-local-key") as mem:
-    await mem.add("hello")
+    session_id = await mem.create_session()
+    await mem.add("hello", mode="ingest", session_id=session_id)
 ```
 
 OSS includes the REST API, search, and graph features. Cloud adds auto-extraction,

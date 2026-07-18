@@ -57,7 +57,9 @@ API. This document is the public contract; deviations are bugs.
 | append_main_ids | `AppendMainIDs` / `append_main_ids` / `appendMainIds` | `PATCH /api/v1/records/append-main-ids` |
 | append_main_links | `AppendMainLinks` / `append_main_links` / `appendMainLinks` | `PATCH /api/v1/records/append-main-ids` (batch) |
 | append_related_ids | `AppendRelatedIDs` / `append_related_ids` / `appendRelatedIds` | `PATCH /api/v1/records/append-related-ids` |
-| new_session | `NewSession` / `new_session` / `newSession` | Client-side session rotation |
+| create_session | `CreateSession` / `create_session` / `createSession` | `POST /api/v1/sessions` (required before writes). Omit id → server generates |
+| open_session | `OpenSession` / `open_session` / `openSession` | Local generate + register (`new_session` then `create_session`) |
+| new_session | `NewSession` / `new_session` / `newSession` | Client-side id rotation only — does **not** register; writes fail until create/open_session |
 | upload_file | `UploadFile` / `upload_file` / `uploadFile` | `POST /api/v1/upload` |
 | upload_status | `UploadStatus` / `upload_status` / `uploadStatus` | `GET /api/v1/upload/{id}/status` |
 | list_entities | `ListEntities` / `list_entities` / `listEntities` | `GET /api/v1/entities/list` |
@@ -79,7 +81,7 @@ API. This document is the public contract; deviations are bugs.
 | `search_by_type` | Tenant-store type index only — **no `scope` / not a Shared Data plane switch**. Use `search_*` helpers or `scope=` for specialty docs. |
 | `/search/global` | Server deprecated alias only — SDKs must not call it. |
 | `count_by_type` | Implemented by paging the manifest. |
-| `add` vs `create` | **Write paths:** plain `add(text)` → `POST /ingest` (episodic + async extraction, LLM billed). `create(...)` → `POST /records` (one typed record, no extraction). **Trap:** `add` with pinned `type`/`score`/`metadata` skips ingest and hits `/records`. Never both for the same turn. |
+| `add` vs `create` | **Session-first:** `create_session` (or `open_session`) before any write. **Write paths:** `add(text, mode="ingest")` → `POST /ingest` (episodic + async extraction, LLM billed). `create(...)` → `POST /records` (one typed record, no extraction). **Trap:** `add` with pinned `type`/`score`/`metadata` skips ingest and hits `/records`. Never both for the same turn. Unregistered client session → fail loud before HTTP. |
 | `create` | Python uses `CreateRequest`; Go uses options; TypeScript uses `CreateOptions`. |
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |

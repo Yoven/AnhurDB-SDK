@@ -16,6 +16,7 @@ import type {
   BatchUpdateResult,
   ContextResult,
   CreateOptions,
+  CreateSessionOptions,
   EntityGraphResult,
   EntityRecord,
   EntityTimelineResult,
@@ -161,6 +162,8 @@ export class Memory {
   private readonly client: HttpClient;
   private readonly containerTag: string;
   private sessionUuid: string;
+  /** True only after a successful createSession/openSession (server ledger). */
+  private sessionRegistered = false;
   private ingestAvailable: boolean | null = null;
   private tagReady: Promise<void>;
 
@@ -237,22 +240,26 @@ export class Memory {
   /**
    * Store raw text via the ingest write path (default).
    *
-   * Agent UX — pick the write path once:
-   * - Raw chat/notes → plain `add(text)` → `POST /ingest` (episodic + async
-   *   satellites; extraction LLM billed). MCP: `ingest_memory`.
-   * - Already know one typed atom → {@link create} → `POST /records`
-   *   (no extraction). MCP: `create_memory`.
+   * Session-first servers require {@link createSession} before add succeeds.
    *
-   * Trap: pinning `score`, `type`, or `metadata` skips ingest and forces
-   * `/records` (create path — no extraction). Plain `add(text)` prefers
-   * ingest; 404 falls back to `/records` (OSS).
+   * Agent UX — pick the write path once:
+   * - Raw chat/notes → plain `add(text)` or `{ mode: "ingest" }` →
+   *   `POST /ingest` (episodic + async satellites; extraction LLM billed).
+   *   MCP: `ingest_memory`.
+   * - Direct episodic record → `{ mode: "regular" }` or {@link create} →
+   *   `POST /records` (no extraction). MCP: `create_memory`.
+   *
+   * Trap: pinning `score`, `type`, or `metadata` also forces `/records` on
+   * ingest mode. Plain `add(text)` prefers ingest; 404 falls back to
+   * `/records` (OSS).
    *
    * @param text    - The text to remember.
-   * @param options - Optional score/type/metadata (any pin → create path).
+   * @param options - Optional mode, score/type/metadata, or session override.
    * @returns A result containing the session ID and created records.
    *
    * @example
    * ```ts
+   * await mem.createSession();
    * const result = await mem.add("I'm a data scientist at Google");
    * console.log(result.sessionId, result.records);
    * ```
@@ -263,6 +270,9 @@ export class Memory {
     }
     await this.tagReady;
 
+    const writeMode = options?.mode ?? "ingest";
+    const resolvedSessionId = this.resolveWriteSessionId(options?.sessionId);
+
     // read the RAW caller intent (`!== undefined`) before `?? 5` / `??
     // "episodic"` collapse the unset-ness — otherwise every add would look
     // "pinned" and never use the ingest pipeline. See the doc-comment above.
@@ -271,6 +281,7 @@ export class Memory {
     // metadata, so a metadata-only add routed to /ingest would lose it. Go and
     // Python route metadata to /records for the same reason — the three agree.
     const forceRecordsPath =
+      writeMode === "regular" ||
       options?.score !== undefined ||
       options?.type !== undefined ||
       options?.metadata !== undefined;
@@ -279,16 +290,22 @@ export class Memory {
     const type: MemoryType = options?.type ?? "episodic";
     const metadata = options?.metadata;
 
-    // Try cloud ingest first (has auto-embedding) UNLESS the caller pinned
-    // the records path that persists them verbatim.
-    if (!forceRecordsPath && this.ingestAvailable !== false) {
-      const result = await this.tryIngest(text, options?.sessionId);
+    if (forceRecordsPath) {
+      return this.createRecord(text, score, type, metadata, {
+        sessionUuid: resolvedSessionId,
+      });
+    }
+
+    // Try cloud ingest first (has auto-embedding).
+    if (this.ingestAvailable !== false) {
+      const result = await this.tryIngest(text, resolvedSessionId);
       if (result !== null) return result;
     }
 
-    // Fallback: direct record creation (OSS / self-hosted), OR the
-    // score/type-pinned path that ingest cannot honour.
-    return this.createRecord(text, score, type, metadata);
+    // Fallback: direct record creation (OSS / self-hosted).
+    return this.createRecord(text, score, type, metadata, {
+      sessionUuid: resolvedSessionId,
+    });
   }
 
   // ── search() — find relevant memories ───────────────────────
@@ -901,7 +918,62 @@ export class Memory {
   // ══════════════════════════════════════════════════════════════
 
   /**
-   * Start a new session (generates a fresh UUID).
+   * Register a write session via POST /api/v1/sessions.
+   *
+   * Session-first servers reject ingest and record writes until this succeeds.
+   * Call once per conversation before {@link add}.
+   *
+   * Junior Tip [parity with Python/Go/MCP]: omit `sessionId` → server generates
+   * a new UUID. To register a caller-chosen id (e.g. after {@link newSession}):
+   * `await mem.createSession({ sessionId: await mem.newSession() })`.
+   *
+   * @returns The registered session id (also stored on the client).
+   */
+  async createSession(options?: CreateSessionOptions): Promise<string> {
+    await this.tagReady;
+
+    // Only send session_id when the caller explicitly chose one. Omitting it
+    // matches Python create_session() / MCP create_session / REST {} body.
+    const sessionIdToRegister = options?.sessionId?.trim() || "";
+    const payload: Record<string, unknown> = {};
+    if (sessionIdToRegister) {
+      payload.session_id = sessionIdToRegister;
+    }
+    if (options?.metadata) {
+      payload.metadata = options.metadata;
+    }
+
+    const data = await this.client.post<{ session_id?: string }>(
+      "/api/v1/sessions",
+      payload);
+
+    const registeredSessionId = data.session_id ?? sessionIdToRegister;
+    if (!registeredSessionId) {
+      throw new Error("createSession: server returned empty session_id");
+    }
+    this.sessionUuid = registeredSessionId;
+    this.sessionRegistered = true;
+    return registeredSessionId;
+  }
+
+  /**
+   * Generate a fresh local session id and register it (Python `open_session`).
+   *
+   * Equivalent to `createSession({ sessionId: await newSession() })`.
+   */
+  async openSession(options?: { metadata?: Record<string, unknown> }): Promise<string> {
+    const localSessionId = await this.newSession();
+    return this.createSession({
+      sessionId: localSessionId,
+      metadata: options?.metadata,
+    });
+  }
+
+  /**
+   * Start a new local session (generates a fresh UUID).
+   *
+   * Does NOT register the session on the server — call {@link createSession}
+   * before {@link add} on session-first deployments.
    *
    * @returns The new session ID.
    */
@@ -911,6 +983,7 @@ export class Memory {
     // suffix (randomHexSuffix) stops two rotations in the same UTC second from colliding
     // onto one session, byte-for-byte with Python new_session and Go NewSession.
     this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
+    this.sessionRegistered = false;
     return this.sessionUuid;
   }
 
@@ -1185,6 +1258,23 @@ export class Memory {
   }
 
   /**
+   * Resolve session id for writes. Explicit override is passed through;
+   * otherwise require a prior createSession/openSession.
+   */
+  private resolveWriteSessionId(explicitSessionId?: string): string {
+    const trimmedExplicit = explicitSessionId?.trim() ?? "";
+    if (trimmedExplicit) {
+      return trimmedExplicit;
+    }
+    if (!this.sessionRegistered || !this.sessionUuid) {
+      throw new Error(
+        "session_id is required — create a session first (POST /api/v1/sessions)",
+      );
+    }
+    return this.sessionUuid;
+  }
+
+  /**
    * Create exactly one typed record via `POST /api/v1/records` (no extraction).
    *
    * Agent UX — write path: use when you already know `type` + content.
@@ -1207,7 +1297,9 @@ export class Memory {
     const type: MemoryType = options?.type ?? "episodic";
     const score = options?.score ?? 5;
     return this.createRecord(text, score, type, options?.metadata, {
-      sessionUuid: options?.sessionUuid,
+      sessionUuid: this.resolveWriteSessionId(
+        options?.sessionId ?? options?.sessionUuid,
+      ),
       relatedIds: options?.relatedIds,
       validFrom: options?.validFrom,
       validUntil: options?.validUntil,
@@ -1229,12 +1321,11 @@ export class Memory {
   }
 
   /**
-   * Store `text` as an episodic record under a CALLER-OWNED session uuid,
-   * bypassing the auto-session assignment of the ingest path.
+   * Store `text` as an episodic record under a caller-owned session uuid.
    *
    * Python `create_in_session`. Metadata is wrapped through the canonical
-   * JSON envelope to avoid the container_tag corruption bug. For full-fidelity
-   * type/score/related_ids/valid_from, use {@link create} instead.
+   * JSON envelope to avoid the container_tag corruption bug. Session must be
+   * registered via {@link createSession} first on session-first servers.
    *
    * @param text        - Record text (stored in summary + content).
    * @param sessionUuid - Session UUID to place the record under (required).
@@ -1522,17 +1613,16 @@ export class Memory {
   private async tryIngest(
     text: string,
     sessionId?: string): Promise<AddResult | null> {
-    // Ingest accepts only content + container_tag (+ optional session_id).
-    // score/type/metadata are intentionally omitted — the server drops them on
-    // this path. Callers that pin those fields take the /records path instead
-    // (see add() forceRecordsPath), matching Go and Python.
+    const resolvedSessionId = sessionId ?? this.sessionUuid;
+    // Ingest accepts content + container_tag + required session_id on
+    // session-first servers. score/type/metadata are intentionally omitted —
+    // the server drops them on this path. Callers that pin those fields take
+    // the /records path instead (see add() forceRecordsPath).
     const payload: IngestPayload = {
       content: text,
       container_tag: this.containerTag,
+      session_id: resolvedSessionId,
     };
-    if (sessionId) {
-      payload.session_id = sessionId;
-    }
 
     try {
       const data = await this.client.post<{
@@ -1551,11 +1641,11 @@ export class Memory {
       ];
 
       return {
-        sessionId: this.sessionUuid,
-        records: records.map((r) => ({
-          id: r.id,
-          type: (r.type ?? "episodic") as MemoryType,
-          summary: r.summary ?? this.truncateSummary(text),
+        sessionId: resolvedSessionId,
+        records: records.map((recordRow) => ({
+          id: recordRow.id,
+          type: (recordRow.type ?? "episodic") as MemoryType,
+          summary: recordRow.summary ?? this.truncateSummary(text),
         })),
         mode: "cloud",
       };

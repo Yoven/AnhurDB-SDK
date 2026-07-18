@@ -81,6 +81,12 @@ export interface AddOptions {
   /** Memory type (default "episodic"). */
   type?: MemoryType;
   /**
+   * Write path: `ingest` (POST /api/v1/ingest — default) or `regular`
+   * (POST /api/v1/records as episodic). Session-first servers require
+   * {@link Memory.createSession} before either path succeeds.
+   */
+  mode?: "ingest" | "regular";
+  /**
    * Caller-supplied metadata.
    *
    * three SDKs expose the identical capability — `add(text, {score, type,
@@ -94,13 +100,18 @@ export interface AddOptions {
    * Pins the SESSION (uuid) the ingested record lands in. The tenant comes from
    * the API key; the session is the caller's unit of conversation.
    *
-   * route used to hardcode the episodic session to the container_tag, collapsing
-   * every add into ONE giant session and breaking the per-session model (one
-   * consolidated per session, anchored at its first episodic). With `sessionId`
-   * each conversation is its own session while recall still scopes to the tenant.
-   * Omit = the server keeps the backward-compatible container_tag-as-session.
+   * Omit to use the client's current sessionUuid (from constructor, newSession,
+   * or createSession). Writes require createSession on session-first servers.
    */
   sessionId?: string;
+}
+
+/** Options for `Memory.createSession()`. */
+export interface CreateSessionOptions {
+  /** Session uuid to register. Omit to use the client's current sessionUuid. */
+  sessionId?: string;
+  /** Optional session-level metadata copied onto every record in this session. */
+  metadata?: Record<string, unknown>;
 }
 
 /** A single record descriptor returned inside `AddResult`. */
@@ -370,15 +381,15 @@ export interface BatchUpdateResult {
 /**
  * Payload sent to POST /api/v1/ingest (cloud mode).
  *
- * Wire contract is exactly `content` + `container_tag` (+ optional
- * `session_id`). Callers that pin score/type/metadata use `/api/v1/records`
- * instead — matching Go and Python.
+ * Wire contract: `content` + `container_tag` + required `session_id`.
+ * Create the session first via POST /api/v1/sessions. Callers that pin
+ * score/type/metadata use `/api/v1/records` instead — matching Go and Python.
  */
 export interface IngestPayload {
   content: string;
   container_tag: string;
-  /** Pins the record's session (uuid) to the caller's conversation; empty = container_tag default. */
-  session_id?: string;
+  /** Session UUID from POST /api/v1/sessions — required on every ingest. */
+  session_id: string;
 }
 
 /** Payload sent to POST /api/v1/records (OSS fallback + full-fidelity create). */
@@ -635,6 +646,8 @@ export interface GroundingResult {
 export interface CreateOptions {
   /** Session UUID to place the record under. Defaults to the current session. */
   sessionUuid?: string;
+  /** Alias for sessionUuid (same meaning as ingest add options.sessionId). */
+  sessionId?: string;
   /** Memory type (default "episodic"). Written verbatim. */
   type?: MemoryType;
   /** Importance rating 1-10 (default 5). Written verbatim. */

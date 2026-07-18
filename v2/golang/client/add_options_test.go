@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,6 +80,7 @@ func TestAddForwardsScoreTypeMetadataOSS(t *testing.T) {
 
 	mem := NewMemory("k", WithURL(server.URL))
 	result, err := mem.Add(context.Background(), "hello",
+		WithSessionID("test-sess"),
 		WithScore(9),
 		WithType("semantic"),
 		WithMetadata(map[string]interface{}{"source": "import", "lang": "go"}),
@@ -123,7 +125,7 @@ func TestAddDefaultsBackwardCompatible(t *testing.T) {
 	defer server.Close()
 
 	mem := NewMemory("k", WithURL(server.URL))
-	if _, err := mem.Add(context.Background(), "hi"); err != nil {
+	if _, err := mem.Add(context.Background(), "hi", WithSessionID("test-sess")); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 	if captured["score"] != float64(5) {
@@ -151,12 +153,170 @@ func TestAddDoesNotRetryTransient(t *testing.T) {
 	defer server.Close()
 
 	mem := NewMemory("k", WithURL(server.URL))
-	if _, err := mem.Add(context.Background(), "x"); err == nil {
+	if _, err := mem.Add(context.Background(), "x", WithSessionID("test-sess")); err == nil {
 		t.Fatal("expected the 500 error to surface immediately, got nil")
 	}
 	// One ingest-404 probe caches unavailability, then a SINGLE records POST. No
 	// retry loop means the failing write is not re-sent by the SDK.
 	if recordCalls != 1 {
 		t.Fatalf("SDK must not retry; expected 1 record-create call, got %d", recordCalls)
+	}
+}
+
+// TestCreateSessionOmitsSessionIDLetsServerGenerate verifies POST /api/v1/sessions
+// with no WithCreateSessionID sends an empty/omitted session_id (server generates),
+// matching Python create_session() / MCP create_session / REST {}.
+func TestCreateSessionOmitsSessionIDLetsServerGenerate(t *testing.T) {
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/sessions" || request.Method != http.MethodPost {
+			http.NotFound(responseWriter, request)
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(body, &captured)
+		io.WriteString(responseWriter, `{"session_id":"registered-sess-1","metadata":{}}`)
+	}))
+	defer server.Close()
+
+	mem := NewMemory("k", WithURL(server.URL))
+	registeredSessionID, err := mem.CreateSession(context.Background())
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if _, hasSessionID := captured["session_id"]; hasSessionID {
+		t.Fatalf("omit WithCreateSessionID must not send session_id; got %v", captured["session_id"])
+	}
+	if registeredSessionID != "registered-sess-1" {
+		t.Fatalf("expected registered id registered-sess-1, got %q", registeredSessionID)
+	}
+	if mem.SessionID() != "registered-sess-1" {
+		t.Fatalf("client sessionUUID not updated: %q", mem.SessionID())
+	}
+}
+
+// TestCreateSessionWithExplicitIDRegistersCallerUUID verifies WithCreateSessionID
+// forwards the caller-chosen id (NewSession → CreateSession pattern).
+func TestCreateSessionWithExplicitIDRegistersCallerUUID(t *testing.T) {
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/sessions" || request.Method != http.MethodPost {
+			http.NotFound(responseWriter, request)
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(body, &captured)
+		chosenSessionID, _ := captured["session_id"].(string)
+		io.WriteString(responseWriter, fmt.Sprintf(`{"session_id":%q,"metadata":{}}`, chosenSessionID))
+	}))
+	defer server.Close()
+
+	mem := NewMemory("k", WithURL(server.URL))
+	mem.NewSession()
+	localSessionID := mem.SessionID()
+	registeredSessionID, err := mem.CreateSession(context.Background(), WithCreateSessionID(localSessionID))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if captured["session_id"] != localSessionID {
+		t.Fatalf("expected session_id %q in payload, got %v", localSessionID, captured["session_id"])
+	}
+	if registeredSessionID != localSessionID {
+		t.Fatalf("expected registered id %q, got %q", localSessionID, registeredSessionID)
+	}
+}
+
+// TestAddWithoutCreateSessionFailsLoud verifies session-first: Add before
+// CreateSession does not send an unregistered local uuid.
+func TestAddWithoutCreateSessionFailsLoud(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		t.Fatalf("unexpected HTTP call before CreateSession: %s %s", request.Method, request.URL.Path)
+	}))
+	defer server.Close()
+
+	mem := NewMemory("k", WithURL(server.URL))
+	_, err := mem.Add(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected Add without CreateSession to fail")
+	}
+	if !strings.Contains(err.Error(), "create a session first") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestTryIngestAlwaysSendsSessionID verifies ingest payloads always include
+// session_id after CreateSession (client default or WithSessionID override).
+func TestTryIngestAlwaysSendsSessionID(t *testing.T) {
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/v1/sessions" {
+			io.WriteString(responseWriter, `{"session_id":"registered-sess","metadata":{}}`)
+			return
+		}
+		if !strings.HasSuffix(request.URL.Path, "/ingest") {
+			http.NotFound(responseWriter, request)
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(body, &captured)
+		io.WriteString(responseWriter, `{"id":9,"records":[{"id":9,"type":"episodic","summary":"hi"}]}`)
+	}))
+	defer server.Close()
+
+	mem := NewMemory("k", WithURL(server.URL))
+	if _, err := mem.CreateSession(context.Background()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if _, err := mem.Add(context.Background(), "hi"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if captured["session_id"] != mem.SessionID() {
+		t.Fatalf("ingest must always send session_id; got %v want %q", captured["session_id"], mem.SessionID())
+	}
+
+	captured = nil
+	overrideSessionID := "override-session-42"
+	if _, err := mem.Add(context.Background(), "again", WithSessionID(overrideSessionID)); err != nil {
+		t.Fatalf("Add with WithSessionID failed: %v", err)
+	}
+	if captured["session_id"] != overrideSessionID {
+		t.Fatalf("WithSessionID override not forwarded: got %v", captured["session_id"])
+	}
+}
+
+// TestAddWithModeRegularUsesRecordsPath verifies WithMode("regular") skips ingest
+// even when ingest is available.
+func TestAddWithModeRegularUsesRecordsPath(t *testing.T) {
+	ingestCalls := 0
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/ingest") {
+			ingestCalls++
+			io.WriteString(responseWriter, `{"id":1}`)
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(body, &captured)
+		io.WriteString(responseWriter, `{"id":55}`)
+	}))
+	defer server.Close()
+
+	mem := NewMemory("k", WithURL(server.URL))
+	// Regular mode still requires a registered session (or explicit WithSessionID).
+	result, err := mem.Add(context.Background(), "direct episodic",
+		WithMode("regular"),
+		WithSessionID("explicit-sess"),
+	)
+	if err != nil {
+		t.Fatalf("Add regular failed: %v", err)
+	}
+	if ingestCalls != 0 {
+		t.Fatalf("regular mode must not call ingest, got %d calls", ingestCalls)
+	}
+	if result.ID != 55 {
+		t.Fatalf("expected record id 55, got %d", result.ID)
+	}
+	if captured["uuid"] != "explicit-sess" {
+		t.Fatalf("records path must use explicit session uuid, got %v", captured["uuid"])
 	}
 }

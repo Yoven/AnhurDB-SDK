@@ -1,6 +1,10 @@
 package client_test
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
@@ -79,11 +83,36 @@ func TestNewMemoryEmptyKey(t *testing.T) {
 func TestNewSession(t *testing.T) {
 	mem := client.NewMemory("key")
 	old := mem.SessionID()
-	mem.NewSession()
-	next := mem.SessionID()
+	next := mem.NewSession()
 
 	if old == next {
 		t.Error("NewSession should generate a different session ID")
+	}
+	if next != mem.SessionID() {
+		t.Error("NewSession should return the current SessionID")
+	}
+}
+
+func TestCreateSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/sessions" || request.Method != http.MethodPost {
+			http.NotFound(responseWriter, request)
+			return
+		}
+		io.WriteString(responseWriter, `{"session_id":"sess-from-server","metadata":{}}`)
+	}))
+	defer server.Close()
+
+	mem := client.NewMemory("key", client.WithURL(server.URL))
+	sessionID, err := mem.CreateSession(context.Background())
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if sessionID != "sess-from-server" {
+		t.Errorf("expected sess-from-server, got %q", sessionID)
+	}
+	if mem.SessionID() != "sess-from-server" {
+		t.Errorf("sessionUUID not updated after CreateSession: %q", mem.SessionID())
 	}
 }
 

@@ -170,14 +170,14 @@ func Run(args []string, plugin Config) {
 // cmdRecall flushes any queued writes from a prior session, then prints the agent's AnhurDB
 // profile to stdout. Claude Code injects stdout from a SessionStart hook into the model context.
 func cmdRecall(ctx context.Context, cfg config, mem *client.Memory) {
-	flushQueue(ctx, cfg, mem)
+	backlog := flushQueue(ctx, cfg, mem)
 
 	profile, err := mem.Profile(ctx)
 	if err != nil {
 		logLine(cfg, "recall: profile failed (AnhurDB unreachable?): "+err.Error())
 		return // inject nothing — never block startup
 	}
-	block := formatMemory(cfg, profile)
+	block := formatMemory(cfg, profile, backlog)
 	if block != "" {
 		fmt.Println(block)
 		// Junior Tip [say only what we can prove, 2026-07-16]: this used to read "injected memory
@@ -192,11 +192,27 @@ func cmdRecall(ctx context.Context, cfg config, mem *client.Memory) {
 }
 
 // formatMemory renders the ProfileResult into the <anhur-memory> block. Sections with no items are
-// omitted so we never inject empty headers.
-func formatMemory(cfg config, profile *client.ProfileResult) string {
+// omitted so we never inject empty headers. An unpersisted backlog is announced FIRST — see below.
+func formatMemory(cfg config, profile *client.ProfileResult, backlog queueBacklog) string {
 	var builder strings.Builder
 	builder.WriteString(`<anhur-memory backend="AnhurDB" container="` + cfg.container + `">` + "\n")
 	builder.WriteString("You (Claude) have persistent long-term memory in AnhurDB. This is what you remember — trust it, build on it, and keep it accurate (use supersede when a fact changes).\n")
+
+	// Junior Tip [the warning goes ABOVE the memory, not below it, 2026-07-17]: a stuck queue means
+	// turns that never reached AnhurDB, so everything rendered below is knowingly incomplete. The
+	// model must read that caveat BEFORE it reads (and acts on) the recalled content, and must tell
+	// the user — the user has no other way to learn about it, since the queue only fails into a log
+	// file. This is the whole point of routing the backlog here instead of leaving it in plugin.log.
+	if backlog.chunkCount > 0 {
+		builder.WriteString("\n## ⚠️ Unpersisted backlog — the memory below is INCOMPLETE\n")
+		builder.WriteString(fmt.Sprintf("- %d chunk(s) of past conversation are stuck on disk and never reached AnhurDB (oldest queued %s).\n",
+			backlog.chunkCount, backlog.oldestChunk))
+		if backlog.lastFlushErr != nil {
+			builder.WriteString(fmt.Sprintf("- Last retry failed with: %v\n", backlog.lastFlushErr))
+		}
+		builder.WriteString("- They are NOT lost (retried on every persist), but they will not appear in recall until they drain.\n")
+		builder.WriteString("- TELL THE USER about this now, in your first reply: they cannot see it otherwise.\n")
+	}
 
 	section := func(title string, items []string) {
 		if len(items) == 0 {
@@ -219,7 +235,17 @@ func formatMemory(cfg config, profile *client.ProfileResult) string {
 
 	total := numField(profile.Stats, "total_records")
 	sessions := numField(profile.Stats, "sessions")
-	builder.WriteString(fmt.Sprintf("\n(%d records across %d sessions. The MCP tools mcp__anhurdb__* let you recall/store more during this session.)\n", total, sessions))
+	// Junior Tip [do not advertise tools the model cannot call, 2026-07-17]: this line used to end
+	// with "The MCP tools mcp__anhurdb__* let you recall/store more during this session." That was
+	// false, and expensively so — it is injected into the model's context EVERY session, so it acted
+	// as a standing instruction to reach for tools that always fail. Every mcp__anhurdb__* tool takes
+	// api_key as a REQUIRED argument (server-side: auth.APIKeyParam is mcp.Required() and
+	// GetAPIKeyFromArgs reads it from tool args only — the Bearer header is a perimeter gate, not
+	// tenant auth). The key deliberately lives ONLY in the 0600 env file, never in the transcript,
+	// precisely because the Stop hook persists that transcript INTO AnhurDB — advertising these tools
+	// invites the model to leak the key into the memory the key protects. Say what is true instead:
+	// the loop is automatic and the model is not in it.
+	builder.WriteString(fmt.Sprintf("\n(%d records across %d sessions. This block was injected automatically at session start, and your turns are persisted automatically — you do not invoke either, and you cannot call the mcp__anhurdb__* tools: they require an api_key that is deliberately kept out of your context.)\n", total, sessions))
 	builder.WriteString("</anhur-memory>")
 	return builder.String()
 }
@@ -289,6 +315,24 @@ func cmdPersist(ctx context.Context, cfg config, mem *client.Memory) {
 	// search-/extraction-friendly size and nothing is lost.
 	chunks := splitIntoChunks(text, cfg.maxChunkChars)
 	sent, queued := 0, 0
+	// Junior Tip [session-first 2026-07-18]: register the Claude conversation
+	// uuid before any ingest. Idempotent upsert — safe to call every persist.
+	if _, createSessionErr := mem.CreateSession(ctx, client.WithCreateSessionID(sessionID)); createSessionErr != nil {
+		logLine(cfg, "persist: CreateSession failed — queueing all chunks: "+createSessionErr.Error())
+		for i, body := range chunks {
+			label := ""
+			if len(chunks) > 1 {
+				label = fmt.Sprintf(" [part %d/%d]", i+1, len(chunks))
+			}
+			chunk := fmt.Sprintf("Claude Code session %s — conversation excerpt%s (%s):\n%s",
+				sessionID, label, time.Now().UTC().Format(time.RFC3339), body)
+			queueChunk(cfg, chunk)
+			queued++
+		}
+		logLine(cfg, fmt.Sprintf("persist: lines %d-%d (session=%s, chunks=%d sent=%d queued=%d)",
+			last+1, len(lines), sessionID, len(chunks), sent, queued))
+		return
+	}
 	for i, body := range chunks {
 		label := ""
 		if len(chunks) > 1 {
@@ -599,11 +643,56 @@ func queueChunk(cfg config, content string) {
 	logLine(cfg, "queued chunk -> "+path)
 }
 
+// queueBacklog summarises the chunks still sitting on disk after a flush attempt: how many
+// remain, when the oldest was queued, and why the last retry failed.
+//
+// Junior Tip [why the backlog is RETURNED and not just logged, 2026-07-17]: flushQueue already
+// fails LOUD into plugin.log, and that was still not enough. A permanent cap rejection (HTTP 409)
+// sat in the log while the session's memory stayed incomplete, and nobody noticed until the user
+// happened to ask — because no human tails a log file. A log records; it does not reach anyone.
+// "Fail loud" only counts if it lands in a channel a human actually reads, and the ONLY such
+// channel this plugin owns is the <anhur-memory> block injected at session start. So flushQueue
+// reports the backlog upward and cmdRecall surfaces it there. Chunks are still never dropped —
+// that invariant is untouched; this only makes the failure visible while it persists.
+type queueBacklog struct {
+	chunkCount   int
+	oldestChunk  string
+	lastFlushErr error
+}
+
+// chunkQueuedAt recovers the UTC instant encoded in a queued chunk's filename (see queueChunk's
+// naming scheme). Falls back to the raw name when the format does not match, so a stray file in
+// the queue directory can never cost us the warning itself.
+func chunkQueuedAt(chunkName string) string {
+	stampEnd := strings.Index(chunkName, "-")
+	if stampEnd <= 0 {
+		return chunkName
+	}
+	queuedAt, parseErr := time.Parse("20060102T150405.000000000", chunkName[:stampEnd])
+	if parseErr != nil {
+		return chunkName
+	}
+	return queuedAt.UTC().Format(time.RFC3339)
+}
+
 // flushQueue retries every queued chunk; successful ones are removed, the rest stay for next time.
-func flushQueue(ctx context.Context, cfg config, mem *client.Memory) {
+// It returns what is still stuck so the caller can surface it — see queueBacklog.
+func flushQueue(ctx context.Context, cfg config, mem *client.Memory) queueBacklog {
+	var backlog queueBacklog
 	entries, err := os.ReadDir(cfg.queueDir())
 	if err != nil {
-		return
+		return backlog
+	}
+	// ReadDir sorts by filename and queueChunk prefixes every name with a lexicographically
+	// sortable UTC stamp, so the first chunk left behind is always the oldest one.
+	noteStuck := func(chunkName string, cause error) {
+		backlog.chunkCount++
+		if backlog.oldestChunk == "" {
+			backlog.oldestChunk = chunkQueuedAt(chunkName)
+		}
+		if cause != nil {
+			backlog.lastFlushErr = cause
+		}
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
@@ -612,13 +701,28 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) {
 		path := filepath.Join(cfg.queueDir(), entry.Name())
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
+			// The chunk is still on disk and still unpersisted — count it, or the warning
+			// would under-report exactly the chunks we cannot even read.
+			noteStuck(entry.Name(), readErr)
 			continue
 		}
 		// Recover into the ORIGINAL conversation's session: the session id is
 		// embedded in the chunk header ("Claude Code session <id> — ..."), so a
 		// queued chunk drains back into the same session it came from instead of
-		// collapsing into the container. Empty extraction → server default.
-		if _, addErr := mem.Add(ctx, string(content), client.WithSessionID(sessionFromChunk(string(content)))); addErr == nil {
+		// collapsing into the container. Register first (session-first servers).
+		queuedSessionID := sessionFromChunk(string(content))
+		if queuedSessionID != "" {
+			if _, createSessionErr := mem.CreateSession(ctx, client.WithCreateSessionID(queuedSessionID)); createSessionErr != nil {
+				logLine(cfg, fmt.Sprintf("flush CreateSession failed for %s: %v", path, createSessionErr))
+				noteStuck(entry.Name(), createSessionErr)
+				continue
+			}
+		}
+		addOpts := []client.AddOption{}
+		if queuedSessionID != "" {
+			addOpts = append(addOpts, client.WithSessionID(queuedSessionID))
+		}
+		if _, addErr := mem.Add(ctx, string(content), addOpts...); addErr == nil {
 			_ = os.Remove(path)
 			logLine(cfg, "flushed queued chunk "+path)
 		} else {
@@ -628,8 +732,10 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) {
 			// the queue sat "still failing" for 10 days before anyone saw the 409.
 			// The queue must never drop chunks, but it must FAIL LOUD about why.
 			logLine(cfg, fmt.Sprintf("flush still failing for %s (retried on every persist): %v", path, addErr))
+			noteStuck(entry.Name(), addErr)
 		}
 	}
+	return backlog
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
@@ -665,7 +771,8 @@ func readLines(path string) ([]string, error) {
 
 // sessionFromChunk pulls the conversation session id out of a persisted chunk's
 // header ("Claude Code session <id> — conversation excerpt..."). Returns "" when
-// the header is absent, in which case the server keeps its container_tag default.
+// the header is absent — callers must create_session before persisting on
+// session-first servers.
 func sessionFromChunk(chunk string) string {
 	const marker = "Claude Code session "
 	start := strings.Index(chunk, marker)

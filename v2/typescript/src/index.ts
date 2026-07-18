@@ -8,8 +8,9 @@
  * ```ts
  * import { Memory } from "anhurdb";
  *
- * const mem = new Memory({ apiKey: "anhur_xxx" });
- * await mem.add("I'm a data scientist at Google");
+ * const mem = new Memory({ apiKey: "anhur_xxx", url: "https://anhurdb.yoven.ai" });
+ * const sessionId = await mem.createSession();
+ * await mem.add("I'm a data scientist at Google", { mode: "ingest", sessionId });
  * const results = await mem.search("what does this user do?");
  *
  * // Entity knowledge graph
@@ -39,6 +40,7 @@ export type {
   AddOptions,
   AddResult,
   AddRecordSummary,
+  CreateSessionOptions,
   CreateOptions,
   SearchOptions,
   SearchScope,

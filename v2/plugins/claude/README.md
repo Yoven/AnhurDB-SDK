@@ -253,8 +253,9 @@ claims.
 sentence with a clear decision/fact, wait a few seconds (Smart Units are asynchronous), then recall:
 
 ```bash
+SESSION=$(curl -s -X POST "$ANHUR_URL/api/v1/sessions" -H "X-API-Key: $ANHUR_API_KEY" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
 curl -s -X POST "$ANHUR_URL/api/v1/ingest" -H "X-API-Key: $ANHUR_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"content":"Decision: we ship in June. Fact: the build uses Go 1.24.","container_tag":"'"$ANHUR_CONTAINER"'"}'
+  -d '{"content":"Decision: we ship in June. Fact: the build uses Go 1.24.","container_tag":"'"$ANHUR_CONTAINER"'","session_id":"'"$SESSION"'"}'
 # wait a few seconds, then recall — the decision/fact should appear in the <anhur-memory> block.
 ```
 

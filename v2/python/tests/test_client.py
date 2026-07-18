@@ -119,6 +119,13 @@ class TestMemory(unittest.TestCase):
         self.assertNotEqual(old, new)
         self.assertEqual(mem.session_id, new)
 
+    def test_new_session_does_not_register(self):
+        """new_session() only rotates local id — create_session() registers."""
+        mem = Memory(api_key="key", user_id="u1")
+        local_id = mem.new_session()
+        self.assertEqual(mem.session_id, local_id)
+        self.assertTrue(local_id.startswith("u1-"))
+
     def test_repr(self):
         mem = Memory(api_key="key", user_id="agent-x")
         r = repr(mem)

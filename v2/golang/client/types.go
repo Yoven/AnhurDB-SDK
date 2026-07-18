@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
@@ -305,6 +306,9 @@ type addConfig struct {
 	memType   *string
 	metadata  map[string]interface{}
 	sessionID string
+	// writeMode selects ingest (POST /api/v1/ingest) or regular (POST
+	// /api/v1/records). Empty means ingest — the historical default.
+	writeMode string
 }
 
 // WithScore sets the salience score (typically 0-10) on the record being added.
@@ -341,6 +345,56 @@ func WithSessionID(sessionID string) AddOption {
 	return func(cfg *addConfig) {
 		cfg.sessionID = sessionID
 	}
+}
+
+// WithMode selects the write path for Memory.Add. Valid values are "ingest"
+// (POST /api/v1/ingest — default) and "regular" (POST /api/v1/records as
+// episodic). Callers must register the session via CreateSession before
+// either path succeeds on session-first servers.
+//
+func WithMode(writeMode string) AddOption {
+	return func(cfg *addConfig) {
+		cfg.writeMode = writeMode
+	}
+}
+
+// CreateSessionOption configures Memory.CreateSession.
+//
+type CreateSessionOption func(*createSessionConfig)
+
+// createSessionConfig holds optional overrides for POST /api/v1/sessions.
+//
+type createSessionConfig struct {
+	sessionID string
+	metadata  map[string]interface{}
+}
+
+// WithCreateSessionID registers an explicit session uuid. When omitted,
+// CreateSession leaves session_id out of the body so the server generates one
+// (parity with Python create_session / TypeScript createSession / MCP).
+// To register a local id: NewSession() then CreateSession(WithCreateSessionID(...))
+// or OpenSession().
+//
+func WithCreateSessionID(sessionID string) CreateSessionOption {
+	return func(cfg *createSessionConfig) {
+		cfg.sessionID = sessionID
+	}
+}
+
+// WithCreateSessionMetadata attaches optional session-level metadata copied
+// onto every record written in this session.
+//
+func WithCreateSessionMetadata(metadata map[string]interface{}) CreateSessionOption {
+	return func(cfg *createSessionConfig) {
+		cfg.metadata = metadata
+	}
+}
+
+// createSessionResponse is the wire format returned by POST /api/v1/sessions.
+//
+type createSessionResponse struct {
+	SessionID string          `json:"session_id"`
+	Metadata  json.RawMessage `json:"metadata"`
 }
 
 // ReadOption configures a single read call. It is the idiomatic Go surface

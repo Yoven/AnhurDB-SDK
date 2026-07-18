@@ -19,6 +19,7 @@ simulates AnhurDB responses. Tests cover:
 import asyncio
 import base64
 import json
+import secrets
 import unittest
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
@@ -40,6 +41,20 @@ from anhurdb.models import CreateRequest, MemoryType
 
 
 # ── Mock server handlers ──────────────────────────────────────────
+
+async def handle_sessions_create(request):
+    """Simulates POST /api/v1/sessions (session-first registration)."""
+    if request.can_read_body and request.content_length:
+        data = await request.json()
+    else:
+        data = {}
+    session_id = data.get("session_id") or f"server-{secrets.token_hex(8)}"
+    request.app.setdefault("sessions_created", []).append(session_id)
+    return web.json_response(
+        {"session_id": session_id, "metadata": data.get("metadata", {})},
+        status=201,
+    )
+
 
 async def handle_ingest(request):
     """Simulates POST /api/v1/ingest (cloud mode)."""
@@ -235,6 +250,7 @@ async def handle_topology(request):
 def create_app_cloud():
     """App with cloud ingest available."""
     app = web.Application()
+    app.router.add_post("/api/v1/sessions", handle_sessions_create)
     app.router.add_post("/api/v1/ingest", handle_ingest)
     app.router.add_post("/api/v1/records", handle_records)
     app.router.add_post("/api/v1/search", handle_search)
@@ -257,6 +273,7 @@ def create_app_cloud():
 def create_app_oss():
     """App without ingest (OSS mode — 404 on ingest)."""
     app = web.Application()
+    app.router.add_post("/api/v1/sessions", handle_sessions_create)
     app.router.add_post("/api/v1/ingest", handle_ingest_404)
     app.router.add_post("/api/v1/records", handle_records)
     app.router.add_post("/api/v1/search", handle_search)
@@ -267,6 +284,7 @@ def create_app_oss():
 def create_app_errors():
     """App that returns various errors."""
     app = web.Application()
+    app.router.add_post("/api/v1/sessions", handle_sessions_create)
     app.router.add_post("/api/v1/ingest", handle_auth_fail)
     app.router.add_post("/api/v1/records", handle_bad_request)
     app.router.add_post("/api/v1/search", handle_server_error)
@@ -285,10 +303,12 @@ class TestMemoryCloudMode(AioHTTPTestCase):
     async def test_add_cloud_ingest(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
             result = await mem.add("I'm a data scientist at Google")
             self.assertEqual(result["mode"], "cloud")
             self.assertEqual(len(result["records"]), 2)
             self.assertEqual(result["records"][0]["id"], 42)
+            self.assertEqual(len(self.app["sessions_created"]), 1)
 
     @unittest_run_loop
     async def test_search_returns_nested_results(self):
@@ -407,6 +427,7 @@ class TestMemoryOSSFallback(AioHTTPTestCase):
     async def test_add_falls_back_to_oss(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
             result = await mem.add("Test text for OSS mode")
             self.assertEqual(result["mode"], "oss")
             self.assertEqual(result["records"][0]["id"], 100)
@@ -566,6 +587,7 @@ class TestErrorHandling(AioHTTPTestCase):
     async def test_401_raises_auth_error(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="bad-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
             # add() tries ingest first which returns 401
             with self.assertRaises(AnhurAuthError):
                 await mem.add("test")
