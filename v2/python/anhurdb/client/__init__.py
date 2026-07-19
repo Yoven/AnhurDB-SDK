@@ -130,9 +130,10 @@ class Memory:
     only — it is never a session substitute.
 
     Core methods:
-        - ``add(text)``    — store a memory
+        - ``create_session()`` — register a write session (required before writes)
+        - ``add(text, mode="ingest")`` — store raw text (episodic + async extraction)
         - ``search(query)`` — find relevant memories (default scope: sessions)
-        - ``profile()``    — get user/agent profile
+        - ``profile()``    — get user/agent profile (``GET /profile?tag=``)
 
     Full surface matches the Go/TypeScript SDKs (see ``v2/PARITY_SPEC.md``):
     create/update/delete, search family, manifests, walk, entities, upload,
@@ -280,8 +281,9 @@ class Memory:
 
         Example::
 
-            await mem.create_session()
-            await mem.add("User prefers dark mode")
+            session_id = await mem.create_session()
+            await mem.add("User prefers dark mode", mode="ingest",
+                          session_id=session_id)
             await mem.add("Pinned fact", mode="regular", score=8,
                           type=MemoryType.PREFERENCE)"""
         if not text:

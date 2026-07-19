@@ -12,7 +12,12 @@ Zero runtime dependencies. Works with Node 18+, Deno, Bun, and Cloudflare Worker
 import { Memory } from "anhurdb";
 
 const mem = new Memory({ apiKey: "anhur_xxx" });
-await mem.add("I'm a data scientist at Google working on NLP");
+const sessionId = await mem.createSession();
+await mem.add("I'm a data scientist at Google working on NLP", {
+  mode: "ingest",
+  sessionId,
+});
+// Reads do not need createSession
 const results = await mem.search("what does this user do?");
 ```
 
@@ -22,7 +27,7 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.9/anhurdb-2.0.9.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.10/anhurdb-2.0.10.tgz
 ```
 
 ## Usage
@@ -49,19 +54,25 @@ const mem = new Memory({
 });
 ```
 
-### Core — Add, Search, Profile
+### Core — Session, Add, Search, Profile
 
 ```typescript
-await mem.add("User prefers dark mode");
-await mem.add("Revenue hit $1M this quarter", { score: 9, type: "fact" });
+const sessionId = await mem.createSession(); // required before writes
+await mem.add("User prefers dark mode", { mode: "ingest", sessionId });
+await mem.add("Revenue hit $1M this quarter", {
+  mode: "regular",
+  score: 9,
+  type: "fact",
+  sessionId,
+});
 
-// Search across all sessions
+// Search across all sessions (reads do not need createSession)
 const results = await mem.search("user preferences?", { limit: 5 });
 for (const r of results) {
   console.log(`${r.record.summary} (similarity: ${r.similarity})`);
 }
 
-// Get user profile
+// Get user profile (SDK sends GET /profile?tag=<container_tag>)
 const profile = await mem.profile();
 console.log(profile.static);  // identity, preferences
 ```
@@ -238,7 +249,7 @@ Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
 | **Batch** | `batchReadContent`, `batchUpdateStatus` |
 | **Upload** | `uploadFile`, `uploadStatus` |
 | **Temporal** | `supersede` |
-| **Session** | `newSession`, `listSessions`, `getSessionHistory`, `getSessionClusters` |
+| **Session** | `createSession`, `openSession`, `newSession`, `listSessions`, `getSessionHistory`, `getSessionClusters` |
 | **CRUD** | `update`, `delete` |
 
 ## Types
@@ -262,7 +273,8 @@ import type {
 import { AnhurError, AnhurAuthError, AnhurQueryError, AnhurConnectionError } from "anhurdb";
 
 try {
-  await mem.add("something");
+  const sessionId = await mem.createSession();
+  await mem.add("something", { mode: "ingest", sessionId });
 } catch (err) {
   if (err instanceof AnhurAuthError) {
     console.error("Bad API key");

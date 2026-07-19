@@ -23,7 +23,7 @@ Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) 
 
 ```bash
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.11/anhurdb-2.0.11-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.12/anhurdb-2.0.12-py3-none-any.whl
 ```
 
 ## Quick Start — Memory (Simple API)

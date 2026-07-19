@@ -28,14 +28,14 @@ Packages ship on **[GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releas
 ```bash
 # Python — wheel from the Python SDK release assets
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.11/anhurdb-2.0.11-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.12/anhurdb-2.0.12-py3-none-any.whl
 
 # TypeScript — tarball from the TypeScript SDK release assets
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.9/anhurdb-2.0.9.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.10/anhurdb-2.0.10.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.10
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.11
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).

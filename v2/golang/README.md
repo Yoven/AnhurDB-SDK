@@ -11,7 +11,7 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.10
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.11
 ```
 
 ## Quick Start
@@ -29,18 +29,21 @@ func main() {
     ctx := context.Background()
     mem := anhurdb.NewMemory("anhur_xxx")
 
-    // Store a memory
-    result, _ := mem.Add(ctx, "I'm a data scientist at Google")
+    // Register a write session (required before Add/Create)
+    sessionID, _ := mem.CreateSession(ctx)
+    result, _ := mem.Add(ctx, "I'm a data scientist at Google",
+        anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
 
-    // Search across all sessions
+    // Reads do not need CreateSession
     hits, _ := mem.Search(ctx, "what does this user do?")
     for _, h := range hits {
         fmt.Printf("%s (%.2f)\n", h.Summary, h.Similarity)
     }
 
-    // Get user profile
+    // Get user profile (SDK sends GET /profile?tag=<container_tag>)
     profile, _ := mem.Profile(ctx)
     fmt.Println(profile.Static)
+    _ = result
 }
 ```
 
@@ -73,10 +76,12 @@ mem := anhurdb.NewMemory("key",
 ### Core Methods
 
 ```go
-result, err := mem.Add(ctx, "text")                    // Store memory
+sessionID, err := mem.CreateSession(ctx)               // Required before writes
+result, err := mem.Add(ctx, "text",
+    anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
 hits, err := mem.Search(ctx, "query")                  // Plane search (query=FTS text; prefer SmartSearch for conceptual RAG)
 hits, err := mem.Search(ctx, "query", WithLimit(20))   // With options
-profile, err := mem.Profile(ctx)                       // User profile
+profile, err := mem.Profile(ctx)                       // User profile (?tag=)
 ```
 
 ### Search & Discovery
@@ -197,7 +202,12 @@ Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`. Filterable colu
 ```go
 import "errors"
 
-result, err := mem.Add(ctx, "text")
+sessionID, err := mem.CreateSession(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+result, err := mem.Add(ctx, "text",
+    anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
 if err != nil {
     switch {
     case errors.Is(err, client.ErrUnauthorized):
