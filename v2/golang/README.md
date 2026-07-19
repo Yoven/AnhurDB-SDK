@@ -141,7 +141,10 @@ err = mem.BatchUpdateStatus(ctx, []int64{10, 11}, "archived")
 
 ```go
 // Upload document for async ingestion
-upload, err := mem.UploadFile(ctx, "report.pdf", base64Content, "session-1")
+// Chat: session + linked episodic (has_file=true on the episodic)
+upload, err := mem.UploadFile(ctx, "report.pdf", rawBytes, sessionID, episodicID)
+// Shared Data (tenant):
+upload, err = mem.UploadFile(ctx, "handbook.pdf", rawBytes, "", 0, anhurdb.WithUploadMode("tenant_shared"))
 
 // Poll processing status
 status, err := mem.UploadStatus(ctx, upload.ID)

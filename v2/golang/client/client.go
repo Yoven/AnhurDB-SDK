@@ -1098,17 +1098,41 @@ func (m *Memory) Supersede(ctx context.Context, oldID, newID int64) error {
 // UploadFile uploads a document for async ingestion (multipart/form-data).
 //
 // Supported formats: PDF, JPEG, PNG, WEBP, GIF, TXT, Markdown, HTML, DOCX.
-// The server processes the file asynchronously — use UploadStatus to poll.
-//
-func (m *Memory) UploadFile(ctx context.Context, filename string, content []byte, sessionID string) (*UploadResult, error) {
+// Chat plane: sessionID from CreateSession + linkedEpisodicID (required) — file
+// hangs as a sub-tree of that episodic; server sets has_file=true.
+// Shared planes: WithUploadMode("tenant_shared"|"client_shared") with empty session.
+func (m *Memory) UploadFile(ctx context.Context, filename string, content []byte, sessionID string, linkedEpisodicID int64, opts ...UploadOption) (*UploadResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
+	uploadCfg := &uploadConfig{}
+	for _, opt := range opts {
+		opt(uploadCfg)
+	}
+
 	extraFields := map[string]string{}
-	if sessionID != "" {
-		extraFields["session_id"] = sessionID
+	mode := strings.TrimSpace(strings.ToLower(uploadCfg.mode))
+	if sessionID != "" && mode == "" {
+		mode = "chat"
+	}
+	switch mode {
+	case "chat":
+		if sessionID == "" {
+			return nil, fmt.Errorf("session_id is required — create a session first (POST /api/v1/sessions)")
+		}
+		if linkedEpisodicID <= 0 {
+			return nil, fmt.Errorf("linked_episodic_id is required for chat uploads — attach the file to the episodic turn")
+		}
 		extraFields["mode"] = "chat"
+		extraFields["session_id"] = sessionID
+		extraFields["linked_episodic_id"] = strconv.FormatInt(linkedEpisodicID, 10)
+	case "tenant_shared", "client_shared":
+		extraFields["mode"] = mode
+	case "":
+		// shared default on server when no session — leave fields empty
+	default:
+		return nil, fmt.Errorf("invalid upload mode %q (want chat|tenant_shared|client_shared)", uploadCfg.mode)
 	}
 
 	respBytes, postErr := m.conn.PostMultipart(ctx, "/api/v1/upload", "file", filename, content, extraFields)

@@ -1296,34 +1296,72 @@ class Memory:
         filename: str,
         content: bytes,
         session_id: Optional[str] = None,
+        linked_episodic_id: Optional[int] = None,
+        mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Upload a document for async ingestion.
 
         Supported formats: PDF, JPEG, PNG, WEBP, GIF, TXT, Markdown,
         HTML, DOCX.
 
+        Planes:
+            * ``mode="chat"`` (or ``session_id`` set) — attach to a chat
+              session. Requires ``linked_episodic_id``; the file root hangs
+              as a sub-tree of that episodic and the server sets
+              ``has_file=true`` on it.
+            * ``mode="tenant_shared"`` / ``mode="client_shared"`` — Shared Data
+              (no session / episodic).
+
         The server processes the file asynchronously — use
         ``upload_status()`` to poll for completion.
 
         Args:
-            filename:   Original filename (used for format detection).
-            content:    Raw file bytes.
-            session_id: Session UUID from ``create_session()`` (required for
-                chat-mode uploads; server returns 400 if missing).
+            filename: Original filename (used for format detection).
+            content: Raw file bytes.
+            session_id: From ``create_session()`` when uploading via chat.
+            linked_episodic_id: Required for chat — episodic turn record id.
+            mode: ``chat`` | ``tenant_shared`` | ``client_shared``.
 
         Returns:
             Dict with ``record_id``, ``uuid``, ``filename``, ``status``.
 
         Example::
 
+            session_id = await mem.create_session()
+            episodic = await mem.add("see attached report", mode="ingest",
+                                     session_id=session_id)
             with open("report.pdf", "rb") as handle:
-                result = await mem.upload_file("report.pdf", handle.read())
+                result = await mem.upload_file(
+                    "report.pdf", handle.read(),
+                    session_id=session_id,
+                    linked_episodic_id=episodic["id"],
+                )
             record_id = result["record_id"]"""
         extra: Dict[str, str] = {}
-        if session_id:
-            extra["session_id"] = session_id
-            # creates a second root and leaves the upload status stuck at processing.
+        resolved_mode = (mode or "").strip().lower()
+        if session_id and not resolved_mode:
+            resolved_mode = "chat"
+        if resolved_mode == "chat":
+            if not session_id:
+                raise ValueError(
+                    "session_id is required — create a session first "
+                    "(await create_session())"
+                )
+            if linked_episodic_id is None or int(linked_episodic_id) <= 0:
+                raise ValueError(
+                    "linked_episodic_id is required for chat uploads — "
+                    "attach the file to the episodic turn"
+                )
             extra["mode"] = "chat"
+            extra["session_id"] = session_id
+            extra["linked_episodic_id"] = str(int(linked_episodic_id))
+        elif resolved_mode in ("tenant_shared", "client_shared"):
+            extra["mode"] = resolved_mode
+        elif resolved_mode:
+            raise ValueError(
+                f"invalid mode {mode!r} "
+                "(want chat|tenant_shared|client_shared)"
+            )
         return await self._connection.post_multipart(
             "/api/v1/upload",
             file_field="file",

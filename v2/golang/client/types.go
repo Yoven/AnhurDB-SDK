@@ -390,6 +390,21 @@ func WithCreateSessionMetadata(metadata map[string]interface{}) CreateSessionOpt
 	}
 }
 
+// UploadOption configures Memory.UploadFile (shared-plane mode).
+type UploadOption func(*uploadConfig)
+
+type uploadConfig struct {
+	mode string
+}
+
+// WithUploadMode selects the upload plane: "tenant_shared" or "client_shared".
+// Chat mode is inferred when sessionID is non-empty (linkedEpisodicID required).
+func WithUploadMode(uploadMode string) UploadOption {
+	return func(cfg *uploadConfig) {
+		cfg.mode = uploadMode
+	}
+}
+
 // createSessionResponse is the wire format returned by POST /api/v1/sessions.
 //
 type createSessionResponse struct {

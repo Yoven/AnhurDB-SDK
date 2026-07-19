@@ -219,7 +219,10 @@ async with Memory(api_key="anhur_xxx") as mem:
     await mem.batch_update_status([10, 11], status="archived")
 
     # File upload
-    upload = await mem.upload_file("report.pdf", base64_content)
+    upload = await mem.upload_file(
+        "report.pdf", pdf_bytes,
+        session_id=session_id, linked_episodic_id=episodic_id,
+    )
     status = await mem.upload_status(upload["id"])
 
     # Temporal versioning
@@ -283,7 +286,9 @@ const contents = await mem.batchReadContent([1, 2, 3]);
 await mem.batchUpdateStatus([10, 11], "archived");
 
 // File upload
-const upload = await mem.uploadFile("report.pdf", base64Content);
+const upload = await mem.uploadFile("report.pdf", fileBytes, {
+  sessionId, linkedEpisodicId: episodicId,
+});
 const status = await mem.uploadStatus(upload.id);
 
 // Temporal versioning
@@ -365,7 +370,7 @@ func main() {
     _ = mem.BatchUpdateStatus(ctx, []int64{10, 11}, "archived")
 
     // File upload
-    upload, _ := mem.UploadFile(ctx, "report.pdf", base64Content, "")
+    upload, _ := mem.UploadFile(ctx, "report.pdf", rawBytes, sessionID, episodicID)
     status, _ := mem.UploadStatus(ctx, upload.ID)
 
     // Temporal versioning

@@ -1159,14 +1159,19 @@ export class Memory {
    *
    * @param filename  - Original filename (used for format detection).
    * @param content   - Raw file bytes (`Uint8Array` / `Buffer`) or UTF-8 text.
-   * @param sessionId - Optional session UUID to associate with.
+   * @param options   - Chat: `{ sessionId, linkedEpisodicId }` (both required).
+   *                    Shared: `{ mode: "tenant_shared" | "client_shared" }`.
    *
-   * server never accepted. Content is now RAW bytes via FormData field `file`.
+   * Chat uploads hang the file as a sub-tree of the episodic and set `has_file=true`.
    */
   async uploadFile(
     filename: string,
     content: Uint8Array | ArrayBuffer | string,
-    sessionId?: string): Promise<UploadResult> {
+    options?: {
+      sessionId?: string;
+      linkedEpisodicId?: number;
+      mode?: "chat" | "tenant_shared" | "client_shared";
+    }): Promise<UploadResult> {
     const form = new FormData();
     let blobParts: BlobPart[];
     if (typeof content === "string") {
@@ -1178,9 +1183,26 @@ export class Memory {
       blobParts = [content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer];
     }
     form.append("file", new Blob(blobParts), filename);
-    if (sessionId) {
-      form.append("session_id", sessionId);
+    let mode = options?.mode;
+    if (options?.sessionId && !mode) {
+      mode = "chat";
+    }
+    if (mode === "chat") {
+      if (!options?.sessionId) {
+        throw new Error(
+          "session_id is required — create a session first (POST /api/v1/sessions)",
+        );
+      }
+      if (options.linkedEpisodicId === undefined || options.linkedEpisodicId <= 0) {
+        throw new Error(
+          "linked_episodic_id is required for chat uploads — attach the file to the episodic turn",
+        );
+      }
       form.append("mode", "chat");
+      form.append("session_id", options.sessionId);
+      form.append("linked_episodic_id", String(options.linkedEpisodicId));
+    } else if (mode === "tenant_shared" || mode === "client_shared") {
+      form.append("mode", mode);
     }
     return this.client.postMultipart<UploadResult>("/api/v1/upload", form);
   }

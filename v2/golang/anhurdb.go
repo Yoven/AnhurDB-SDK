@@ -79,6 +79,9 @@ var WithCreateSessionID = client.WithCreateSessionID
 // WithCreateSessionMetadata sets optional metadata on CreateSession.
 var WithCreateSessionMetadata = client.WithCreateSessionMetadata
 
+// WithUploadMode selects UploadFile plane: tenant_shared or client_shared.
+var WithUploadMode = client.WithUploadMode
+
 // WithCreateType sets the record type for Memory.Create.
 var WithCreateType = client.WithCreateType
 

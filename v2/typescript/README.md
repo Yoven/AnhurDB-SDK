@@ -153,7 +153,13 @@ await mem.batchUpdateStatus([10, 11, 12], "archived");
 
 ```typescript
 // Upload document for async ingestion (PDF, images, DOCX, etc.)
-const upload = await mem.uploadFile("report.pdf", base64Content, "session-1");
+// Chat: session + linked episodic (has_file=true on the episodic)
+const upload = await mem.uploadFile("report.pdf", fileBytes, {
+  sessionId,
+  linkedEpisodicId: episodicId,
+});
+// Shared Data (tenant):
+await mem.uploadFile("handbook.pdf", fileBytes, { mode: "tenant_shared" });
 
 // Poll processing status
 const status = await mem.uploadStatus(upload.id);
