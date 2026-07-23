@@ -130,6 +130,19 @@ class HTTPConnection:
             self.headers["X-Tenant-ID"] = self.tenant_id
 
         self._session: Optional[aiohttp.ClientSession] = None
+        # Optional async callable invoked before each request (impersonation refresh).
+        self._before_request: Optional[Any] = None
+
+    def set_api_key(self, api_key: str) -> None:
+        """Replace the active API key (impersonation refresh).
+
+        Junior Tip: also updates the live ClientSession headers when connected.
+        """
+        _validate_header_value(api_key, "api_key")
+        self.api_key = api_key
+        self.headers["X-API-Key"] = api_key
+        if self._session is not None:
+            self._session.headers["X-API-Key"] = api_key
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -338,6 +351,11 @@ class HTTPConnection:
                 "Connection not established. Use 'async with AnhurClient(...)' "
                 "or call 'await client.connect()' first."
             )
+        if self._before_request is not None:
+            await self._before_request()
+            session = self._session
+            if session is None:
+                raise AnhurConnectionError("Connection closed during token refresh")
 
         # Build URL with optional query string.
         url = f"{self.base_url}{path}"

@@ -40,6 +40,42 @@ DEFAULT_CLOUD_URL = "https://anhurdb.yoven.ai"
 # the cloud endpoint).
 _LEGACY_LOCAL_URL = "http://localhost:8080"
 
+# Impersonation refresh skew (seconds before expires_at).
+_IMPERSONATE_REFRESH_SKEW_SECONDS = 60
+
+
+async def _impersonate_tenant(
+    *,
+    base_url: str,
+    client_key: str,
+    tenant_id: str,
+    expires_in: int = 3600,
+) -> Dict[str, Any]:
+    """Mint a short-lived tenant token via POST /api/v1/client/impersonate."""
+    import aiohttp
+
+    if expires_in < 1:
+        expires_in = 1
+    if expires_in > 86400:
+        expires_in = 86400
+    url = base_url.rstrip("/") + "/api/v1/client/impersonate"
+    headers = {
+        "X-API-Key": client_key,
+        "Content-Type": "application/json",
+        "User-Agent": "AnhurSDK-Python/2.1",
+    }
+    payload = {"tenant_id": tenant_id, "expires_in": expires_in}
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, json=payload, headers=headers, allow_redirects=False) as response:
+            body = await response.read()
+            if response.status >= 400:
+                detail = body.decode("utf-8", errors="replace")[:400]
+                raise AnhurError(
+                    f"impersonate failed HTTP {response.status}: {detail}"
+                )
+            return json.loads(body.decode("utf-8"))
+
 
 # ---------------------------------------------------------------------------
 # Helper: derive a stable container tag from the API key
@@ -192,10 +228,112 @@ class Memory:
         # Cloud ingest availability (None = untested).
         self._ingest_available: Optional[bool] = None
 
+        # Client-key impersonation state (optional — set by from_client_key).
+        self._client_key: Optional[str] = None
+        self._impersonate_tenant_id: Optional[str] = None
+        self._impersonate_expires_at: Optional[datetime] = None
+        self._impersonate_expires_in: int = 3600
+
+    @classmethod
+    async def from_client_key(
+        cls,
+        client_key: str,
+        tenant_id: str,
+        *,
+        expires_in: int = 3600,
+        url: str = DEFAULT_CLOUD_URL,
+        user_id: Optional[str] = None,
+        mode: str = "rest",
+    ) -> "Memory":
+        """Build a Memory by minting a short-lived tenant token from a client key.
+
+        Junior Tip [STS]: the long-lived client_key only hits /api/v1/client/*;
+        data-plane calls use the impersonation token with auto-refresh.
+        """
+        if not client_key or not tenant_id:
+            raise ValueError("client_key and tenant_id are required")
+        minted = await _impersonate_tenant(
+            base_url=url,
+            client_key=client_key,
+            tenant_id=tenant_id,
+            expires_in=expires_in,
+        )
+        temp_key = minted.get("api_key") or ""
+        if not temp_key.startswith("anhur_"):
+            raise AnhurError("impersonate response missing api_key")
+        memory = cls(
+            api_key=temp_key,
+            url=url,
+            user_id=user_id,
+            mode=mode,
+        )
+        memory._client_key = client_key
+        memory._impersonate_tenant_id = tenant_id
+        memory._impersonate_expires_in = int(minted.get("expires_in") or expires_in)
+        expires_raw = minted.get("expires_at") or ""
+        try:
+            memory._impersonate_expires_at = datetime.fromisoformat(
+                expires_raw.replace("Z", "+00:00")
+            )
+        except ValueError:
+            memory._impersonate_expires_at = datetime.now(timezone.utc)
+        memory._connection._before_request = memory._ensure_impersonation_fresh
+        return memory
+
+    @classmethod
+    def from_api_key(
+        cls,
+        api_key: str,
+        *,
+        url: str = DEFAULT_CLOUD_URL,
+        user_id: Optional[str] = None,
+        tenant_id: str = "",
+        mode: str = "rest",
+    ) -> "Memory":
+        """Explicit factory for tenant (or already-minted impersonation) keys."""
+        return cls(
+            api_key=api_key,
+            url=url,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            mode=mode,
+        )
+
+    async def _ensure_impersonation_fresh(self) -> None:
+        """Re-mint when within skew of expires_at."""
+        if not self._client_key or not self._impersonate_tenant_id:
+            return
+        now = datetime.now(timezone.utc)
+        expires_at = self._impersonate_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at is not None:
+            remaining = (expires_at - now).total_seconds()
+            if remaining > _IMPERSONATE_REFRESH_SKEW_SECONDS:
+                return
+        minted = await _impersonate_tenant(
+            base_url=self._connection.base_url,
+            client_key=self._client_key,
+            tenant_id=self._impersonate_tenant_id,
+            expires_in=self._impersonate_expires_in,
+        )
+        temp_key = minted.get("api_key") or ""
+        if not temp_key.startswith("anhur_"):
+            raise AnhurError("impersonate refresh missing api_key")
+        self._connection.set_api_key(temp_key)
+        expires_raw = minted.get("expires_at") or ""
+        try:
+            self._impersonate_expires_at = datetime.fromisoformat(
+                expires_raw.replace("Z", "+00:00")
+            )
+        except ValueError:
+            self._impersonate_expires_at = datetime.now(timezone.utc)
+
     # -- Lifecycle ----------------------------------------------------------
 
     async def connect(self) -> None:
         """Open the HTTP session (idempotent)."""
+        await self._ensure_impersonation_fresh()
         await self._connection.connect()
 
     async def close(self) -> None:
