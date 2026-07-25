@@ -96,9 +96,18 @@ type SessionStats struct {
 }
 
 // sessionsWrapper is the server's response envelope for ListSessions.
-// The server returns {"sessions": [...]} rather than a bare array.
+// The server returns {"sessions": [...], "has_more": bool, ...} rather than a bare array.
+//
+// Junior Tip [has_more paging]: without following has_more/next_offset, agents
+// only ever saw the first page (server default limit=50). That silently stalled
+// consolidation on large tenants (bench-1 had 356 sessions; page 0 looked "done").
 type sessionsWrapper struct {
-	Sessions []SessionStats `json:"sessions"`
+	Sessions   []SessionStats `json:"sessions"`
+	Count      int            `json:"count"`
+	Limit      int            `json:"limit"`
+	Offset     int            `json:"offset"`
+	HasMore    bool           `json:"has_more"`
+	NextOffset int            `json:"next_offset"`
 }
 
 // --------------------------------------------------------------------------

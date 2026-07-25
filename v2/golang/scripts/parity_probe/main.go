@@ -55,7 +55,15 @@ func main() {
 		pass("Health", fmt.Sprintf("%v", health["status"]))
 	}
 
-	// ── Write: Add + Create ───────────────────────────────────────────────
+	// ── Session-first + Write: Add + Create ───────────────────────────────
+	// Junior Tip [EnsureSession]: CreateSession must precede Add on HEL1.
+	registeredSessionID, sessionErr := mem.CreateSession(ctx)
+	if sessionErr != nil {
+		failOp("CreateSession", sessionErr, "")
+		os.Exit(1)
+	}
+	pass("CreateSession", registeredSessionID)
+
 	token := time.Now().UnixNano()
 	addText := fmt.Sprintf("parity-go: AnhurDB SDK probe token=%d", token)
 	addResult, addErr := mem.Add(ctx, addText)

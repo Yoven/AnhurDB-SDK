@@ -43,6 +43,16 @@ async function main(): Promise<number> {
 
   let recordId = 0;
   try {
+    // Junior Tip [EnsureSession]: createSession must precede add on HEL1.
+    const registeredSessionId = await mem.createSession();
+    emit("CreateSession", true, `id=${registeredSessionId}`);
+  } catch (err) {
+    failCount++;
+    emit("CreateSession", false, "", err);
+    return 1;
+  }
+
+  try {
     const addRes = await mem.add(`parity-ts: AnhurDB SDK probe token=${token}`);
     recordId = addRecordId(addRes);
     emit("Add", true, `id=${recordId}`);

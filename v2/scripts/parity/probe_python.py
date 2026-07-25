@@ -52,6 +52,15 @@ async def main() -> int:
             emit("Health", False, err=exc)
 
         try:
+            # Junior Tip [EnsureSession]: create_session must precede add on HEL1.
+            registered_session_id = await mem.create_session()
+            emit("CreateSession", True, f"id={registered_session_id}")
+        except Exception as exc:  # noqa: BLE001
+            fail_count += 1
+            emit("CreateSession", False, err=exc)
+            return 1
+
+        try:
             add_res = await mem.add(f"parity-py: AnhurDB SDK probe token={token}")
             record_id = add_record_id(add_res)
             emit("Add", True, f"id={record_id}")

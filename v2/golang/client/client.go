@@ -782,9 +782,16 @@ func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int, opt
 	return &result, nil
 }
 
-// ListSessions returns aggregate statistics for all sessions.
+// listSessionsPageLimit is the server max for GET /api/v1/sessions/stats (capped at 500).
+// Agents always request this page size and follow has_more until the tenant is exhausted.
+const listSessionsPageLimit = 500
+
+// ListSessions returns aggregate statistics for all sessions in the tenant.
 //
-// The server returns {"sessions": [...]} so we unwrap the wrapper.
+// Junior Tip [paginate past default 50]: the server defaults limit=50 for MCP
+// token budgets. Agents need the full tenant, so we request limit=500 and follow
+// has_more/next_offset until the last page. Skipping pagination left consolidation
+// scanning only ~4 of 64 sessions that still needed work on HEL1 bench-1.
 func (m *Memory) ListSessions(ctx context.Context, opts ...ReadOption) ([]SessionStats, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -792,30 +799,48 @@ func (m *Memory) ListSessions(ctx context.Context, opts ...ReadOption) ([]Sessio
 
 	_ = opts
 
-	respBytes, err := m.conn.Get(ctx, "/api/v1/sessions/stats", nil)
-	if err != nil {
-		return nil, err
-	}
+	allSessions := make([]SessionStats, 0)
+	pageOffset := 0
+	for {
+		queryParams := url.Values{}
+		queryParams.Set("limit", strconv.Itoa(listSessionsPageLimit))
+		queryParams.Set("offset", strconv.Itoa(pageOffset))
 
-	// The endpoint returns either an envelope {"sessions": [...], "count": N, ...}
-	// or (legacy) a bare array [...].
-	//
-	switch firstJSONToken(respBytes) {
-	case '[':
-		var stats []SessionStats
-		if parseErr := json.Unmarshal(respBytes, &stats); parseErr != nil {
-			return nil, fmt.Errorf("parsing sessions response (array): %w", parseErr)
+		respBytes, getErr := m.conn.Get(ctx, "/api/v1/sessions/stats", queryParams)
+		if getErr != nil {
+			return nil, getErr
 		}
-		return stats, nil
-	case '{':
-		var wrapped sessionsWrapper
-		if parseErr := json.Unmarshal(respBytes, &wrapped); parseErr != nil {
-			return nil, fmt.Errorf("parsing sessions response (object): %w", parseErr)
+
+		// The endpoint returns either an envelope {"sessions": [...], "has_more": ...}
+		// or (legacy) a bare array [...]. Legacy arrays are treated as a single page.
+		switch firstJSONToken(respBytes) {
+		case '[':
+			var stats []SessionStats
+			if parseErr := json.Unmarshal(respBytes, &stats); parseErr != nil {
+				return nil, fmt.Errorf("parsing sessions response (array): %w", parseErr)
+			}
+			return append(allSessions, stats...), nil
+		case '{':
+			var wrapped sessionsWrapper
+			if parseErr := json.Unmarshal(respBytes, &wrapped); parseErr != nil {
+				return nil, fmt.Errorf("parsing sessions response (object): %w", parseErr)
+			}
+			allSessions = append(allSessions, wrapped.Sessions...)
+			if !wrapped.HasMore {
+				return allSessions, nil
+			}
+			// Junior Tip [prefer next_offset]: when the server sets next_offset we
+			// advance by that; otherwise fall back to offset+page size so a buggy
+			// has_more=true with next_offset=0 cannot infinite-loop on page 0.
+			if wrapped.NextOffset > pageOffset {
+				pageOffset = wrapped.NextOffset
+			} else {
+				pageOffset += listSessionsPageLimit
+			}
+		default:
+			// Empty body or "null": no sessions, not an error.
+			return allSessions, nil
 		}
-		return wrapped.Sessions, nil
-	default:
-		// Empty body or "null": no sessions, not an error.
-		return []SessionStats{}, nil
 	}
 }
 
