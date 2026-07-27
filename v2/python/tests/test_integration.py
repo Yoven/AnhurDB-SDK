@@ -34,6 +34,7 @@ from anhurdb import (
     AnhurError,
     AnhurAuthError,
     AnhurQueryError,
+    sessions_all,
 )
 from anhurdb.query import QueryBuilder, Filter
 
@@ -114,7 +115,7 @@ async def test_memory_add():
 async def test_memory_search():
     """Test Memory.search() — find memories."""
     async with Memory(api_key=API_KEY, url=SERVER_URL, user_id="integration-test") as mem:
-        results = await mem.search("software engineer", limit=5)
+        results = await mem.search("software engineer", sessions_all(), limit=5)
         record_result(
             "Memory.search",
             isinstance(results, list),
@@ -136,7 +137,7 @@ async def test_memory_profile():
 async def test_memory_search_by_type():
     """Test Memory.search_by_type()."""
     async with Memory(api_key=API_KEY, url=SERVER_URL, user_id="integration-test") as mem:
-        results = await mem.search_by_type("fact", limit=5)
+        results = await mem.search_by_type("fact", sessions_all(), limit=5)
         record_result(
             "Memory.search_by_type",
             isinstance(results, (list, dict)),
@@ -147,7 +148,7 @@ async def test_memory_search_by_type():
 async def test_memory_smart_search():
     """Test Memory.smart_search()."""
     async with Memory(api_key=API_KEY, url=SERVER_URL, user_id="integration-test") as mem:
-        results = await mem.smart_search("engineer", limit=5)
+        results = await mem.smart_search("engineer", sessions_all(), limit=5)
         record_result(
             "Memory.smart_search",
             results is not None,
@@ -158,7 +159,7 @@ async def test_memory_smart_search():
 async def test_memory_recall():
     """Test Memory.recall()."""
     async with Memory(api_key=API_KEY, url=SERVER_URL, user_id="integration-test") as mem:
-        results = await mem.recall("engineer", limit=5)
+        results = await mem.recall("engineer", sessions_all(), limit=5)
         record_result(
             "Memory.recall",
             isinstance(results, list),
@@ -590,7 +591,7 @@ async def test_anhur_client_extras():
 
         # search
         try:
-            results = await client.search("integration test", limit=5)
+            results = await client.search("integration test", sessions_all(), limit=5)
             record_result(
                 "AnhurClient.search",
                 isinstance(results, (list, dict)),
@@ -601,7 +602,7 @@ async def test_anhur_client_extras():
 
         # smart_search
         try:
-            results = await client.smart_search("integration", limit=5)
+            results = await client.smart_search("integration", sessions_all(), limit=5)
             record_result(
                 "AnhurClient.smart_search",
                 results is not None,
@@ -629,7 +630,7 @@ async def test_security():
     # Bad API key should raise AnhurAuthError
     try:
         async with Memory(api_key="invalid-key-12345", url=SERVER_URL, user_id="sec-test") as mem:
-            await mem.search("test")
+            await mem.search("test", sessions_all())
         record_result("Security: bad key rejection", False, "should have raised AnhurAuthError")
     except AnhurAuthError:
         record_result("Security: bad key rejection", True)
@@ -649,7 +650,7 @@ async def test_security():
     # Empty query should raise ValueError
     try:
         async with Memory(api_key=API_KEY, url=SERVER_URL, user_id="sec-test") as mem:
-            await mem.search("")
+            await mem.search("", sessions_all())
         record_result("Security: empty query rejection", False, "should have raised ValueError")
     except ValueError:
         record_result("Security: empty query rejection", True)

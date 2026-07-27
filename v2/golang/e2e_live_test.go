@@ -110,7 +110,7 @@ func TestLiveE2E(testHandle *testing.T) {
 	var searchErr error
 	var found bool
 	for attempt := 1; attempt <= 6; attempt++ {
-		hits, searchErr = mem.Search(ctx, "backend engineer AnhurDB Go", WithLimit(10))
+		hits, searchErr = mem.Search(ctx, "backend engineer AnhurDB Go", SessionsAll(), WithLimit(10))
 		if searchErr != nil {
 			break
 		}

@@ -35,7 +35,7 @@ func main() {
         anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
 
     // Reads do not need CreateSession
-    hits, _ := mem.Search(ctx, "what does this user do?")
+    hits, _ := mem.Search(ctx, "what does this user do?", anhurdb.SessionsAll())
     for _, h := range hits {
         fmt.Printf("%s (%.2f)\n", h.Summary, h.Similarity)
     }
@@ -79,17 +79,17 @@ mem := anhurdb.NewMemory("key",
 sessionID, err := mem.CreateSession(ctx)               // Required before writes
 result, err := mem.Add(ctx, "text",
     anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
-hits, err := mem.Search(ctx, "query")                  // Plane search (query=FTS text; prefer SmartSearch for conceptual RAG)
-hits, err := mem.Search(ctx, "query", WithLimit(20))   // With options
+hits, err := mem.Search(ctx, "query", anhurdb.SessionsAll())          // Plane search (query=FTS text; prefer SmartSearch for conceptual RAG)
+hits, err := mem.Search(ctx, "query", []string{sessionID}, WithLimit(20)) // One chat, with options
 profile, err := mem.Profile(ctx)                       // User profile (?tag=)
 ```
 
 ### Search & Discovery
 
 ```go
-hits, err := mem.SearchByType(ctx, "fact", 50)         // Tenant type filter only — not a Shared Data plane switch
-raw, err := mem.SmartSearch(ctx, "query", 10)          // Prefer for conceptual text (weight-boosted FTS)
-hits, err := mem.Recall(ctx, "query", 20)              // Global alias
+hits, err := mem.SearchByType(ctx, "fact", anhurdb.SessionsAll(), 50) // Tenant type filter only — not a Shared Data plane switch
+raw, err := mem.SmartSearch(ctx, "query", anhurdb.SessionsAll(), 10)  // Prefer for conceptual text (weight-boosted FTS)
+hits, err := mem.Recall(ctx, "query", anhurdb.SessionsAll(), 20)      // Same engine as Search, MCP naming
 records, err := mem.Recent(ctx, 5)                     // Most recent
 ```
 

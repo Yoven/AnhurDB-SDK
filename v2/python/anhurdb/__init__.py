@@ -8,7 +8,7 @@ Two entry points:
 
 Quick start::
 
-    from anhurdb import Memory
+    from anhurdb import Memory, sessions_all
 
     async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
         session_id = await mem.create_session()
@@ -17,7 +17,7 @@ Quick start::
             mode="ingest",
             session_id=session_id,
         )
-        hits = await mem.search("what does the user do?")
+        hits = await mem.search("what does the user do?", sessions_all())
 
 Full API::
 
@@ -44,6 +44,11 @@ from .models import (
     EntityEdge,
 )
 from .client import Memory, AnhurClient
+from .client.session_filter import (
+    MAX_SESSION_FILTER_UUIDS,
+    SESSION_WILDCARD,
+    sessions_all,
+)
 from .client.exceptions import (
     AnhurError,
     AnhurAuthError,
@@ -64,6 +69,10 @@ __all__ = [
     "SessionStats",
     "EntityModel",
     "EntityEdge",
+    # Session filter (ADR-0014) — every search takes a mandatory `sessions`
+    "sessions_all",
+    "SESSION_WILDCARD",
+    "MAX_SESSION_FILTER_UUIDS",
     # Exceptions
     "AnhurError",
     "AnhurAuthError",

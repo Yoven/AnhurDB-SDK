@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
 )
@@ -129,20 +130,33 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 // --------------------------------------------------------------------------
 
 // SearchSession runs a hybrid (vector + full-text) search scoped to a single
-// session UUID via POST /api/v1/search with scope=sessions. Unlike Search
-// (tenant-wide sessions plane), this confines results to one chat — the MCP
-// semantic_search(uuid=...) contract.
+// session UUID via POST /api/v1/search with scope=sessions. It is sugar over
+// Search(ctx, query, []string{sessionUUID}) — the MCP semantic_search(uuid=...)
+// contract expressed in the ADR-0014 grammar.
 //
-// An empty sessionUUID is allowed and means "unscoped within tenant" (the
-// server treats an empty uuid as no session filter), but the common call passes
-// a concrete chat uuid.
+// An empty sessionUUID falls back to the client's current session, matching the
+// Python and TypeScript SDKs. When there is no current session either, the call
+// FAILS instead of searching the whole tenant.
 //
+// Junior Tip [why the empty uuid stopped meaning "everything"]: this method used
+// to send `uuid: ""`, which the server read as "no session filter" — a method
+// named SearchSession silently searching every session was the exact defect
+// ADR-0014 exists to kill. Widening is now spelled Search(..., SessionsAll()).
 func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, opts ...ReadOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 	if query == "" {
 		return nil, ErrEmptyInput
+	}
+
+	targetSession := strings.TrimSpace(sessionUUID)
+	if targetSession == "" {
+		targetSession = strings.TrimSpace(m.sessionUUID)
+	}
+	resolvedSessions, sessionsErr := normalizeSessionFilter([]string{targetSession})
+	if sessionsErr != nil {
+		return nil, sessionsErr
 	}
 
 	cfg := applyReadOptions(opts)
@@ -154,10 +168,10 @@ func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, o
 	}
 
 	payload := map[string]interface{}{
-		"uuid":  sessionUUID,
-		"text":  query,
-		"limit": limit,
-		"scope": "sessions",
+		"sessions": resolvedSessions,
+		"text":     query,
+		"limit":    limit,
+		"scope":    "sessions",
 	}
 	if cfg.typeFilter != "" {
 		payload["type_filter"] = cfg.typeFilter

@@ -9,6 +9,10 @@
  */
 
 import { HttpClient } from "./client.js";
+import {
+  appendSessionsQueryParam,
+  normalizeSessions,
+} from "./sessionFilter.js";
 import type {
   AddOptions,
   AddResult,
@@ -315,32 +319,48 @@ export class Memory {
    *
    * Default scope `sessions` (tenant chat; excludes shared-library uuids).
    *
+   * `sessions` is MANDATORY (ADR-0014): pass {@link sessionsAll} for every
+   * session inside the scope, or the explicit uuids to confine the query to
+   * those chats. An empty array is an error, never "all".
+   *
+   * Junior Tip [scope vs sessions]: the two are orthogonal. `scope` picks the
+   * BOUNDARY (which store/plane is reachable at all); `sessions` picks the
+   * SUBSET inside that boundary. `["*"]` means "everything in this boundary" —
+   * it is not a way to cross into a shared plane.
+   *
    * Agent UX — text is not semantic: `query` is sent as body `text` (FTS5
    * exact-word matching), not an embedding. For conceptual RAG without a
    * vector, prefer {@link smartSearch} (or MCP `recall`).
    *
-   * @param query   - Query string sent as FTS `text`.
-   * @param options - Optional limit, type filter, and scope plane.
+   * @param query    - Query string sent as FTS `text`.
+   * @param sessions - Session filter (required): `sessionsAll()` or uuids.
+   * @param options  - Optional limit, type filter, and scope plane.
    * @returns Array of search results sorted by relevance.
+   * @throws {AnhurError} `INVALID_PARAM: ...` when the session filter is
+   *   absent, empty, contradictory, or above the cap.
    *
    * @example
    * ```ts
-   * const results = await mem.search("what does this user do?", { limit: 5 });
+   * const results = await mem.search(
+   *   "what does this user do?", sessionsAll(), { limit: 5 });
    * results.forEach(r => console.log(r.record.summary, r.similarity));
    * ```
    */
   async search(
     query: string,
+    sessions: string[],
     options?: SearchOptions): Promise<SearchResult[]> {
     if (!query) {
       throw new Error("query cannot be empty");
     }
+    const resolvedSessions = normalizeSessions(sessions);
     await this.tagReady;
 
     const payload: SearchPayload = {
       text: query,
       limit: options?.limit ?? 10,
       scope: options?.scope ?? "sessions",
+      sessions: resolvedSessions,
     };
     if (options?.typeFilter) {
       payload.type_filter = options.typeFilter;
@@ -357,32 +377,48 @@ export class Memory {
     return this.nestSearchResults(data.results);
   }
 
-  /** Search chat sessions only (`scope=sessions`). */
+  /**
+   * Search chat sessions only (`scope=sessions`).
+   * `sessions` is mandatory — see {@link search}.
+   */
   async searchSessions(
     query: string,
+    sessions: string[],
     options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, { ...options, scope: "sessions" });
+    return this.search(query, sessions, { ...options, scope: "sessions" });
   }
 
-  /** Search tenant-shared library docs (`scope=tenant_shared`). */
+  /**
+   * Search tenant-shared library docs (`scope=tenant_shared`).
+   * `sessions` is mandatory and selects inside the shared boundary.
+   */
   async searchTenantShared(
     query: string,
+    sessions: string[],
     options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, { ...options, scope: "tenant_shared" });
+    return this.search(query, sessions, { ...options, scope: "tenant_shared" });
   }
 
-  /** Search client-wide shared library (`scope=client_shared`). */
+  /**
+   * Search client-wide shared library (`scope=client_shared`).
+   * `sessions` is mandatory and selects inside the shared boundary.
+   */
   async searchClientShared(
     query: string,
+    sessions: string[],
     options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, { ...options, scope: "client_shared" });
+    return this.search(query, sessions, { ...options, scope: "client_shared" });
   }
 
-  /** Search both shared planes (`scope=shared_all`). */
+  /**
+   * Search both shared planes (`scope=shared_all`).
+   * `sessions` is mandatory and selects inside both shared boundaries.
+   */
   async searchShared(
     query: string,
+    sessions: string[],
     options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, { ...options, scope: "shared_all" });
+    return this.search(query, sessions, { ...options, scope: "shared_all" });
   }
 
   // ── searchSession() — session-scoped hybrid search ──────────
@@ -390,11 +426,20 @@ export class Memory {
   /**
    * Search for relevant memories WITHIN a single chat/session.
    *
-   * Uses `POST /api/v1/search` with `scope=sessions` and a session `uuid`.
+   * Sugar over `search(query, [sessionUuid])` — the one-chat case expressed in
+   * the ADR-0014 grammar.
+   *
+   * Junior Tip [why the empty uuid stopped meaning "everything"]: this method
+   * used to send `uuid: ""` when there was no current session, and the server
+   * read that as "no session filter". A method named `searchSession` silently
+   * searching every session is the exact defect ADR-0014 exists to kill.
+   * Widening is now spelled `search(query, sessionsAll())`.
    *
    * @param query       - Natural language query (sent as `text`).
    * @param sessionUuid - Session UUID to scope to. Empty/omitted = current session.
    * @param options     - Optional limit and type filter.
+   * @throws {AnhurError} `INVALID_PARAM: ...` when neither an explicit session
+   *   nor a current session is available.
    */
   async searchSession(
     query: string,
@@ -403,10 +448,12 @@ export class Memory {
     if (!query) {
       throw new Error("query cannot be empty");
     }
+    const targetSession = (sessionUuid ?? this.sessionUuid) || "";
+    const resolvedSessions = normalizeSessions([targetSession]);
     await this.tagReady;
 
     const payload: SearchSessionPayload = {
-      uuid: sessionUuid ?? this.sessionUuid,
+      sessions: resolvedSessions,
       text: query,
       limit: options?.limit ?? 10,
       scope: "sessions",
@@ -481,16 +528,25 @@ export class Memory {
    * Shared Data. For specialty docs use {@link searchTenantShared} /
    * {@link searchClientShared} / {@link searchShared} (or `search` with scope).
    *
-   * @param type  - The memory type to filter by (e.g. "fact", "episodic").
-   * @param limit - Maximum results to return (default 20).
+   * `sessions` is MANDATORY (ADR-0014), exactly as in {@link search}: this
+   * endpoint had no session argument at all before, so "give me the facts of
+   * this chat" quietly returned the facts of every chat.
+   *
+   * @param type     - The memory type to filter by (e.g. "fact", "episodic").
+   * @param sessions - Session filter (required): `sessionsAll()` or uuids.
+   * @param limit    - Maximum results to return (default 20).
+   * @param query    - Optional keyword search within the type.
    */
   async searchByType(
     type: MemoryType,
+    sessions: string[],
     limit?: number,
     query?: string): Promise<SearchResult[]> {
-    const params: Record<string, string> = { type };
-    if (limit !== undefined) params.limit = String(limit);
-    if (query) params.q = query;
+    const resolvedSessions = normalizeSessions(sessions);
+    const params: Array<[string, string]> = [["type", type]];
+    if (limit !== undefined) params.push(["limit", String(limit)]);
+    appendSessionsQueryParam(params, resolvedSessions);
+    if (query) params.push(["q", query]);
 
     // the `{results:[{record,similarity}]}` envelope of search/recall/searchSession.
     // BARE record array under `records`: `{records:[<Record>],count:N}`. Reading
@@ -525,22 +581,31 @@ export class Memory {
    * required). Uses `GET /api/v1/search/smart` with the same memory-plane
    * `scope` as {@link search} (default `sessions`).
    *
-   * @param query - Search query.
-   * @param limit - Maximum results (default 10).
-   * @param type - Optional memory type filter.
-   * @param scope - Search plane (default `sessions`).
+   * `sessions` is MANDATORY (ADR-0014), exactly as in {@link search}.
+   * `smartSearch` is one of the two paths that had no session argument at all
+   * before — it accepted the scope, dropped the chat filter, and answered from
+   * every conversation.
+   *
+   * @param query    - Search query.
+   * @param sessions - Session filter (required): `sessionsAll()` or uuids.
+   * @param limit    - Maximum results (default 10).
+   * @param type     - Optional memory type filter.
+   * @param scope    - Search plane (default `sessions`).
    */
   async smartSearch(
     query: string,
+    sessions: string[],
     limit?: number,
     type?: MemoryType,
     scope?: SearchScope): Promise<unknown> {
-    const params: Record<string, string> = {
-      q: query,
-      limit: String(limit ?? 10),
-      scope: scope ?? "sessions",
-    };
-    if (type) params.type = type;
+    const resolvedSessions = normalizeSessions(sessions);
+    const params: Array<[string, string]> = [
+      ["q", query],
+      ["limit", String(limit ?? 10)],
+      ["scope", scope ?? "sessions"],
+    ];
+    appendSessionsQueryParam(params, resolvedSessions);
+    if (type) params.push(["type", type]);
 
     return this.client.get(
       "/api/v1/search/smart",
@@ -553,15 +618,19 @@ export class Memory {
    * Explicit alias for `search()` (default `scope=sessions`).
    * Named to match the MCP `recall` tool.
    *
-   * @param query - Natural language query.
-   * @param limit - Maximum results (default 10).
-   * @param options - Optional scope (and other search options except limit).
+   * `sessions` is MANDATORY (ADR-0014) — see {@link search}.
+   *
+   * @param query    - Natural language query.
+   * @param sessions - Session filter (required): `sessionsAll()` or uuids.
+   * @param limit    - Maximum results (default 10).
+   * @param options  - Optional scope (and other search options except limit).
    */
   async recall(
     query: string,
+    sessions: string[],
     limit?: number,
     options?: Omit<SearchOptions, "limit">): Promise<SearchResult[]> {
-    return this.search(query, {
+    return this.search(query, sessions, {
       limit: limit ?? 10,
       scope: options?.scope ?? "sessions",
       typeFilter: options?.typeFilter,

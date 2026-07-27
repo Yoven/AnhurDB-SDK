@@ -23,7 +23,7 @@ Security hardening:
 import aiohttp
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 from urllib.parse import urlencode
 
 from .exceptions import (
@@ -32,6 +32,17 @@ from .exceptions import (
     AnhurQueryError,
     AnhurAuthError,
 )
+
+# Query-string arguments accepted by the read verbs.
+#
+# Junior Tip [why a pair sequence is allowed alongside the mapping]: the
+# ADR-0014 ``sessions`` filter is multi-valued and MUST reach the server as a
+# repeated key (``?sessions=a&sessions=b``). A ``Dict[str, str]`` cannot express
+# a repeated key, and joining the uuids with a separator would break the day a
+# session id contains that character. ``urlencode`` accepts either shape as-is,
+# so widening the type costs nothing and every existing dict call site keeps
+# working untouched.
+QueryParams = Union[Dict[str, str], Sequence[Tuple[str, str]]]
 
 # Maximum response body size: 100 MB.
 # Prevents memory exhaustion from malicious or misconfigured servers.
@@ -172,14 +183,16 @@ class HTTPConnection:
     async def get(
         self,
         path: str,
-        params: Optional[Dict[str, str]] = None,
+        params: Optional[QueryParams] = None,
         raw_text: bool = False,
     ) -> Any:
         """Send a GET request.
 
         Args:
             path:      API path (e.g. ``/api/v1/manifest``).
-            params:    Optional query-string parameters.
+            params:    Optional query-string parameters — a mapping, or a
+                       sequence of (key, value) pairs when the same key repeats
+                       (the ADR-0014 ``sessions`` filter).
             raw_text:  When True, a non-JSON body is returned as the decoded
                        string instead of being wrapped in ``{"message": ...}``.
                        Used by ``read_content`` for plain-text records.
@@ -323,7 +336,7 @@ class HTTPConnection:
         method: str,
         path: str,
         body: Any = None,
-        params: Optional[Dict[str, str]] = None,
+        params: Optional[QueryParams] = None,
         raw_text: bool = False,
     ) -> Any:
         """Execute a single HTTP request and return parsed JSON.

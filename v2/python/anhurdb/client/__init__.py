@@ -11,10 +11,16 @@ import os
 import secrets
 import warnings
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .connection import HTTPConnection
 from .exceptions import AnhurError, AnhurQueryError
+from .session_filter import (
+    MAX_SESSION_FILTER_UUIDS,
+    SESSION_WILDCARD,
+    normalize_sessions,
+    sessions_all,
+)
 from ..models import (
     CreateRequest,
     EntityEdge,
@@ -601,6 +607,7 @@ class Memory:
     async def search(
         self,
         query: str,
+        sessions: Sequence[str],
         *,
         limit: int = 10,
         type_filter: Optional[str] = None,
@@ -612,12 +619,22 @@ class Memory:
         excluding shared-library uuids). Use the scope helpers or pass
         ``tenant_shared``, ``client_shared``, or ``shared_all`` explicitly.
 
+        ``sessions`` is MANDATORY (ADR-0014): pass ``sessions_all()`` for every
+        session inside the scope, or the explicit uuids to confine the query to
+        those chats. ``None`` and ``[]`` are errors, never "all".
+
+        Junior Tip [scope vs sessions]: the two are orthogonal. ``scope`` picks
+        the BOUNDARY (which store/plane is reachable at all); ``sessions`` picks
+        the SUBSET inside that boundary. ``["*"]`` means "everything in this
+        boundary" — it is not a way to cross into a shared plane.
+
         Agent UX — text is not semantic: ``query`` is sent as body ``text``
         (FTS5 exact-word matching), not an embedding. For conceptual RAG
         without a vector, prefer ``smart_search`` (or MCP ``recall``).
 
         Args:
             query:       Query string sent as FTS ``text`` (required).
+            sessions:    Session filter (required) — ``sessions_all()`` or uuids.
             limit:       Maximum results (default 10).
             type_filter: Optional memory type filter.
             scope:       Search plane (default ``sessions``).
@@ -626,38 +643,63 @@ class Memory:
             List of typed ``SearchResult`` objects (nested ``.record`` +
             ``.similarity``).
 
+        Raises:
+            AnhurError: ``INVALID_PARAM: ...`` when the session filter is
+                absent, empty, contradictory, or above the cap.
+
         Example::
 
-            hits = await mem.search("what does this user do?", limit=5)"""
-        payload: Dict[str, Any] = {"text": query, "limit": limit, "scope": scope}
+            hits = await mem.search(
+                "what does this user do?", sessions_all(), limit=5
+            )"""
+        resolved_sessions = normalize_sessions(sessions)
+        payload: Dict[str, Any] = {
+            "text": query,
+            "limit": limit,
+            "scope": scope,
+            "sessions": resolved_sessions,
+        }
         if type_filter:
             payload["type_filter"] = type_filter
         data = await self._connection.post("/api/v1/search", payload)
         return _parse_search_results(data)
 
-    async def search_sessions(self, query: str, **kwargs: Any) -> List[SearchResult]:
-        """Search chat sessions only (``scope=sessions``)."""
-        return await self.search(query, scope="sessions", **kwargs)
+    async def search_sessions(
+        self, query: str, sessions: Sequence[str], **kwargs: Any
+    ) -> List[SearchResult]:
+        """Search chat sessions only (``scope=sessions``).
+
+        ``sessions`` is mandatory — see ``search``."""
+        return await self.search(query, sessions, scope="sessions", **kwargs)
 
     async def search_tenant_shared(
-        self, query: str, **kwargs: Any
+        self, query: str, sessions: Sequence[str], **kwargs: Any
     ) -> List[SearchResult]:
-        """Search tenant-shared library docs (``scope=tenant_shared``)."""
-        return await self.search(query, scope="tenant_shared", **kwargs)
+        """Search tenant-shared library docs (``scope=tenant_shared``).
+
+        ``sessions`` is mandatory and selects inside the shared boundary."""
+        return await self.search(query, sessions, scope="tenant_shared", **kwargs)
 
     async def search_client_shared(
-        self, query: str, **kwargs: Any
+        self, query: str, sessions: Sequence[str], **kwargs: Any
     ) -> List[SearchResult]:
-        """Search client-wide shared library (``scope=client_shared``)."""
-        return await self.search(query, scope="client_shared", **kwargs)
+        """Search client-wide shared library (``scope=client_shared``).
 
-    async def search_shared(self, query: str, **kwargs: Any) -> List[SearchResult]:
-        """Search both shared planes (``scope=shared_all``)."""
-        return await self.search(query, scope="shared_all", **kwargs)
+        ``sessions`` is mandatory and selects inside the shared boundary."""
+        return await self.search(query, sessions, scope="client_shared", **kwargs)
+
+    async def search_shared(
+        self, query: str, sessions: Sequence[str], **kwargs: Any
+    ) -> List[SearchResult]:
+        """Search both shared planes (``scope=shared_all``).
+
+        ``sessions`` is mandatory and selects inside both shared boundaries."""
+        return await self.search(query, sessions, scope="shared_all", **kwargs)
 
     async def search_by_type(
         self,
         memory_type: str,
+        sessions: Sequence[str],
         limit: int = 20,
         query: Optional[str] = None,
     ) -> List[SearchResult]:
@@ -669,17 +711,27 @@ class Memory:
         search Shared Data. For specialty docs use ``search_tenant_shared`` /
         ``search_client_shared`` / ``search_shared`` (or ``search(..., scope=...)``).
 
+        ``sessions`` is MANDATORY (ADR-0014), exactly as in ``search``: this
+        endpoint had no session argument at all before, so "give me the facts of
+        this chat" quietly returned the facts of every chat.
+
         Args:
             memory_type: Type to filter (e.g. ``"fact"``, ``"risk"``).
+            sessions:    Session filter (required) — ``sessions_all()`` or uuids.
             limit:       Maximum results (default 20).
             query:       Optional keyword search within the type.
 
         Returns:
             List of typed ``SearchResult`` objects (nested ``.record`` +
             ``.similarity``)."""
-        params: Dict[str, str] = {"type": memory_type, "limit": str(limit)}
+        resolved_sessions = normalize_sessions(sessions)
+        params: List[Tuple[str, str]] = [
+            ("type", memory_type),
+            ("limit", str(limit)),
+        ]
+        params.extend(("sessions", session) for session in resolved_sessions)
         if query:
-            params["q"] = query
+            params.append(("q", query))
         data = await self._connection.get(
             "/api/v1/search/type", params=params
         )
@@ -695,8 +747,15 @@ class Memory:
     ) -> List[SearchResult]:
         """Search within a single session (all record types, including recent).
 
-        Uses ``POST /api/v1/search`` with ``scope=sessions`` and a session
-        ``uuid`` so results come from one chat only.
+        Sugar over ``search(query, [session_uuid])`` — the one-chat case
+        expressed in the ADR-0014 grammar.
+
+        Junior Tip [why the empty uuid stopped meaning "everything"]: this
+        method used to send ``uuid: ""`` when there was no current session, and
+        the server read that as "no session filter". A method named
+        ``search_session`` silently searching every session is the exact defect
+        ADR-0014 exists to kill. Widening is now spelled
+        ``search(query, sessions_all())``.
 
         Args:
             query:        Natural language query.
@@ -706,22 +765,24 @@ class Memory:
 
         Returns:
             List of typed ``SearchResult`` objects (nested ``.record`` +
-            ``.similarity``)."""
+            ``.similarity``).
+
+        Raises:
+            AnhurError: ``INVALID_PARAM: ...`` when neither an explicit session
+                nor a current session is available."""
         target_uuid = session_uuid if session_uuid is not None else self._session_uuid
-        payload: Dict[str, Any] = {
-            "uuid": target_uuid,
-            "text": query,
-            "limit": limit,
-            "scope": "sessions",
-        }
-        if type_filter:
-            payload["type_filter"] = type_filter
-        data = await self._connection.post("/api/v1/search", payload)
-        return _parse_search_results(data)
+        return await self.search(
+            query,
+            [target_uuid if target_uuid is not None else ""],
+            limit=limit,
+            type_filter=type_filter,
+            scope="sessions",
+        )
 
     async def smart_search(
         self,
         query: str,
+        sessions: Sequence[str],
         *,
         limit: int = 10,
         memory_type: Optional[str] = None,
@@ -733,21 +794,29 @@ class Memory:
         embedding required). Ranks by text relevance × cognitive weight.
         Same memory-plane ``scope`` as ``search()`` (default ``sessions``).
 
+        ``sessions`` is MANDATORY (ADR-0014), exactly as in ``search``.
+        ``smart_search`` is one of the two paths that had no session argument at
+        all before — it accepted the scope, dropped the chat filter, and
+        answered from every conversation.
+
         Args:
             query:       Search query.
+            sessions:    Session filter (required) — ``sessions_all()`` or uuids.
             limit:       Maximum results (default 10).
             memory_type: Optional type filter.
             scope:       Search plane (default ``sessions``).
 
         Returns:
             Search results ranked by cognitive relevance."""
-        params: Dict[str, str] = {
-            "q": query,
-            "limit": str(limit),
-            "scope": scope,
-        }
+        resolved_sessions = normalize_sessions(sessions)
+        params: List[Tuple[str, str]] = [
+            ("q", query),
+            ("limit", str(limit)),
+            ("scope", scope),
+        ]
+        params.extend(("sessions", session) for session in resolved_sessions)
         if memory_type:
-            params["type"] = memory_type
+            params.append(("type", memory_type))
         return await self._connection.get(
             "/api/v1/search/smart", params=params
         )
@@ -755,6 +824,7 @@ class Memory:
     async def recall(
         self,
         query: str,
+        sessions: Sequence[str],
         limit: int = 10,
         *,
         scope: str = "sessions",
@@ -767,14 +837,17 @@ class Memory:
         (whose 4-way fan-out + RRF lives in the MCP server, not the data
         plane). Identical across the three SDKs.
 
+        ``sessions`` is MANDATORY (ADR-0014) — see ``search``.
+
         Args:
             query:     Natural language query.
+            sessions:  Session filter (required) — ``sessions_all()`` or uuids.
             limit:     Maximum results (default 10).
             scope:     Search plane (default ``sessions``).
 
         Returns:
             List of typed ``SearchResult`` objects (inherited from ``search``)."""
-        return await self.search(query, limit=limit, scope=scope)
+        return await self.search(query, sessions, limit=limit, scope=scope)
 
     async def query(
         self,

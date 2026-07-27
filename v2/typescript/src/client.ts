@@ -24,12 +24,25 @@ import {
 /** HTTP methods the client supports. */
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
+/**
+ * Query-string arguments accepted by the read verbs.
+ *
+ * Junior Tip [why a pair array is allowed alongside the record]: the ADR-0014
+ * `sessions` filter is multi-valued and MUST reach the server as a repeated key
+ * (`?sessions=a&sessions=b`). A `Record<string, string>` cannot express a
+ * repeated key, and joining the uuids with a separator would break the day a
+ * session id contains that character. `URLSearchParams` accepts either shape
+ * as-is, so widening the type costs nothing and every existing record call site
+ * keeps working untouched.
+ */
+export type QueryParams = Record<string, string> | Array<[string, string]>;
+
 /** Options forwarded to `fetch()`. */
 interface RequestOptions {
   method: Method;
   path: string;
   body?: unknown;
-  params?: Record<string, string>;
+  params?: QueryParams;
   /**
    * When true, the raw response body is returned verbatim as a string instead
    * of being JSON-parsed. Mirrors the Python SDK's `raw_text=True`.
@@ -123,7 +136,7 @@ export class HttpClient {
    */
   async get<T = unknown>(
     path: string,
-    params?: Record<string, string>,
+    params?: QueryParams,
   ): Promise<T> {
     return this.request<T>({ method: "GET", path, params });
   }
@@ -135,7 +148,7 @@ export class HttpClient {
    */
   async getText(
     path: string,
-    params?: Record<string, string>,
+    params?: QueryParams,
   ): Promise<string> {
     return this.request<string>({
       method: "GET",

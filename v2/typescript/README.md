@@ -9,7 +9,7 @@ Zero runtime dependencies. Works with Node 18+, Deno, Bun, and Cloudflare Worker
 ## Quickstart
 
 ```typescript
-import { Memory } from "anhurdb";
+import { Memory, sessionsAll } from "anhurdb";
 
 const mem = new Memory({ apiKey: "anhur_xxx" });
 const sessionId = await mem.createSession();
@@ -17,8 +17,9 @@ await mem.add("I'm a data scientist at Google working on NLP", {
   mode: "ingest",
   sessionId,
 });
-// Reads do not need createSession
-const results = await mem.search("what does this user do?");
+// Reads do not need createSession, but `sessions` is mandatory (ADR-0014):
+// sessionsAll() = every session in scope, or pass [sessionId] for one chat.
+const results = await mem.search("what does this user do?", sessionsAll());
 ```
 
 ## Installation
@@ -35,7 +36,7 @@ npm install \
 ### Initialize
 
 ```typescript
-import { Memory } from "anhurdb";
+import { Memory, sessionsAll } from "anhurdb";
 
 // Cloud (default)
 const mem = new Memory({ apiKey: "anhur_xxx" });
@@ -66,8 +67,8 @@ await mem.add("Revenue hit $1M this quarter", {
   sessionId,
 });
 
-// Search across all sessions (reads do not need createSession)
-const results = await mem.search("user preferences?", { limit: 5 });
+// Search across every session in scope (reads do not need createSession)
+const results = await mem.search("user preferences?", sessionsAll(), { limit: 5 });
 for (const r of results) {
   console.log(`${r.record.summary} (similarity: ${r.similarity})`);
 }
@@ -81,13 +82,13 @@ console.log(profile.static);  // identity, preferences
 
 ```typescript
 // Tenant type filter only — not a Shared Data plane switch
-const facts = await mem.searchByType("fact", 50);
+const facts = await mem.searchByType("fact", sessionsAll(), 50);
 
 // Prefer for conceptual text (weight-boosted FTS; search() sends query as FTS text)
-const smart = await mem.smartSearch("engineering experience", 10);
+const smart = await mem.smartSearch("engineering experience", sessionsAll(), 10);
 
 // Plane-aware recall (SDK alias of search; default scope=sessions)
-const broad = await mem.recall("engineering", 20);
+const broad = await mem.recall("engineering", sessionsAll(), 20);
 
 // Most recent records
 const latest = await mem.recent(5);

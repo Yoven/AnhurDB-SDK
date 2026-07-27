@@ -30,6 +30,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from anhurdb.client import Memory, AnhurClient
+from anhurdb.client.session_filter import sessions_all
 from anhurdb.client.connection import HTTPConnection
 from anhurdb.client.exceptions import (
     AnhurAuthError,
@@ -319,7 +320,7 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         # ({"results":[{"record":{...},"similarity":0.95}]}) and the Go/TS SDKs.
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
-            results = await mem.search("what does user do?")
+            results = await mem.search("what does user do?", sessions_all())
             self.assertEqual(len(results), 2)
             self.assertEqual(results[0].record.id, 1)
             self.assertEqual(results[0].record.summary, "Data scientist at Google")
@@ -636,7 +637,7 @@ class TestSearchScopePlanes(AioHTTPTestCase):
     async def test_search_defaults_scope_sessions_on_canonical_path(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="key", url=url, user_id="u1") as mem:
-            await mem.search("hello")
+            await mem.search("hello", sessions_all())
             captured = self.app["captured"]
             self.assertEqual(captured["path"], "/api/v1/search")
             self.assertEqual(captured["body"].get("scope"), "sessions")
@@ -645,14 +646,14 @@ class TestSearchScopePlanes(AioHTTPTestCase):
     async def test_search_tenant_shared_helper(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="key", url=url, user_id="u1") as mem:
-            await mem.search_tenant_shared("Nomad")
+            await mem.search_tenant_shared("Nomad", sessions_all())
             self.assertEqual(self.app["captured"]["body"].get("scope"), "tenant_shared")
 
     @unittest_run_loop
     async def test_smart_search_sends_scope_query(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="key", url=url, user_id="u1") as mem:
-            await mem.smart_search("engineering", scope="client_shared")
+            await mem.smart_search("engineering", sessions_all(), scope="client_shared")
             smart = self.app["captured_smart"]
             self.assertEqual(smart["path"], "/api/v1/search/smart")
             self.assertEqual(smart["query"].get("scope"), "client_shared")
@@ -661,7 +662,7 @@ class TestSearchScopePlanes(AioHTTPTestCase):
     async def test_recall_forwards_scope(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="key", url=url, user_id="u1") as mem:
-            await mem.recall("hello", scope="shared_all")
+            await mem.recall("hello", sessions_all(), scope="shared_all")
             self.assertEqual(self.app["captured"]["body"].get("scope"), "shared_all")
 
 
@@ -687,7 +688,7 @@ class TestSecurityHeaders(AioHTTPTestCase):
     async def test_x_api_key_header_sent(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="my-secret-key", url=url, user_id="u1") as mem:
-            await mem.search("test")
+            await mem.search("test", sessions_all())
             headers = self.app["captured_headers"]
             self.assertEqual(headers.get("X-Api-Key") or headers.get("X-API-Key"),
                              "my-secret-key")
@@ -697,7 +698,7 @@ class TestSecurityHeaders(AioHTTPTestCase):
         """Must NOT use Bearer auth."""
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="key", url=url, user_id="u1") as mem:
-            await mem.search("test")
+            await mem.search("test", sessions_all())
             headers = self.app["captured_headers"]
             auth = headers.get("Authorization", "")
             self.assertNotIn("Bearer", auth)
@@ -752,7 +753,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
         url = f"http://localhost:{self.server.port}"
         async with AnhurClient(url=url, api_key="test-key") as client:
             with self.assertRaises(AnhurError) as ctx:
-                await client.search("test")
+                await client.search("test", sessions_all())
             self.assertIn("429", str(ctx.exception))
 
     @unittest_run_loop

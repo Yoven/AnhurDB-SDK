@@ -87,3 +87,16 @@ var WithCreateType = client.WithCreateType
 
 // WithCreateScore sets the score for Memory.Create.
 var WithCreateScore = client.WithCreateScore
+
+// Session filter (ADR-0014) — every search call takes a mandatory `sessions`
+// argument. Re-exported here so callers of the facade never need to import
+// client/ just to spell the wildcard.
+
+// SessionsAll returns []string{"*"} — every session inside the search scope.
+var SessionsAll = client.SessionsAll
+
+// SessionWildcard is the "every session in scope" token ("*").
+const SessionWildcard = client.SessionWildcard
+
+// MaxSessionFilterUUIDs is the cap on explicitly named sessions per request.
+const MaxSessionFilterUUIDs = client.MaxSessionFilterUUIDs

@@ -31,15 +31,24 @@ type Retriever struct {
 	mem        *client.Memory
 	TargetType string // optional: filter by memory type
 	TopK       int
+	// Sessions is the mandatory ADR-0014 session filter applied to every
+	// retrieval. client.SessionsAll() means "the whole scope"; an explicit list
+	// confines the retriever to those chats.
+	Sessions []string
 }
 
 // NewRetriever initialises a semantic AnhurDB retriever.
 //
-// Junior Tip: k is the maximum number of documents to return per query.
-func NewRetriever(mem *client.Memory, k int) *Retriever {
+// Junior Tip: k is the maximum number of documents to return per query, and
+// sessions is required rather than defaulted — a retriever wired into a RAG
+// pipeline is exactly the place where an implicit "search everything" leaks one
+// user's chat into another's answer. Pass client.SessionsAll() to opt into the
+// wide search deliberately.
+func NewRetriever(mem *client.Memory, k int, sessions []string) *Retriever {
 	return &Retriever{
-		mem:  mem,
-		TopK: k,
+		mem:      mem,
+		TopK:     k,
+		Sessions: sessions,
 	}
 }
 
@@ -53,7 +62,7 @@ func (r *Retriever) GetRelevantDocuments(ctx context.Context, query string) ([]D
 		opts = append(opts, client.WithTypeFilter(r.TargetType))
 	}
 
-	results, err := r.mem.Search(ctx, query, opts...)
+	results, err := r.mem.Search(ctx, query, r.Sessions, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("anhurdb retriever failed: %w", err)
 	}

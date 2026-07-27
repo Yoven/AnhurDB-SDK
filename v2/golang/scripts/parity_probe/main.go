@@ -107,7 +107,7 @@ func main() {
 	}
 
 	// ── Search family ─────────────────────────────────────────────────────
-	searchHits, searchErr := mem.Search(ctx, "AnhurDB SDK probe")
+	searchHits, searchErr := mem.Search(ctx, "AnhurDB SDK probe", client.SessionsAll())
 	if searchErr != nil {
 		failOp("Search", searchErr, "")
 	} else {
@@ -142,14 +142,14 @@ func main() {
 		pass("Recent", "ok")
 	}
 
-	_, smartErr := mem.SmartSearch(ctx, "AnhurDB", 5)
+	_, smartErr := mem.SmartSearch(ctx, "AnhurDB", client.SessionsAll(), 5)
 	if smartErr != nil {
 		failOp("SmartSearch", smartErr, "")
 	} else {
 		pass("SmartSearch", "ok")
 	}
 
-	_, recallErr := mem.Recall(ctx, "AnhurDB", 5)
+	_, recallErr := mem.Recall(ctx, "AnhurDB", client.SessionsAll(), 5)
 	if recallErr != nil {
 		failOp("Recall", recallErr, "")
 	} else {

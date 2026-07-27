@@ -23,7 +23,7 @@ func TestSearchPostsCanonicalPathWithDefaultScope(testingState *testing.T) {
 	defer server.Close()
 
 	memoryClient := NewMemory("k", WithURL(server.URL))
-	_, searchErr := memoryClient.Search(context.Background(), "hello")
+	_, searchErr := memoryClient.Search(context.Background(), "hello", SessionsAll())
 	if searchErr != nil {
 		testingState.Fatalf("Search: %v", searchErr)
 	}
@@ -47,7 +47,7 @@ func TestSearchTenantSharedHelperSendsScope(testingState *testing.T) {
 	defer server.Close()
 
 	memoryClient := NewMemory("k", WithURL(server.URL))
-	_, searchErr := memoryClient.SearchTenantShared(context.Background(), "Nomad")
+	_, searchErr := memoryClient.SearchTenantShared(context.Background(), "Nomad", SessionsAll())
 	if searchErr != nil {
 		testingState.Fatalf("SearchTenantShared: %v", searchErr)
 	}
@@ -69,7 +69,7 @@ func TestSmartSearchSendsScopeQuery(testingState *testing.T) {
 	defer server.Close()
 
 	memoryClient := NewMemory("k", WithURL(server.URL))
-	_, smartErr := memoryClient.SmartSearch(context.Background(), "engineering", 10, WithScope("client_shared"))
+	_, smartErr := memoryClient.SmartSearch(context.Background(), "engineering", SessionsAll(), 10, WithScope("client_shared"))
 	if smartErr != nil {
 		testingState.Fatalf("SmartSearch: %v", smartErr)
 	}

@@ -6,12 +6,12 @@
  *
  * @example
  * ```ts
- * import { Memory } from "anhurdb";
+ * import { Memory, sessionsAll } from "anhurdb";
  *
  * const mem = new Memory({ apiKey: "anhur_xxx", url: "https://anhurdb.yoven.ai" });
  * const sessionId = await mem.createSession();
  * await mem.add("I'm a data scientist at Google", { mode: "ingest", sessionId });
- * const results = await mem.search("what does this user do?");
+ * const results = await mem.search("what does this user do?", sessionsAll());
  *
  * // Entity knowledge graph
  * const entities = await mem.searchEntities("Google");
@@ -31,6 +31,13 @@
 export { Memory } from "./memory.js";
 export { HttpClient } from "./client.js";
 export { QueryBuilder } from "./query.js";
+// Session filter (ADR-0014) — every search takes a mandatory `sessions`.
+export {
+  MAX_SESSION_FILTER_UUIDS,
+  SESSION_WILDCARD,
+  normalizeSessions,
+  sessionsAll,
+} from "./sessionFilter.js";
 export type {
   // Constructor
   MemoryOptions,
@@ -43,6 +50,7 @@ export type {
   CreateSessionOptions,
   CreateOptions,
   SearchOptions,
+  SearchPayload,
   SearchScope,
   SearchResult,
   ProfileResult,

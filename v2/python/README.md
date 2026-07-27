@@ -29,7 +29,7 @@ pip install \
 ## Quick Start — Memory (Simple API)
 
 ```python
-from anhurdb import Memory
+from anhurdb import Memory, sessions_all
 
 async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
     # 1) Register a write session (required before ingest/create)
@@ -42,8 +42,9 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
         session_id=session_id,
     )
 
-    # Search across all sessions (reads do not need create_session)
-    results = await mem.search("what does this user do?")
+    # Search — `sessions` is mandatory: sessions_all() is every session in
+    # scope, or pass [session_id] to confine the query to one chat (ADR-0014).
+    results = await mem.search("what does this user do?", sessions_all())
     for r in results:
         print(f"{r['summary']} (score: {r['score']:.2f})")
 
@@ -55,7 +56,7 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
 ## Quick Start — AnhurClient (Full API)
 
 ```python
-from anhurdb import AnhurClient, CreateRequest, MemoryType
+from anhurdb import AnhurClient, CreateRequest, MemoryType, sessions_all
 
 async with AnhurClient(api_key="anhur_xxx") as client:
     # Create a record
@@ -68,7 +69,7 @@ async with AnhurClient(api_key="anhur_xxx") as client:
     ))
 
     # Search
-    results = await client.search("data scientist", limit=10)
+    results = await client.search("data scientist", sessions_all(), limit=10)
 
     # Entity knowledge graph
     entity = await client.upsert_entity("Google", entity_type="organization")
@@ -107,16 +108,16 @@ Memory(
 | Method | Description | Returns |
 |--------|-------------|---------|
 | `add(text, score=5, type="episodic")` | Store a memory | `dict` with session_id, records, mode |
-| `search(query, limit=10, type_filter=None, scope="sessions")` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG) | `list[SearchResult]` |
+| `search(query, sessions, limit=10, type_filter=None, scope="sessions")` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG). `sessions` is **required**: `sessions_all()` or up to 1000 uuids | `list[SearchResult]` |
 | `profile()` | Get user/agent memory profile | `dict` with static, dynamic, stats |
 
 ### Search & Discovery
 
 | Method | Description |
 |--------|-------------|
-| `search_by_type(type, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
-| `smart_search(query, limit=10, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text) |
-| `recall(query, limit=10)` | Global search alias |
+| `search_by_type(type, sessions, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
+| `smart_search(query, sessions, limit=10, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text) |
+| `recall(query, sessions, limit=10)` | Same engine as `search`, MCP naming |
 | `recent(limit=20)` | Most recent records |
 
 ### Graph Traversal

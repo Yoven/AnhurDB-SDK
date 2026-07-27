@@ -418,24 +418,32 @@ export interface RecordPayload {
   valid_until?: string;
 }
 
-/** Payload sent to POST /api/v1/search (scope planes + optional session uuid). */
+/**
+ * Payload sent to POST /api/v1/search (scope boundary + session subset).
+ *
+ * `sessions` is required on the wire (ADR-0014) and is ALWAYS an array, even
+ * for the wildcard: one type, one code path, no `oneOf` in the schema — an
+ * agent generating JSON from the schema errs less when the type is fixed. The
+ * retired singular `uuid` is deliberately absent: it could only express "one
+ * session or none" and two of the four search paths dropped it in silence.
+ */
 export interface SearchPayload {
-  // was being sent alongside and silently ignored. Removed so the wire payload
-  // is exactly what the handler consumes, matching Go/Python.
   text: string;
   limit: number;
   scope: SearchScope;
+  /** `["*"]` for every session in the scope, or up to 1000 explicit uuids. */
+  sessions: string[];
   type_filter?: string;
 }
 
 /**
  * Payload sent to POST /api/v1/search for a single-session query.
  *
- * `uuid` scopes the search to a single chat; `scope` is `sessions`.
- * The SDK sends `text`, `limit`, and optionally `type_filter`.
+ * Same wire shape as {@link SearchPayload} with `scope` pinned to `sessions`;
+ * the one-chat case is just `sessions: [uuid]`.
  */
 export interface SearchSessionPayload {
-  uuid?: string;
+  sessions: string[];
   text?: string;
   type_filter?: string;
   limit?: number;

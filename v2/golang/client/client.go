@@ -8,7 +8,7 @@ Usage:
 	mem := client.NewMemory("my-key", client.WithURL("http://localhost:8000")) // self-hosted
 
 	result, _ := mem.Add(ctx, "User is a data scientist at Google")
-	hits, _   := mem.Search(ctx, "what does this user do?")
+	hits, _   := mem.Search(ctx, "what does this user do?", client.SessionsAll())
 	profile, _ := mem.Profile(ctx)
 
 Extended methods expose the full AnhurDB REST surface:
@@ -502,15 +502,29 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 // Uses POST /api/v1/search with default scope "sessions" (all chat sessions
 // for the tenant, excluding shared-library uuids).
 //
+// sessions is MANDATORY (ADR-0014): pass client.SessionsAll() for every session
+// inside the scope, or the explicit uuids to confine the query to those chats.
+// nil and an empty slice are errors, never "all".
+//
+// Junior Tip [scope vs sessions]: the two are orthogonal. WithScope picks the
+// BOUNDARY (which store/plane is reachable at all); sessions picks the SUBSET
+// inside that boundary. ["*"] means "everything in this boundary" — it is not a
+// way to cross into a shared plane.
+//
 // Agent UX — text is not semantic: query is sent as body "text" (FTS5
 // exact-word matching), not an embedding. For conceptual RAG without a
 // vector, prefer SmartSearch (or MCP recall).
-func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
+func (m *Memory) Search(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 	if query == "" {
 		return nil, ErrEmptyInput
+	}
+
+	resolvedSessions, sessionsErr := normalizeSessionFilter(sessions)
+	if sessionsErr != nil {
+		return nil, sessionsErr
 	}
 
 	cfg := &searchConfig{limit: 10, scope: "sessions"}
@@ -519,9 +533,10 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 	}
 
 	payload := map[string]interface{}{
-		"text":  query,
-		"limit": cfg.limit,
-		"scope": cfg.scope,
+		"text":     query,
+		"limit":    cfg.limit,
+		"scope":    cfg.scope,
+		"sessions": resolvedSessions,
 	}
 	if cfg.typeFilter != "" {
 		payload["type_filter"] = cfg.typeFilter
@@ -549,23 +564,27 @@ func (m *Memory) Search(ctx context.Context, query string, opts ...SearchOption)
 }
 
 // SearchSessions searches chat sessions only (scope=sessions).
-func (m *Memory) SearchSessions(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, append([]SearchOption{WithScope("sessions")}, opts...)...)
+// sessions is mandatory — see Search.
+func (m *Memory) SearchSessions(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope("sessions")}, opts...)...)
 }
 
 // SearchTenantShared searches tenant-shared library docs (scope=tenant_shared).
-func (m *Memory) SearchTenantShared(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, append([]SearchOption{WithScope("tenant_shared")}, opts...)...)
+// sessions is mandatory and selects inside the shared boundary — see Search.
+func (m *Memory) SearchTenantShared(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope("tenant_shared")}, opts...)...)
 }
 
 // SearchClientShared searches the client-wide shared library (scope=client_shared).
-func (m *Memory) SearchClientShared(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, append([]SearchOption{WithScope("client_shared")}, opts...)...)
+// sessions is mandatory and selects inside the shared boundary — see Search.
+func (m *Memory) SearchClientShared(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope("client_shared")}, opts...)...)
 }
 
 // SearchShared searches both shared planes (scope=shared_all).
-func (m *Memory) SearchShared(ctx context.Context, query string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, append([]SearchOption{WithScope("shared_all")}, opts...)...)
+// sessions is mandatory and selects inside both shared boundaries — see Search.
+func (m *Memory) SearchShared(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope("shared_all")}, opts...)...)
 }
 
 // Profile retrieves the memory profile for this container tag.
@@ -628,7 +647,11 @@ func (m *Memory) Profile(ctx context.Context, opts ...ReadOption) (*ProfileResul
 // Agent UX — not a plane switch: no scope parameter. Does not search Shared
 // Data. For specialty docs use SearchTenantShared / SearchClientShared /
 // SearchShared (or Search with WithScope).
-func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, opts ...ReadOption) ([]SearchResult, error) {
+//
+// sessions is MANDATORY (ADR-0014), exactly as in Search: this endpoint had no
+// session argument at all before, so "give me the facts of this chat" quietly
+// returned the facts of every chat.
+func (m *Memory) SearchByType(ctx context.Context, memType string, sessions []string, limit int, opts ...ReadOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
@@ -636,11 +659,17 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 		return nil, ErrEmptyInput
 	}
 
+	resolvedSessions, sessionsErr := normalizeSessionFilter(sessions)
+	if sessionsErr != nil {
+		return nil, sessionsErr
+	}
+
 	cfg := applyReadOptions(opts)
 
 	params := url.Values{}
 	params.Set("type", memType)
 	params.Set("limit", strconv.Itoa(limit))
+	appendSessionsQueryParam(params, resolvedSessions)
 	if cfg.keyword != "" {
 		params.Set("q", cfg.keyword)
 	}
@@ -670,12 +699,21 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, limit int, op
 // Prefer over Search for conceptual text queries (no embedding required).
 // Uses GET /api/v1/search/smart with the same memory-plane scope as Search
 // (default "sessions"). Pass WithScope to select a shared plane.
-func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts ...ReadOption) ([]byte, error) {
+//
+// sessions is MANDATORY (ADR-0014), exactly as in Search. SmartSearch is one of
+// the two paths that had no session argument at all before — it accepted the
+// scope, dropped the chat filter, and answered from every conversation.
+func (m *Memory) SmartSearch(ctx context.Context, query string, sessions []string, limit int, opts ...ReadOption) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 	if query == "" {
 		return nil, ErrEmptyInput
+	}
+
+	resolvedSessions, sessionsErr := normalizeSessionFilter(sessions)
+	if sessionsErr != nil {
+		return nil, sessionsErr
 	}
 
 	cfg := applyReadOptions(opts)
@@ -688,6 +726,7 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts 
 	params.Set("q", query)
 	params.Set("limit", strconv.Itoa(limit))
 	params.Set("scope", scope)
+	appendSessionsQueryParam(params, resolvedSessions)
 	if cfg.typeFilter != "" {
 		params.Set("type", cfg.typeFilter)
 	}
@@ -698,8 +737,10 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, limit int, opts 
 // Recall searches for memories using plane-aware search (default sessions).
 // Functionally identical to Search but named "Recall" to match the MCP
 // tool set naming. Extra search options (including WithScope) are forwarded.
-func (m *Memory) Recall(ctx context.Context, query string, limit int, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, append([]SearchOption{WithLimit(limit)}, opts...)...)
+//
+// sessions is MANDATORY (ADR-0014) — see Search.
+func (m *Memory) Recall(ctx context.Context, query string, sessions []string, limit int, opts ...SearchOption) ([]SearchResult, error) {
+	return m.Search(ctx, query, sessions, append([]SearchOption{WithLimit(limit)}, opts...)...)
 }
 
 // Walk performs a BFS graph traversal starting from a given record.

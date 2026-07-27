@@ -9,6 +9,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { Memory } from "../memory.js";
+import { sessionsAll } from "../sessionFilter.js";
 import {
   AnhurError,
   AnhurAuthError,
@@ -84,7 +85,7 @@ describe("Memory.add() validation", () => {
 describe("Memory.search() validation", () => {
   it("rejects empty query", async () => {
     const mem = new Memory({ apiKey: "key", userId: "u" });
-    await assert.rejects(() => mem.search(""), {
+    await assert.rejects(() => mem.search("", sessionsAll()), {
       message: "query cannot be empty",
     });
   });
@@ -324,7 +325,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
 
   it("search() nests the full record under .record with sibling .similarity", async () => {
     const results = (await withMockedFetch((mem) =>
-      mem.search("what does this user do?"),
+      mem.search("what does this user do?", sessionsAll()),
     )) as SearchResult[];
     assert.equal(results.length, 1);
     // Score lives in the sibling `similarity`, NOT a flat `score`.
@@ -355,7 +356,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
     }) as typeof fetch;
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
-      await mem.search("q");
+      await mem.search("q", sessionsAll());
       assert.ok(capturedUrl.includes("/api/v1/search"));
       assert.ok(!capturedUrl.includes("/search/global"));
       assert.equal(capturedBody.scope, "sessions");
@@ -376,7 +377,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
     }) as typeof fetch;
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
-      await mem.searchTenantShared("Nomad");
+      await mem.searchTenantShared("Nomad", sessionsAll());
       assert.equal(capturedBody.scope, "tenant_shared");
     } finally {
       globalThis.fetch = originalFetch;
@@ -385,7 +386,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
 
   it("recall() returns the same nested shape", async () => {
     const results = (await withMockedFetch((mem) =>
-      mem.recall("google"),
+      mem.recall("google", sessionsAll()),
     )) as SearchResult[];
     assert.equal(results.length, 1);
     assert.equal(results[0].record.id, 42);
@@ -407,7 +408,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
       )) as typeof fetch;
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
-      const results = (await mem.searchByType("fact")) as SearchResult[];
+      const results = (await mem.searchByType("fact", sessionsAll())) as SearchResult[];
       assert.equal(results.length, 1);
       assert.equal(results[0].record.type, "fact");
       assert.equal(results[0].record.id, 42);
@@ -426,7 +427,7 @@ describe("Memory.search (nested SearchResult shape)", () => {
       )) as typeof fetch;
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
-      const results = (await mem.search("q")) as SearchResult[];
+      const results = (await mem.search("q", sessionsAll())) as SearchResult[];
       assert.equal(results[0].similarity, 0);
     } finally {
       globalThis.fetch = originalFetch;
