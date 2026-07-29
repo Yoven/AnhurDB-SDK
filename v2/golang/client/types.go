@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"encoding/json"
 	"time"
 
@@ -720,9 +721,18 @@ type QueryRequest struct {
 	// (anything else falls back to DESC server-side); an invalid field yields
 	// HTTP 400 "invalid sort field". Default when omitted: ORDER BY id DESC.
 	Sort []map[string]string `json:"sort,omitempty"`
-	// Pagination carries {"limit":int,"offset":int}. limit defaults to 50,
-	// hard-capped at 1000; offset defaults to 0 and must be >= 0.
+	// Pagination carries {"limit":int,"offset":int}. limit defaults to 50 and is
+	// hard-capped at 1000 server-side; offset defaults to 0.
+	//
+	// Junior Tip [o doc dizia "must be >= 0" e o servidor nao recusava]: um
+	// offset negativo era SILENCIOSAMENTE trocado por 0 (record_ast_query.go),
+	// entao "must be" descrevia uma regra que ninguem aplicava. Agora Validate()
+	// a aplica no cliente, igual a Python e TypeScript.
 	Pagination map[string]int `json:"pagination,omitempty"`
+
+	// buildErrors coleta problemas detectados pelos metodos fluentes, que nao
+	// podem devolver erro sem quebrar o encadeamento. Validate() os entrega.
+	buildErrors []error
 }
 
 // QueryOp is a per-column operator object for QueryRequest.Filters. Each field
@@ -755,6 +765,14 @@ func (request *QueryRequest) Where(field string, operator QueryOp) *QueryRequest
 	if request.Filters == nil {
 		request.Filters = map[string]QueryOp{}
 	}
+	// Junior Tip [checagem aqui E em Validate(), de proposito]: aqui ela aponta
+	// a LINHA da cadeia que errou, o que e o que o desenvolvedor precisa; em
+	// Validate() ela cobre quem monta o QueryRequest como struct literal, sem
+	// passar por Where(). Python e TypeScript tem as duas pelo mesmo motivo.
+	if !astAllowedFilterColumns[field] {
+		request.buildErrors = append(request.buildErrors,
+			fmt.Errorf("query: field %q is not allowed in filters — allowed: %s", field, sortedAllowedColumns()))
+	}
 	request.Filters[field] = operator
 	return request
 }
@@ -773,6 +791,10 @@ func (request *QueryRequest) Limit(limit int) *QueryRequest {
 	if request.Pagination == nil {
 		request.Pagination = map[string]int{}
 	}
+	if limit < 1 || limit > astQueryLimitMax {
+		request.buildErrors = append(request.buildErrors,
+			fmt.Errorf("query: limit must be between 1 and %d, got %d", astQueryLimitMax, limit))
+	}
 	request.Pagination["limit"] = limit
 	return request
 }
@@ -782,6 +804,10 @@ func (request *QueryRequest) Limit(limit int) *QueryRequest {
 func (request *QueryRequest) Offset(offset int) *QueryRequest {
 	if request.Pagination == nil {
 		request.Pagination = map[string]int{}
+	}
+	if offset < 0 {
+		request.buildErrors = append(request.buildErrors,
+			fmt.Errorf("query: offset cannot be negative, got %d", offset))
 	}
 	request.Pagination["offset"] = offset
 	return request

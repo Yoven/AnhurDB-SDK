@@ -223,6 +223,16 @@ func (m *Memory) Query(ctx context.Context, request *QueryRequest, opts ...ReadO
 	if request == nil {
 		return nil, fmt.Errorf("Query: request is required")
 	}
+	// Junior Tip [validar ANTES de gastar a requisicao — paridade com Python/TS]:
+	// campo fora da whitelist, operador ausente, $in vazio, limit/offset fora de
+	// faixa: os tres SDKs agora recusam no cliente. Sem isto, o Go pagava um
+	// round-trip para receber um 400 que ele ja tinha informacao para prever, e
+	// ate 2026-07-28 nem 400 recebia — o servidor descartava o predicado e
+	// devolvia uma listagem SEM FILTRO, que e a resposta errada mais cara que
+	// existe: parece certa.
+	if validationErr := request.Validate(); validationErr != nil {
+		return nil, validationErr
+	}
 
 	_ = opts
 
