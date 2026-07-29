@@ -90,11 +90,17 @@ class HTTPConnection:
         mode:      ``"rest"`` (direct REST) or ``"mcp"`` (MCP tunnel)."""
 
     # -- MCP tool name mapping (used only in ``mode="mcp"``) ----------------
+    # Junior Tip [os nomes seguem a superficie MCP, que foi cortada de 47 para 22
+    # em 2026-07-28]: `execute_ast` deixou de existir — foi absorvida por `query`,
+    # que aceita o mesmo AST no argumento `ast`. Um mapa apontando para tool morta
+    # nao falha no import nem nos testes: quebra em runtime, so no modo mcp, e so
+    # para quem usa AST. Se a superficie mudar de novo, este mapa tem de mudar
+    # junto — a referencia canonica e AnhurDB/docs/MCP_TOOLS.md.
     _MCP_TOOL_MAP: Dict[str, str] = {
         "/api/v1/records":    "create_memory",
-        "/api/v1/query":      "execute_ast",
+        "/api/v1/query":      "query",
         "/v2/records":        "create_memory",
-        "/v2/search/ast":     "execute_ast",
+        "/v2/search/ast":     "query",
     }
 
     def __init__(

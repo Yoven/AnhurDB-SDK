@@ -94,11 +94,24 @@ O plugin também registra as tools `mcp__anhurdb__*`, para busca explícita dura
 ("procure no AnhurDB o que decidimos sobre X"). Elas são **independentes** do ciclo de memória — se
 você só quer memória automática, pode ignorá-las.
 
-Sem plugin, aponte um `.mcp.json` no seu projeto:
+Sem plugin, aponte um `.mcp.json` no seu projeto (é exatamente o que o plugin instala):
 
 ```json
 { "mcpServers": { "anhurdb": { "type": "http", "url": "https://anhurdb.yoven.ai/mcp" } } }
 ```
+
+> **A superfície mudou em 2026-07-28.** São **22 tools** (antes 47) — ADR-0013 Fase 4. Nomes que
+> sumiram (`execute_ast`, `sdk_query`, `semantic_search`, `smart_search`, `semantic_walk`,
+> `get_record`, `read_content`, `search_shared`, `list_entities`, `entity_timeline`, entre outros)
+> foram absorvidos por uma das 22 — o mapa completo 47→22 está em `AnhurDB/docs/MCP_TOOLS.md`, e a
+> verdade final é o código de registro (`AnhurDB/mcp-server/internal/tools/register22_*.go`).
+> **Tool que não está lá não existe.** As duas citadas neste guia — `create_memory` e
+> `ingest_memory` — continuam existindo com o mesmo nome.
+>
+> Duas mudanças que pegam quem escreve os argumentos na mão:
+> - argumento não declarado é **recusado** (todo schema é `additionalProperties: false`);
+> - o `uuid` singular saiu: filtro de sessão agora é `sessions: ["*"]` ou `sessions: ["<uuid>"]`,
+>   e omitir é erro, não "buscar em tudo" (ADR-0014).
 
 ---
 

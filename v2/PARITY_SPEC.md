@@ -84,7 +84,57 @@ API. This document is the public contract; deviations are bugs.
 | `add` vs `create` | **Session-first:** `create_session` (or `open_session`) before any write. **Write paths:** `add(text, mode="ingest")` → `POST /ingest` (episodic + async extraction, LLM billed). `create(...)` → `POST /records` (one typed record, no extraction). **Trap:** `add` with pinned `type`/`score`/`metadata` skips ingest and hits `/records`. Never both for the same turn. Unregistered client session → fail loud before HTTP. |
 | `create` | Python uses `CreateRequest`; Go uses options; TypeScript uses `CreateOptions`. |
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |
+| `query` AST validation | Since 2026-07-28 the server rejects a malformed filter with a **named HTTP 400** instead of dropping the predicate: bare value instead of an operator object, empty operator object `{}`, empty `$in`, unknown operator, and a non-scalar operator value. The dropped predicate used to widen the result set and answer 200 — a silent wrong answer. Client-side pre-validation is **not** at parity; see "Known parity gaps". |
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |
+
+## Known parity gaps
+
+Deviations from this contract are bugs (see Principles). These are the open ones,
+recorded here so they are tracked rather than rediscovered.
+
+### Query builder pre-validation (`query` / `POST /api/v1/query`) — recorded 2026-07-29
+
+The server-side AST contract is identical for all three SDKs. What is **not**
+identical is how much each builder catches before the request leaves the process.
+Principle 4 ("fail loud — no silent drops") is now enforced server-side for every
+language; the gap is in the quality and timing of the error.
+
+| Guard | Python `QueryBuilder` | TypeScript `QueryBuilder` | Go `QueryRequest` |
+|---|---|---|---|
+| Filter/sort column whitelist (17 columns, mirrors the server) | yes, raises `ValueError` | yes, throws `Error` | **no** — reaches the server, HTTP 400 `invalid filter field` |
+| Operator whitelist (`$eq $gt $gte $lt $lte $in`) | yes, raises `ValueError` | yes, throws `Error` | n/a — `QueryOp` is a closed struct, no unknown operator is expressible |
+| `limit` range 1–1000 | yes, raises `ValueError` | yes, throws `Error` | **no** — server silently falls back to the default 50 when `limit <= 0`, caps at 1000 above it, and echoes neither |
+| `offset >= 0` | yes, raises `ValueError` | yes, throws `Error` | **no** — server silently falls back to 0, not echoed in the response |
+| Cannot emit an empty operator object | yes (fluent path) | yes (fluent path) | **no** — see below |
+| Empty `$in` guarded before the request | no | no | no |
+
+**Go, `client.QueryOp` — the material gap.** All six operator fields are tagged
+`omitempty`, so `QueryOp{}`, `QueryOp{In: []interface{}{}}` and `QueryOp{Eq: nil}`
+all marshal to `{}`, which the server now answers with HTTP 400
+`filter "<field>" has no operator`. Two consequences beyond the 400 itself:
+
+- an empty `$in` from Go reports the generic "has no operator" message instead of
+  the `$in`-specific one Python and TypeScript trigger;
+- `$eq: null` is **not expressible from Go**, although the server accepts a null
+  scalar. Python and TypeScript can send it.
+
+Escape hatches that bypass pre-validation and reach the server raw: Python
+`Filter({...})` (copies the dict with no validation) and TypeScript a hand-built
+`AstQuery` (typically via `as AstQuery`) — both can carry any shape in the table,
+including an unknown operator. In Go a hand-built `QueryRequest` bypasses nothing
+extra, because `Filters` is a `map[string]QueryOp` and `QueryOp` is a closed
+struct; sending an unknown operator from Go requires bypassing the SDK and posting
+raw JSON.
+
+### Accept-and-ignore behaviours (identical in all three, by design)
+
+Not gaps to close silently — changing any of them is a declared contract change:
+`select` is never projected; an unrecognised sort `order` falls back to `DESC`;
+`limit`/`offset` adjustments are not echoed; zero hits arrive on the wire as
+`"records": null`, which all three SDKs coalesce to an empty list; archived rows
+are hidden unless `archived` is filtered explicitly; a
+`semantic_search` block inside `filters` (Python `QueryBuilder.semantic_search()`)
+is accepted and skipped server-side and has never contributed to the result.
 
 ## Deprecated aliases
 

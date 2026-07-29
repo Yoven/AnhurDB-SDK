@@ -3,7 +3,7 @@
 **3 lines. That's all you need.**
 
 ```python
-from anhurdb import Memory
+from anhurdb import Memory, sessions_all
 
 async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
     session_id = await mem.create_session()
@@ -12,7 +12,7 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
         mode="ingest",
         session_id=session_id,
     )
-    context = await mem.search("what does this user do?")
+    context = await mem.search("what does this user do?", sessions_all())
 ```
 
 Available in **Python**, **TypeScript**, and **Go**. Same API. Same endpoints. Zero heavy dependencies.
@@ -70,7 +70,7 @@ mem.create(typed...)             CALLER PATH
     <--------------------------+  No extraction LLM
                                   └─ async: enrichment embed only
 
-mem.search("query")              # default scope=sessions
+mem.search("query", sessions_all())   # sessions REQUIRED; default scope=sessions
     |  POST /api/v1/search
     +-------------------------->  Hybrid search on one memory plane
     <--------------------------+  Ranked results (+ provenance on shared scopes)
@@ -79,6 +79,13 @@ mem.search_tenant_shared(...)    # Shared Data specialty docs
 mem.search_client_shared(...)
 mem.search_shared(...)           # both shared planes (shared_all)
 ```
+
+**Read path — `sessions` is mandatory (ADR-0014).** Every search method takes an
+explicit session filter: `sessions_all()` / `sessionsAll()` / `client.SessionsAll()`
+for "every session in scope", or a list of uuids for specific chats. Omitting it, or
+passing an empty list, is an **HTTP 400** — never a silent search across everything.
+The old singular `uuid` field is gone with no compatibility adapter. Full grammar and
+error messages: [`docs/api/REST_API.md`](docs/api/REST_API.md#session-filter-adr-0014).
 
 ---
 
@@ -93,24 +100,31 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 | `create_session()` | Register a write session (required before ingest/create) | POST /api/v1/sessions |
 | `add(text, mode="ingest")` | **Default raw write:** episodic + async extraction (LLM+embed billed). Requires session. Pins → create path | POST /api/v1/ingest |
 | `create(...)` | **Typed atom only:** one record, no extraction (embed only) | POST /api/v1/records |
-| `search(query, scope=sessions)` | Hybrid plane search — query is FTS `text` (prefer `smart_search` for conceptual RAG) | POST /api/v1/search |
+| `search(query, sessions, scope=sessions)` | Hybrid plane search — query is FTS `text` (prefer `smart_search` for conceptual RAG) | POST /api/v1/search |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
 
 ### Search & Discovery
 
+Every method in this table takes `sessions` as a **required** argument.
+
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `search_sessions(query)` | Chat sessions only (`scope=sessions`) | POST /api/v1/search |
-| `search_tenant_shared(query)` | Tenant Shared Data library | POST /api/v1/search |
-| `search_client_shared(query)` | Client-wide Shared Data library | POST /api/v1/search |
-| `search_shared(query)` | Both shared planes (`scope=shared_all`) | POST /api/v1/search |
-| `search_by_type(type)` | Type filter in tenant store only — **not** a Shared Data plane switch | GET /api/v1/search/type |
-| `smart_search(query, scope=sessions)` | Full-text + cognitive weight (prefer for conceptual text; same `scope` planes) | GET /api/v1/search/smart |
-| `recall(query, scope=sessions)` | Alias of `search` (SDK); MCP recall still fans out server-side | POST /api/v1/search |
-| `recent(limit)` | Most recent memories | GET /api/v1/recent |
+| `search_sessions(query, sessions)` | Chat sessions only (`scope=sessions`) | POST /api/v1/search |
+| `search_tenant_shared(query, sessions)` | Tenant Shared Data library | POST /api/v1/search |
+| `search_client_shared(query, sessions)` | Client-wide Shared Data library | POST /api/v1/search |
+| `search_shared(query, sessions)` | Both shared planes (`scope=shared_all`) | POST /api/v1/search |
+| `search_by_type(type, sessions)` | Type filter in tenant store only — **not** a Shared Data plane switch | GET /api/v1/search/type |
+| `smart_search(query, sessions, scope=sessions)` | Lexical + cognitive weight (prefer for conceptual text; same `scope` planes) | GET /api/v1/search/smart |
+| `recall(query, sessions, scope=sessions)` | Delegates to `search` (no server-side recall endpoint); the 4-way fan-out lives in the MCP server | POST /api/v1/search |
+| `search_session(query, session_uuid)` | Sugar for `search(query, [session_uuid])` | POST /api/v1/search |
+| `recent(limit)` | Most recent memories — not a search endpoint, no `sessions` | GET /api/v1/recent |
 
 **Scope planes:** `sessions` (default) \| `tenant_shared` \| `client_shared` \| `shared_all`.
-Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated alias of `/search`.
+Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated alias of
+`/search` and validates `sessions` identically.
+
+**Session filter:** `sessions_all()` = every session in the plane; `["uuid-a","uuid-b"]`
+= exactly those (max 1000). Absent, empty, or `["*","uuid-a"]` → HTTP 400.
 
 ### Graph Traversal
 
@@ -120,7 +134,15 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | `walk_semantic(seed_id, …)` | **Advanced:** goal-directed walk from a seed — not day-to-day RAG (prefer `smart_search` / `recall`) | POST /api/v1/walk/semantic |
 | `get_context(record_id)` | Get record + 1-hop neighbors | GET /api/v1/records/{id}/topology |
 
-**Power tools (not default RAG):** SDK `query()` / `QueryBuilder` (MCP `execute_ast` / `sdk_query`) and `walk_semantic` (MCP `semantic_walk`) are for exact filters and seed-directed graph walks. For “what do we know about X?” use `smart_search` / `recall` / `search` with `scope`.
+**Power tools (not default RAG):** SDK `query()` / `QueryBuilder` (MCP `query(ast=)` or `query(instructions=)`) and `walk_semantic` (MCP `walk_graph(mode=cost)`) are for exact filters and seed-directed graph walks. For “what do we know about X?” use `smart_search` / `recall` / `search` with `scope`.
+
+> **`POST /api/v1/query` got stricter on 2026-07-28.** An unknown operator, a bare
+> value where an operator object was expected, an empty operator object `{}`, and an
+> empty `$in` are now **400 with a named message** — all four used to be dropped in
+> silence, turning a filtered query into an unfiltered listing. A row-scan failure now
+> returns 500 instead of a 200 with a truncated page. Go SDK callers: `QueryOp{}` and
+> `QueryOp{In: []interface{}{}}` both marshal to `{}` and now fail. Details and the
+> correct filter shape: [`docs/api/REST_API.md`](docs/api/REST_API.md#post-apiv1query--structured-ast-query).
 
 ### Record CRUD
 
@@ -128,7 +150,7 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 |--------|-------------|----------|
 | `read_content(record_id)` | Full content payload of a record | GET /api/v1/records/{id}/content |
 | `update(record_id, ...)` | Modify record fields | PATCH /api/v1/records/{id} |
-| `delete(record_id)` | Hard-delete a record | DELETE /api/v1/records/{id} |
+| `delete(record_id)` | **Soft-delete** — archives the record (`archived=1`, `status='deleted'`), hidden from reads, not erased | DELETE /api/v1/records/{id} |
 
 ### Batch Operations
 
@@ -159,7 +181,11 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
 | `upload_file(filename, content)` | Upload document for async ingestion (PDF, images, etc.) | POST /api/v1/upload |
-| `upload_status(upload_id)` | Poll file ingestion status | GET /api/v1/upload/{id}/status |
+| `upload_status(record_id)` | Poll file ingestion status | GET /api/v1/upload/{id}/status |
+
+The upload response key is **`record_id`** (the server does not send `id`). Poll with
+that value: `upload["record_id"]` (Python), `upload.record_id` (TypeScript),
+`upload.UploadID()` (Go — the helper that falls back correctly).
 
 ### Temporal Versioning
 
@@ -185,19 +211,20 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 ### Python
 
 ```python
-from anhurdb import Memory
+from anhurdb import Memory, sessions_all
 
 async with Memory(api_key="anhur_xxx") as mem:
     session_id = await mem.create_session()
     # Core — session-first writes
     result = await mem.add("I'm a senior engineer. I prefer Go over Python.", mode="ingest", session_id=session_id)
-    results = await mem.search("what language does this user prefer?")
+    # Reads — `sessions` is required (ADR-0014)
+    results = await mem.search("what language does this user prefer?", sessions_all())
     profile = await mem.profile()
 
     # Search & discovery
-    facts = await mem.search_by_type("fact", limit=50)
-    smart = await mem.smart_search("engineering experience", limit=10)
-    latest = await mem.recent(limit=5)
+    facts = await mem.search_by_type("fact", sessions_all(), limit=50)
+    smart = await mem.smart_search("engineering experience", sessions_all(), limit=10)
+    latest = await mem.recent(limit=5)   # not a search endpoint — no sessions
 
     # Graph traversal
     graph = await mem.walk(start_id=42, depth=3)
@@ -223,7 +250,7 @@ async with Memory(api_key="anhur_xxx") as mem:
         "report.pdf", pdf_bytes,
         session_id=session_id, linked_episodic_id=episodic_id,
     )
-    status = await mem.upload_status(upload["id"])
+    status = await mem.upload_status(upload["record_id"])
 
     # Temporal versioning
     await mem.supersede(old_id=42, new_id=99)
@@ -248,7 +275,7 @@ async with Memory(api_key="anhur_xxx") as mem:
 ### TypeScript
 
 ```typescript
-import { Memory } from 'anhurdb';
+import { Memory, sessionsAll } from 'anhurdb';
 
 const mem = new Memory({ apiKey: 'anhur_xxx', url: 'https://anhurdb.yoven.ai' });
 
@@ -258,13 +285,14 @@ const result = await mem.add("I'm a senior engineer.", {
   mode: 'ingest',
   sessionId,
 });
-const results = await mem.search("what language?");
+// Reads — `sessions` is required (ADR-0014)
+const results = await mem.search("what language?", sessionsAll());
 const profile = await mem.profile();
 
 // Extended search
-const facts = await mem.searchByType("fact", 50);
-const smart = await mem.smartSearch("engineering", 10);
-const latest = await mem.recent(5);
+const facts = await mem.searchByType("fact", sessionsAll(), 50);
+const smart = await mem.smartSearch("engineering", sessionsAll(), 10);
+const latest = await mem.recent(5);   // not a search endpoint — no sessions
 
 // Graph traversal
 const graph = await mem.walk(42, 3);
@@ -289,7 +317,7 @@ await mem.batchUpdateStatus([10, 11], "archived");
 const upload = await mem.uploadFile("report.pdf", fileBytes, {
   sessionId, linkedEpisodicId: episodicId,
 });
-const status = await mem.uploadStatus(upload.id);
+const status = await mem.uploadStatus(upload.record_id!);
 
 // Temporal versioning
 await mem.supersede(42, 99);
@@ -341,13 +369,14 @@ func main() {
         anhurdb.WithMode("ingest"),
         anhurdb.WithSessionID(sessionID),
     )
-    hits, _ := mem.Search(ctx, "what language?")
+    // Reads — sessions is required (ADR-0014)
+    hits, _ := mem.Search(ctx, "what language?", client.SessionsAll())
     profile, _ := mem.Profile(ctx)
 
     // Extended search
-    facts, _ := mem.SearchByType(ctx, "fact", 50)
-    smart, _ := mem.SmartSearch(ctx, "engineering", 10)
-    latest, _ := mem.RecentMemories(ctx, 5)
+    facts, _ := mem.SearchByType(ctx, "fact", client.SessionsAll(), 50)
+    smart, _ := mem.SmartSearch(ctx, "engineering", client.SessionsAll(), 10)
+    latest, _ := mem.RecentMemories(ctx, 5) // not a search endpoint — no sessions
 
     // Graph traversal
     graph, _ := mem.Walk(ctx, 42, 3)
@@ -371,7 +400,7 @@ func main() {
 
     // File upload
     upload, _ := mem.UploadFile(ctx, "report.pdf", rawBytes, sessionID, episodicID)
-    status, _ := mem.UploadStatus(ctx, upload.ID)
+    status, _ := mem.UploadStatus(ctx, upload.UploadID())
 
     // Temporal versioning
     _ = mem.Supersede(ctx, 42, 99)
@@ -432,7 +461,9 @@ profiles, and managed cognitive processing.
 
 > These values are **`record.type` only**. Entity types (`person`, `organization`, …) are a separate Layer-2 whitelist — see [Entity Knowledge Graph](#entity-knowledge-graph-layer-2).
 
-AnhurDB classifies memories into 12 cognitive types:
+AnhurDB accepts 13 record types (`server/schema/generated_schema.go`, generated from
+`AnhurCore/core.yaml`). An unlisted value on `POST /api/v1/records` is a 400
+(`wrong type`); an empty `type` defaults to `episodic`.
 
 | Type | Description | Example |
 |------|-------------|---------|
@@ -448,6 +479,11 @@ AnhurDB classifies memories into 12 cognitive types:
 | `consolidated` | Agent-synthesized summary | (auto-created) |
 | `hub` | Cross-session cluster | (auto-created) |
 | `file` | Uploaded document root | (from file upload endpoint) |
+| `router` | Top of the aggregation pyramid | (auto-created) |
+
+`file` and `router` are written by the platform (upload endpoint / cognitive agents).
+The MCP write tools (`create_memory`, `update_memory`) expose only the 11 remaining
+types; the MCP read tools (`search`, `list_records`) accept all 13 as a filter.
 
 ---
 
@@ -499,14 +535,31 @@ AnhurDB-SDK/
 | **Protocol** | HTTP REST | MCP over HTTP/SSE |
 | **Auth** | `X-API-Key` header | API key in tool arguments |
 | **Best for** | Production applications | Claude, Cursor, and similar tools |
+| **Surface** | `Memory` client over REST | **22 tools** (ADR-0013 Fase 4) |
+| **Backend hop** | REST → smart-router → data plane | MCP server → data plane over **gRPC** |
 
 Use the **SDK** for application code. Use **MCP** for IDE plugin integrations.
+
+The **MCP tool surface** was cut from 47 tools to **22** on 2026-07-28 (ADR-0013
+Fase 4). MCP *tool names* that no longer exist include `execute_ast`, `sdk_query`,
+`semantic_walk`, `semantic_search`, `smart_search`, `get_record`, `read_content`,
+`batch_read_content`, `search_shared`, `list_entities`, `get_entity_graph` and
+`entity_timeline` — each was absorbed into one of the 22 (e.g. `execute_ast` →
+`query(ast=)`, `smart_search` → `search(strategy=lexical)`, `read_content` →
+`get_records(include=["content"])`). The canonical list and the complete 47→22
+migration map live in `AnhurDB/docs/MCP_TOOLS.md`; the registration code is the final
+authority (`AnhurDB/mcp-server/internal/tools/register22_*.go`). **An MCP tool that is
+not in those files does not exist.**
+
+This is an **MCP-only** change. The SDK method names in the tables above (`smart_search`,
+`read_content`, `search_shared`, …) are unaffected — they are REST calls, and the public
+REST API kept its shape.
 
 ---
 
 ## What Makes AnhurDB Different
 
-- **12 cognitive memory types** — beyond flat key-value storage
+- **13 record types** (11 cognitive + `file` + `router`) — beyond flat key-value storage
 - **Entity knowledge graph** — named entities with typed relationships
 - **Temporal versioning** — supersede old facts without losing history
 - **Graph traversal** — walk and explore memory connections
