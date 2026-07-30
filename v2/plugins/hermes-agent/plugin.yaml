@@ -1,0 +1,45 @@
+# AnhurDB memory provider for the Hermes Agent.
+#
+# The DIRECTORY NAME is the provider id, not this `name` field: Hermes'
+# memory discovery (plugins/memory/__init__.py:_iter_provider_dirs) keys
+# providers by `child.name`, and `memory.provider` in ~/.hermes/config.yaml
+# must match that directory. Install this plugin as ~/.hermes/plugins/anhurdb/
+# so the directory, this manifest, and the config key all read `anhurdb`.
+# See README.md → Install.
+name: anhurdb
+version: 1.0.0
+description: "AnhurDB sovereign long-term memory — one Hermes session = one AnhurDB session, hybrid recall per turn, and a durable on-disk queue so a turn is never dropped."
+author: "Anhur — Yoven"
+
+# kind=exclusive routes this plugin to the memory-provider discovery path
+# (plugins/memory) instead of the generic PluginManager, whose PluginContext
+# has no register_memory_provider. Hermes auto-detects this by scanning the
+# first 8 KB of __init__.py for "MemoryProvider"/"register_memory_provider",
+# but declaring it here removes the guesswork.
+kind: exclusive
+
+# Installed by `hermes memory setup` (hermes_cli/memory_setup.py:_install_dependencies).
+# The AnhurDB SDK itself is NOT listed: it is not resolvable from the public
+# index in every environment, so the README documents the explicit install and
+# is_available() reports its absence LOUDLY instead of failing at import time.
+pip_dependencies:
+  - aiohttp
+
+requires_env:
+  - ANHUR_API_KEY
+
+optional_env:
+  - ANHUR_URL
+  - ANHUR_CONTAINER
+  - ANHUR_STATE_DIR
+  - ANHUR_ENV_FILE
+  - ANHUR_HTTP_TIMEOUT
+  - ANHUR_PREFETCH_TIMEOUT
+  - ANHUR_RECALL_LIMIT
+  - ANHUR_MAX_CHUNK_CHARS
+
+provides_tools:
+  - anhurdb_recall
+  - anhurdb_search
+
+provides_hooks: []

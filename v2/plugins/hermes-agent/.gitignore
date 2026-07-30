@@ -1,0 +1,12 @@
+# Build/test byproducts. Nothing here belongs in the repo — and nothing here
+# may reach ~/.hermes/plugins/ either: the host globs *.py in the plugin
+# directory and executes every match.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# NEVER commit a real configuration file — it holds the tenant API key.
+# Only .env.example is tracked.
+env
+.env

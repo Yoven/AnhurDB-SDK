@@ -11,6 +11,10 @@ Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB
 - **No silent loss at the boundary** — if AnhurDB is unreachable when a turn ends, the turn is
   queued to disk and retried on the next persist or session start, whichever comes first. A crash
   risks at most the in-flight turn.
+- **A memory that stops saving says so** — a background monitor reads the engine's own log during
+  the session and reports failures to Claude as they happen, instead of letting them accumulate in a
+  file nobody opens. Three skills (`memory-health`, `memory-blackout`, `memory-recall`) turn that into
+  an answer. See [Diagnosing](#diagnosing-is-the-memory-alive).
 - **The key never touches the transcript** — it lives only in `ANHUR_API_KEY` (env), sent as the
   `X-API-Key` header. This honors AnhurDB's auth model: a master key for services, **one API key
   per tenant** — nothing else.
@@ -196,6 +200,84 @@ Hooks are registered **at session start**, so the setup takes effect in the *nex
 one you configured it in. Open a new session: your AnhurDB memory arrives as an `<anhur-memory>`
 block, and every turn persists from then on. That's it.
 
+## What ships in the plugin
+
+Every component lives at the **plugin root**; only `plugin.json` goes inside `.claude-plugin/`
+([plugin structure](https://code.claude.com/docs/en/plugins#plugin-structure-overview)).
+
+| Path | What it is | Why it exists |
+| --- | --- | --- |
+| `.claude-plugin/plugin.json` | Manifest: name, version, monitor path | `version` is what invalidates an installed cache — bump it or nothing ships |
+| `hooks/hooks.json` | `SessionStart` → `recall`, `Stop` + `SessionEnd` → `persist` | the memory loop itself |
+| `bin/` | the engine: a wrapper + one prebuilt binary per OS/arch | a marketplace install needs no Go toolchain |
+| `.mcp.json` | the AnhurDB MCP server (`ANHUR_MCP_URL`) | explicit tool access for *you*, not for the model (see below) |
+| `monitors/monitors.json` | one background monitor: `anhur-memory-health` | makes a memory that stopped saving **visible during the session** |
+| `scripts/anhur-memory-watch.sh` | the monitor: POSIX `sh`, no key, no network | reports on the engine **without going through it** |
+| `scripts/anhur-memory-watch_test.sh` | offline tests for the monitor (`sh scripts/anhur-memory-watch_test.sh`) | the blackout happened in untested code; this part is tested |
+| `skills/memory-health/` | `/anhurdb-memory:memory-health` | "is my memory alive right now?", with evidence |
+| `skills/memory-blackout/` | `/anhurdb-memory:memory-blackout` | the outage runbook: five failure classes, one fix each |
+| `skills/memory-recall/` | `/anhurdb-memory:memory-recall` | re-read the memory profile mid-session |
+
+Deliberately **not** shipped:
+
+- **`agents/`** — a subagent would need its own reason to exist; diagnosis is a procedure, and a
+  procedure is a skill.
+- **`settings.json`** — only the `agent` and `subagentStatusLine` keys are supported there, and this
+  plugin ships no agent, so the file would be an empty gesture.
+- **`commands/`** — the legacy flat-file form of skills. New plugins use `skills/`.
+- **Topic-scoped semantic recall as a skill** — every `mcp__anhurdb__*` tool takes `api_key` as a
+  **required argument**, and this plugin persists the transcript *into AnhurDB*: a key in the model's
+  context would be stored in the memory that key protects. A query subcommand on the engine (which
+  holds the key and never prints it) is the honest way to add it.
+
+Context cost of the surface: about **560 tokens** per session for the three skill descriptions
+(`claude plugin details anhurdb-memory` prints the current number). The monitor costs nothing until
+it has something to say.
+
+### The background monitor
+
+`monitors/monitors.json` declares one monitor, started automatically whenever the plugin is active
+in an interactive session. Each line it prints on stdout is delivered to Claude as a notification
+mid-session ([monitors reference](https://code.claude.com/docs/en/plugins-reference#monitors)).
+
+It watches `$ANHUR_STATE_DIR/plugin.log` (default `~/.anhur-claude-memory/plugin.log`) and speaks
+in exactly three situations:
+
+1. **Failures since the last successful AnhurDB call** — summarised in one line at session start.
+   Failures *older* than the last success are history and stay quiet, so a healed outage does not
+   re-announce itself forever.
+2. **A new failure while you work** — the first of its kind speaks immediately, then every 25th
+   repeat (capped at 40 notifications per session, so a loop cannot flood the context).
+3. **Silence that means something** — the engine running for 48h without a single successful call,
+   or no `plugin.log` at all within the first four minutes of a session.
+
+It is deliberately quiet otherwise: the `<anhur-memory>` block *is* the proof that recall worked, so
+a heartbeat notification would only cost context. Tunables, if you need them: `ANHUR_WATCH_SCAN_LINES`,
+`ANHUR_WATCH_STALE_MINUTES`, `ANHUR_WATCH_POLL_SECONDS`, `ANHUR_WATCH_REPEAT_EVERY`,
+`ANHUR_WATCH_MAX_NOTIFICATIONS`, `ANHUR_WATCH_MISSING_LOG_SECONDS`, `ANHUR_WATCH_STARTUP_DELAY_SECONDS`.
+
+> **Those variables — and `ANHUR_STATE_DIR` — must be in the environment Claude Code itself runs in,
+> not in `~/.anhur-claude-memory/env`.** The monitor never reads that file: it holds the API key, and
+> a watchdog has no business opening it. It resolves the state directory exactly the way the engine
+> does (`$ANHUR_STATE_DIR`, else `$HOME/.anhur-claude-memory`), so relocating the state dir *only*
+> inside the env file leaves both of them looking at the same wrong place — which is the safe way to
+> be wrong.
+
+> **The monitor cannot report its own absence.** If the plugin fails to load, Claude Code never starts
+> the monitor either — silence then means nothing at all. That class is covered by
+> [check 3](#3-the-block-reached-the-model--the-only-check-that-proves-the-loop) alone.
+
+### The skills
+
+| Skill | Ask it when | What it does |
+| --- | --- | --- |
+| `/anhurdb-memory:memory-health` | "is your memory working?", "are you saving this?", or a monitor notification arrived | six checks, cheapest first, ending in a verdict: `ALIVE` / `DEGRADED` / `DEAD` |
+| `/anhurdb-memory:memory-blackout` | the memory block never arrived, or health said DEGRADED/DEAD | walks the five failure classes with a discriminator for each, and says what was actually lost |
+| `/anhurdb-memory:memory-recall` | "what do you remember about X", after a long session | re-runs the engine's recall and reports the profile, including any backlog warning |
+
+All three are read-only, and all three are forbidden from printing the API key: they inspect the env
+file's permissions and variable *names*, never its values.
+
 ## Verify it works
 
 Three checks, in ascending order of what they actually prove. **Only the third proves the memory
@@ -211,11 +293,15 @@ claude plugin list          # anhurdb-memory@anhur must say: Status ✔ enabled
 dangling `directory` marketplace. Then run the same binary the hooks run:
 
 ```bash
-. "$HOME/.anhur-claude-memory/env"
-"$HOME"/.claude/plugins/cache/anhur/anhurdb-memory/*/bin/anhur-claude-memory recall </dev/null
+# pick the newest installed copy — the cache keeps every version you have installed, so a bare
+# glob would expand to several paths and the shell would pass them to the binary as arguments
+engine=$(ls -1d "$HOME"/.claude/plugins/cache/anhur/anhurdb-memory/*/bin/anhur-claude-memory 2>/dev/null | sort -V | tail -n 1)
+"$engine" recall </dev/null
 ```
 
-Should print your `<anhur-memory>` block and exit 0. Diagnostics (never the key) go to
+Should print your `<anhur-memory>` block and exit 0. (The engine reads
+`~/.anhur-claude-memory/env` itself since 2026-07-30 — no `source` needed, and sourcing a file
+whose lines lack `export` never worked anyway. That is [class C](#the-five-ways-it-breaks).) Diagnostics (never the key) go to
 `$ANHUR_STATE_DIR/plugin.log` (default `~/.anhur-claude-memory/plugin.log`).
 
 ### 2. The hooks actually fire
@@ -262,6 +348,90 @@ curl -s -X POST "$ANHUR_URL/api/v1/ingest" -H "X-API-Key: $ANHUR_API_KEY" -H 'Co
 If it stays empty, Smart Units aren't enabled on your AnhurDB — see
 [Structured memory](#structured-memory-smart-units).
 
+## Diagnosing: is the memory alive?
+
+> **Why this section exists.** Between 2026-07-18 and 2026-07-30 this plugin saved **nothing**: 743
+> hook invocations, 743 skips, 12,8 days, every run exiting 0 with empty stdout and empty stderr. The
+> proof was sitting in `plugin.log` the entire time — `ANHUR_API_KEY not set — skipping`, 743 times.
+> Nobody read it, because nobody knew this was the thing to read. Two changes came out of that: the
+> engine now [fails loud](#what-each-artifact-proves-and-what-it-does-not), and the monitor above
+> reads the log so a human doesn't have to. This section is the rest of the answer — how to check,
+> and what each check is worth.
+
+### The 60-second check
+
+Ask Claude:
+
+```
+/anhurdb-memory:memory-health
+```
+
+It runs the checks below in order and reports `ALIVE`, `DEGRADED`, or `DEAD` with the evidence.
+If the verdict isn't `ALIVE`, `/anhurdb-memory:memory-blackout` triages *why*.
+
+By hand, the same thing:
+
+```bash
+claude plugin list | grep -A3 anhurdb-memory          # 1. is the plugin even loaded?
+tail -n 15 ~/.anhur-claude-memory/plugin.log          # 2. what does the engine say? (UTC stamps)
+ls -1 ~/.anhur-claude-memory/queue/*.txt | wc -l      # 3. anything stuck? (queued ≠ lost)
+ls -1 ~/.anhur-claude-memory/queue/quarantine/*.txt | wc -l   # 4. anything a human must resolve?
+```
+
+**Never `cat` `~/.anhur-claude-memory/env`.** Check its mode with `ls -l`, and list the variable
+*names* with:
+
+```bash
+grep -o '^[[:space:]]*\(export \)\?[A-Za-z_][A-Za-z0-9_]*=' ~/.anhur-claude-memory/env \
+  | sed 's/^[[:space:]]*//; s/^export //; s/=$//' | sort -u
+```
+
+Do **not** use `cut -d= -f1`: on a line with no `=` — a stray comment, a merge leftover — `cut`
+echoes the whole line, and if that line happens to hold a secret it goes straight into the
+transcript. The pattern above only ever emits text it matched as a variable *name*.
+
+Whatever you print in a session is persisted into AnhurDB and archived verbatim on disk — that is
+precisely where an API key must never be.
+
+### The five ways it breaks
+
+| Class | Discriminator | Meaning |
+| --- | --- | --- |
+| **A. Plugin not loaded** | `claude plugin list` shows `✘ failed to load` or nothing, and no new log line at session start | no hook is registered; nothing recalls, nothing saves. Usually a dangling `directory` marketplace |
+| **B. Hooks not firing** | plugin enabled, but a new session adds no log line, while running the binary by hand does | wrong binary path/arch, lost exec bit, or a hand-wired hook fighting the plugin |
+| **C. Key not readable** | `ANHUR_API_KEY not set … MEMORY IS NOT BEING SAVED` in the log | the 2026-07 blackout. Transcripts are still archived to disk; recall is dead until fixed |
+| **D. AnhurDB unreachable/rejecting** | `profile failed`, `CreateSession failed`, `flush still failing`, and `queue/` growing | degraded, **not** lost: every persist and every session start retries the queue |
+| **E. Green but empty** | successful calls in the log, thin `<anhur-memory>` block | `ANHUR_CONTAINER` changed (old memories are under the old name), or Smart Units are off |
+
+### What each artifact proves, and what it does not
+
+| Artifact | Proves | Does **not** prove |
+| --- | --- | --- |
+| `plugin.log` has a fresh line | *something* executed the engine | that a **hook** did — running it by hand looks identical |
+| The engine prints a block by hand | key, URL and AnhurDB are all good | that any of it reached the model |
+| A monitor notification arrived | the plugin loaded, the monitor runs, and it found a failure | — |
+| **No** monitor notification | either nothing is wrong, **or** the plugin never loaded | that the memory is healthy |
+| The `<anhur-memory>` block in Claude's context | the whole loop closed: AnhurDB → hook → context → model | that *writes* are landing (ask about the queue for that) |
+
+The last row is the only complete proof, and only the model can report it — a hook that never fires
+leaves no trace anywhere else. That is [check 3](#3-the-block-reached-the-model--the-only-check-that-proves-the-loop),
+and it is worth running after any change to the plugin, the marketplace, or the env file.
+
+### Nothing is lost while it is broken
+
+- **Queued chunks** (`~/.anhur-claude-memory/queue/*.txt`) are retried on every persist and every
+  session start, back into their original session. A stuck queue is announced at the top of the next
+  `<anhur-memory>` block, not just in the log.
+- **Quarantined chunks** (`queue/quarantine/`) are the exception: their originating session could not
+  be proven, and writing them elsewhere would merge two conversations — *1 Claude session = 1 AnhurDB
+  session* is inviolable. They are never retried automatically and need a human.
+- **The verbatim archive** (`~/.anhur-claude-memory/archive/<session>.jsonl`) is written on every
+  persist, and — since 2026-07-30 — even when the key is missing. It is the lossless copy. Treat it
+  as a recovery source, not as something to print: it holds full tool output.
+- **Reads fail before writes do.** `persist` advances a per-session cursor, so once the hooks are
+  restored the next run backfills every turn it missed. A dead hook costs you recall immediately, but
+  not the record.
+
 ## How the memory loop works
 
 ```
@@ -300,16 +470,25 @@ nothing has been distilled yet.
   short while later, after the Smart Units distill them.
 - **Hooks aren't retried by Claude Code.** That's why persistence is queued to disk and retried by
   every subsequent `persist` and by `recall` at the next start.
-- **A hook that never runs fails silently, and nothing here can warn you.** If the hook isn't wired,
-  or the plugin fails to load, the session just starts without memory — no error, no empty block, no
-  log line, because the engine was never executed. The plugin log can never rule this out either: it
-  only ever proves *something* ran the binary, not that a hook did. This is the one failure mode the
-  no-silent-loss queue does **not** cover — the queue protects writes once the engine is running; it
-  cannot protect a process that is never started. Guard against it with
+- **A plugin that never loads cannot report itself.** If the plugin fails to load, the session starts
+  without memory *and* without the monitor — no error, no empty block, no log line, because nothing
+  was executed. The plugin log can never rule this out either: it only ever proves *something* ran the
+  binary, not that a hook did. This is the one failure mode neither the no-silent-loss queue nor the
+  monitor covers — the queue protects writes once the engine is running, and the monitor only runs
+  when the plugin loaded. Guard against it with
   [check 3](#3-the-block-reached-the-model--the-only-check-that-proves-the-loop): ask the model
   whether it got the block. Writes are safer than reads here: `persist` advances a per-session cursor,
   so once the hooks are restored the next run backfills every turn it missed — a dead hook costs you
   recall immediately, but not the record.
+- **The monitor is quiet by design, and quiet is ambiguous.** It reports failures, staleness, and a
+  log that never appears; it says nothing when things are fine, so silence alone is not evidence of
+  health. It also runs only in interactive CLI sessions (the Monitor mechanism is unavailable on
+  Bedrock, Vertex/Agent Platform and Foundry, and when `DISABLE_TELEMETRY` or
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set) — on those hosts the memory still works and the
+  in-session alarm simply does not exist.
+- **Notifications are capped.** At most 40 per session, with repeats of one failure kind collapsed to
+  every 25th occurrence. A pathological loop cannot flood the context — but it also means the log
+  remains the complete record.
 
 ## Development
 
@@ -317,10 +496,18 @@ Build and iterate locally (needs **Go 1.24+**):
 
 ```bash
 cd v2/plugins/claude
-make build     # native binary → bin/anhur-claude-memory-<os>-<arch>  (inside the worktree)
-./test_e2e.sh  # end-to-end against the live AnhurDB in ~/.anhur-claude-memory/env
-make deploy    # push this build into the installed plugin's cache (see the caveat below)
+make build                              # native binary → bin/anhur-claude-memory-<os>-<arch>
+./test_e2e.sh                           # end-to-end against the live AnhurDB in ~/.anhur-claude-memory/env
+sh scripts/anhur-memory-watch_test.sh   # the monitor's own suite — offline, no key, no network
+claude plugin validate . --strict       # manifest + component paths
+claude plugin details anhurdb-memory    # what the installed copy actually exposes, and its token cost
+make deploy                             # push this build into the installed plugin's cache (see below)
 ```
+
+The monitor suite is offline on purpose: it builds synthetic `plugin.log` fixtures — including the
+743-skip blackout — and asserts what the monitor says about each. **When `plugins/core/core.go` adds
+or renames a failure log line, update `failure_pattern` in `scripts/anhur-memory-watch.sh` in the same
+commit**, or the alarm goes quiet for that failure without anything failing.
 
 The engine lives in the shared `plugins/core` package so `claude` and `hermes` never drift — fix a
 bug once, both get it. `go.mod` carries two `replace` directives (`../core` and `../../golang`), so
@@ -364,3 +551,18 @@ first (`Release Go SDK`), then the plugin.
 The API key is read from `ANHUR_API_KEY` and sent only as the `X-API-Key` header by the SDK. It is
 never echoed to stdout/stderr, written to the plugin log, or placed in the transcript. Use a
 per-tenant key scoped to exactly the memory this agent should see.
+
+The surface added around the engine keeps that property:
+
+- **The monitor never opens the env file.** It reads only `plugin.log`, which the engine writes
+  without ever including the key (it logs the key's *source* — `file` / `environment` / `missing` —
+  never its value). It makes no network call and holds no credential.
+- **The skills inspect the env file's mode and variable NAMES only**, with a `grep -o` that can only
+  emit text matching `NAME=`. They are instructed never to `cat` it and never to echo
+  `$ANHUR_API_KEY` — because whatever a session prints is persisted into AnhurDB *and* archived
+  verbatim under `~/.anhur-claude-memory/archive/`.
+- **The bundled MCP tools are not usable by the model, on purpose.** Every `mcp__anhurdb__*` tool
+  takes `api_key` as a required argument; supplying one would write the key into the transcript that
+  this plugin saves into the memory the key protects. They are there for *you*, from your own client.
+- **Treat the archive as sensitive.** It is the verbatim transcript, tool output included. It is a
+  recovery source, not something to print into a session.

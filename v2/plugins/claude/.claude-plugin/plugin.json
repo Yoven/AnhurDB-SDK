@@ -1,11 +1,21 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "anhurdb-memory",
-  "description": "Give Claude Code a persistent, sovereign long-term memory backed by AnhurDB: auto-recall at session start, incremental auto-persist every turn and at session end, with a no-silent-loss disk queue and retry. Also bundles the AnhurDB MCP tools for explicit recall/store during a session.",
-  "version": "0.1.4",
+  "displayName": "AnhurDB Memory",
+  "description": "Give Claude Code a persistent, sovereign long-term memory backed by AnhurDB: auto-recall at session start, incremental auto-persist every turn and at session end, with a no-silent-loss disk queue and retry. A background monitor surfaces a memory that stops saving, and three skills (memory-health, memory-blackout, memory-recall) diagnose and read it on demand. Also bundles the AnhurDB MCP tools.",
+  "version": "0.2.0",
   "author": {
     "name": "Anhur",
     "url": "https://anhur.yoven.ai"
   },
   "homepage": "https://anhur.yoven.ai",
-  "keywords": ["memory", "mcp", "anhurdb", "long-term-memory", "rag", "agent-memory"]
+  "repository": "https://github.com/Yoven/AnhurDB-SDK",
+  "keywords": [
+    "memory",
+    "mcp",
+    "anhurdb",
+    "long-term-memory",
+    "rag",
+    "agent-memory"
+  ]
 }

@@ -1,0 +1,7 @@
+[
+  {
+    "name": "anhur-memory-health",
+    "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/anhur-memory-watch.sh\"",
+    "description": "AnhurDB long-term memory: reports when the memory stops saving (plugin.log failures, or an engine that runs without ever reaching AnhurDB)"
+  }
+]
