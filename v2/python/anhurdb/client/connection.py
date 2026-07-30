@@ -103,6 +103,30 @@ class HTTPConnection:
         "/v2/search/ast":     "query",
     }
 
+    # Fields DECLARED by each MCP tool schema (mcp-server register22_*.go plus
+    # the ambient api_key/tenant_id added by declareAmbientArguments).
+    #
+    # Junior Tip [why the tunnel must filter — ADR-0013 D1 strict params]: the
+    # MCP server closes every tool schema (additionalProperties:false) and
+    # answers any undeclared argument with INVALID_PARAM. The REST payload for
+    # ``POST /api/v1/records`` is a full ``CreateRequest.model_dump()`` and
+    # therefore carries REST-only fields (prefix / main_ids / consolidated /
+    # consolidate_id) that ``create_memory`` does not declare — sent as-is the
+    # tunnel fails 100% of the time. The tunnel sends ONLY declared fields.
+    # Dropping an EMPTY default loses nothing; a NON-EMPTY undeclared value is
+    # information the MCP surface cannot carry, so we raise instead of
+    # swallowing it (silent loss is this project's number-one failure mode).
+    # Tools without an entry here (``query``) pass their args through
+    # unchanged. If the MCP surface changes, this table must change with it —
+    # canonical reference: AnhurDB/docs/MCP_TOOLS.md.
+    _MCP_TOOL_DECLARED_ARGS: Dict[str, frozenset] = {
+        "create_memory": frozenset({
+            "session_id", "uuid", "metadata", "type", "summary", "content",
+            "score", "weight", "status", "vector", "dimension", "related_ids",
+            "valid_from", "valid_until", "api_key", "tenant_id",
+        }),
+    }
+
     def __init__(
         self,
         base_url: str,
@@ -185,6 +209,32 @@ class HTTPConnection:
         await self.close()
 
     # -- Public HTTP verbs --------------------------------------------------
+
+    async def _read_capped_body(self, response: Any) -> bytes:
+        """Read the ENTIRE response body, enforcing the size cap.
+
+        Junior Tip [o read(n) do aiohttp NAO le o corpo inteiro — incidente
+        2026-07-30]: StreamReader.read(n) com n > 0 espera apenas o buffer
+        interno ficar nao-vazio e devolve O QUE JA CHEGOU — nao o corpo
+        completo. Em respostas que atravessam mais de um chunk TCP/TLS, o JSON
+        vinha truncado em offset aleatorio, o parse falhava, e a busca devolvia
+        [] SEM ERRO — perda silenciosa intermitente (5-7 de 20 execucoes no e2e
+        scope-planes; o servidor respondia count:3 valido, provado por curl).
+        Go e TS nunca tiveram o bug (leem ate EOF), por isso este fix e so do
+        Python — a paridade aqui e de COMPORTAMENTO, nao de diff. Ler em loop
+        ate EOF preserva o cap de seguranca sem depender do tamanho do primeiro
+        chunk: read() devolve b"" somente no fim do stream.
+        """
+        received_body = bytearray()
+        while True:
+            body_chunk = await response.content.read(65536)
+            if not body_chunk:
+                return bytes(received_body)
+            received_body.extend(body_chunk)
+            if len(received_body) > self._max_response_size:
+                raise AnhurError(
+                    f"Response exceeds maximum size ({self._max_response_size // (1024*1024)} MB)"
+                )
 
     async def get(
         self,
@@ -296,11 +346,7 @@ class HTTPConnection:
                 headers=headers,
                 allow_redirects=False,
             ) as response:
-                raw = await response.content.read(self._max_response_size + 1)
-                if len(raw) > self._max_response_size:
-                    raise AnhurError(
-                        f"Response exceeds maximum size ({self._max_response_size // (1024*1024)} MB)"
-                    )
+                raw = await self._read_capped_body(response)
                 body_text = raw.decode("utf-8", errors="replace")
 
                 if response.status in (401, 403):
@@ -388,13 +434,10 @@ class HTTPConnection:
                 json=body,
                 allow_redirects=False,
             ) as response:
-                # SECURITY: Cap response size to prevent memory exhaustion.
-                raw = await response.content.read(self._max_response_size + 1)
-                if len(raw) > self._max_response_size:
-                    raise AnhurError(
-                        f"Response exceeds maximum size "
-                        f"({self._max_response_size // (1024*1024)} MB)"
-                    )
+                # SECURITY: cap preservado DENTRO de _read_capped_body — que lê
+                # até EOF em loop (o read(n) único truncava; ver a Junior Tip
+                # do helper e o incidente de busca vazia de 2026-07-30).
+                raw = await self._read_capped_body(response)
                 body_text = raw.decode("utf-8", errors="replace")
 
                 # Map HTTP status codes to typed exceptions.
@@ -469,8 +512,32 @@ class HTTPConnection:
                 f"No MCP tool mapping for endpoint: {endpoint}"
             )
 
+        # Strict-schema projection: send ONLY fields the tool declares (see the
+        # _MCP_TOOL_DECLARED_ARGS Junior Tip). Empty defaults are dropped;
+        # a non-empty undeclared value fails LOUD before the round trip.
+        declared_fields = self._MCP_TOOL_DECLARED_ARGS.get(tool_name)
+        if declared_fields is not None:
+            undeclared_non_empty = sorted(
+                field_name
+                for field_name, field_value in json_data.items()
+                if field_name not in declared_fields and field_value
+            )
+            if undeclared_non_empty:
+                raise AnhurQueryError(
+                    f"MCP tool '{tool_name}' does not declare field(s) "
+                    f"{', '.join(undeclared_non_empty)} — the MCP tunnel cannot "
+                    f"carry them. Use mode='rest' to send these fields."
+                )
+            json_data = {
+                field_name: field_value
+                for field_name, field_value in json_data.items()
+                if field_name in declared_fields
+            }
+
         # Auth stays on the X-API-Key header only — never duplicate the key in
         # the JSON body (avoids accidental logging/proxy capture of credentials).
+        # The MCP gateway translates the header into args["api_key"] server-side
+        # (handleMCPDirect), satisfying wrapTool's tool-level auth contract.
         payload = {"tool": tool_name, "args": json_data}
 
         result = await self._request("POST", "/api/v1/mcp/direct", body=payload)

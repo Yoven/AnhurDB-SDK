@@ -47,6 +47,42 @@ func TestFormatMemory_BacklogWarning(t *testing.T) {
 	}
 }
 
+// TestFormatMemory_QuarantineWarning pins that quarantined chunks are announced inside the
+// injected block, above the recalled memory, independently of the retryable backlog.
+//
+// Junior Tip [why this is its own warning, 2026-07-30]: the retryable backlog self-heals when
+// AnhurDB recovers; a quarantined chunk never does — it has no provable session and writing it
+// into any other session would merge two conversations (inviolable: 1 Claude session =
+// 1 AnhurDB session). If this warning disappeared, quarantined turns would be silently missing
+// from memory forever, with only a log line nobody tails as evidence.
+func TestFormatMemory_QuarantineWarning(t *testing.T) {
+	cfg := config{container: "fable-1", recallLimit: 10}
+	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 10.0, "sessions": 2.0}}
+
+	clean := formatMemory(cfg, profile, queueBacklog{})
+	if strings.Contains(clean, "Quarantined") {
+		t.Fatal("empty quarantine must not inject a quarantine warning")
+	}
+
+	warned := formatMemory(cfg, profile, queueBacklog{quarantinedChunkCount: 3, oldestQuarantined: "2026-07-30T00:00:00Z"})
+	for _, want := range []string{
+		"Quarantined chunks",
+		"3 chunk(s)",
+		"2026-07-30T00:00:00Z",
+		"quarantine/",
+		"NEVER persisted automatically",
+		"TELL THE USER",
+	} {
+		if !strings.Contains(warned, want) {
+			t.Errorf("quarantine warning missing %q\n--- block ---\n%s", want, warned)
+		}
+	}
+	// The caveat is worthless if the model reads it after the memory it qualifies.
+	if warnAt, memAt := strings.Index(warned, "Quarantined chunks"), strings.Index(warned, "records across"); warnAt > memAt {
+		t.Errorf("quarantine warning must precede the recalled memory (warning at %d, stats at %d)", warnAt, memAt)
+	}
+}
+
 // TestFormatMemory_NoMCPToolAdvertisement pins that the block never tells the model to call the
 // mcp__anhurdb__* tools. They all require api_key (mcp.Required server-side), and the key is kept
 // out of the transcript on purpose — the Stop hook persists that transcript into AnhurDB, so the

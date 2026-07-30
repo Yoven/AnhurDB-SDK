@@ -116,6 +116,12 @@ func (cfg config) queueDir() string  { return filepath.Join(cfg.stateDir, "queue
 func (cfg config) cursorDir() string { return filepath.Join(cfg.stateDir, "cursor") }
 func (cfg config) logPath() string   { return filepath.Join(cfg.stateDir, "plugin.log") }
 
+// quarantineDir holds queued chunks whose originating conversation session could not be
+// identified. Chunks in here are kept intact but NEVER retried — see quarantineChunk.
+// It lives INSIDE queueDir on purpose: flushQueue skips directories, so a quarantined chunk
+// can never be picked up again by the normal retry loop.
+func (cfg config) quarantineDir() string { return filepath.Join(cfg.queueDir(), "quarantine") }
+
 // newMemory builds the SDK client. WithUserID sets the container tag the SDK reads/writes under;
 // WithURL points at the AnhurDB HTTP endpoint; WithTimeout bounds every call.
 func newMemory(cfg config) *client.Memory {
@@ -212,6 +218,19 @@ func formatMemory(cfg config, profile *client.ProfileResult, backlog queueBacklo
 		}
 		builder.WriteString("- They are NOT lost (retried on every persist), but they will not appear in recall until they drain.\n")
 		builder.WriteString("- TELL THE USER about this now, in your first reply: they cannot see it otherwise.\n")
+	}
+
+	// Junior Tip [quarantine outranks the backlog, 2026-07-30]: a stuck chunk drains by itself
+	// the moment AnhurDB recovers; a quarantined chunk NEVER does — it has no provable session,
+	// and writing it anywhere else would merge two conversations (forbidden: 1 Claude session =
+	// 1 AnhurDB session). Only a human can resolve it, and this block is the only channel this
+	// plugin owns that reliably reaches one.
+	if backlog.quarantinedChunkCount > 0 {
+		builder.WriteString("\n## 🚨 Quarantined chunks — memory below is missing turns that will NOT self-heal\n")
+		builder.WriteString(fmt.Sprintf("- %d chunk(s) of past conversation had no identifiable session and were moved to the queue's quarantine/ directory (oldest queued %s).\n",
+			backlog.quarantinedChunkCount, backlog.oldestQuarantined))
+		builder.WriteString("- They are NEVER persisted automatically: writing them into another conversation's session would merge sessions (1 Claude session = 1 AnhurDB session, inviolable).\n")
+		builder.WriteString("- TELL THE USER about this now, in your first reply: only a human can decide where these chunks belong.\n")
 	}
 
 	section := func(title string, items []string) {
@@ -658,6 +677,13 @@ type queueBacklog struct {
 	chunkCount   int
 	oldestChunk  string
 	lastFlushErr error
+	// quarantinedChunkCount / oldestQuarantined describe chunks parked in quarantineDir()
+	// because no session marker could be recovered from their content. They are reported on
+	// EVERY flush — not only at the moment a chunk is moved — because a quarantined chunk
+	// never drains by itself, so its warning must keep reappearing in recall until a human
+	// resolves it. See quarantineChunk for why these are never retried.
+	quarantinedChunkCount int
+	oldestQuarantined     string
 }
 
 // chunkQueuedAt recovers the UTC instant encoded in a queued chunk's filename (see queueChunk's
@@ -711,18 +737,35 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) queueBacklo
 		// queued chunk drains back into the same session it came from instead of
 		// collapsing into the container. Register first (session-first servers).
 		queuedSessionID := sessionFromChunk(string(content))
-		if queuedSessionID != "" {
-			if _, createSessionErr := mem.CreateSession(ctx, client.WithCreateSessionID(queuedSessionID)); createSessionErr != nil {
-				logLine(cfg, fmt.Sprintf("flush CreateSession failed for %s: %v", path, createSessionErr))
-				noteStuck(entry.Name(), createSessionErr)
-				continue
+		if queuedSessionID == "" {
+			// Junior Tip [quarantine, NEVER guess a session, 2026-07-30]: this used to fall
+			// through to mem.Add with NO session option. The SDK's resolveWriteSessionID then
+			// falls back to the client's REGISTERED session — and this ONE client.Memory is
+			// reused for every chunk in this loop, so whichever session the PREVIOUS chunk's
+			// CreateSession registered silently absorbed this chunk: two conversations merged
+			// into one AnhurDB session, violating the inviolable rule "1 Claude session =
+			// 1 AnhurDB session" (and with no session registered yet, the Add failed with
+			// "session_id is required" and the chunk retried forever). A chunk whose owner
+			// cannot be proven must not be written ANYWHERE: park it in quarantine/, fail
+			// LOUD (ERROR log + recall backlog warning), and leave the decision to a human.
+			if quarantineErr := quarantineChunk(cfg, path, entry.Name()); quarantineErr != nil {
+				// The chunk is still in the queue: keep it visible as stuck and retry the
+				// move on the next flush — a failed quarantine must not go silent either.
+				noteStuck(entry.Name(), quarantineErr)
 			}
+			continue
 		}
-		addOpts := []client.AddOption{}
-		if queuedSessionID != "" {
-			addOpts = append(addOpts, client.WithSessionID(queuedSessionID))
+		if _, createSessionErr := mem.CreateSession(ctx, client.WithCreateSessionID(queuedSessionID)); createSessionErr != nil {
+			logLine(cfg, fmt.Sprintf("flush CreateSession failed for %s: %v", path, createSessionErr))
+			noteStuck(entry.Name(), createSessionErr)
+			continue
 		}
-		if _, addErr := mem.Add(ctx, string(content), addOpts...); addErr == nil {
+		// Junior Tip [session pinned EXPLICITLY on every Add, 2026-07-30]: CreateSession above
+		// mutates the shared client's registered session as a side effect, and chunks from
+		// DIFFERENT conversations flow through this loop back to back. WithSessionID makes the
+		// write independent of that shared state (an explicit id always wins inside the SDK's
+		// resolveWriteSessionID), so no chunk can ever inherit a neighbour's session.
+		if _, addErr := mem.Add(ctx, string(content), client.WithSessionID(queuedSessionID)); addErr == nil {
 			_ = os.Remove(path)
 			logLine(cfg, "flushed queued chunk "+path)
 		} else {
@@ -735,7 +778,53 @@ func flushQueue(ctx context.Context, cfg config, mem *client.Memory) queueBacklo
 			noteStuck(entry.Name(), addErr)
 		}
 	}
+	// Count what sits in quarantine on EVERY flush: those chunks never drain by themselves,
+	// so their warning must keep reappearing in recall until a human resolves them. A read
+	// error on an EXISTING quarantine dir fails loud — hiding quarantined chunks would be
+	// exactly the silent loss the quarantine exists to prevent.
+	quarantineEntries, quarantineReadErr := os.ReadDir(cfg.quarantineDir())
+	if quarantineReadErr != nil && !os.IsNotExist(quarantineReadErr) {
+		logLine(cfg, "ERROR: cannot read quarantine dir (quarantined chunks may be invisible): "+quarantineReadErr.Error())
+	}
+	for _, quarantineEntry := range quarantineEntries {
+		if quarantineEntry.IsDir() || !strings.HasSuffix(quarantineEntry.Name(), ".txt") {
+			continue
+		}
+		backlog.quarantinedChunkCount++
+		if backlog.oldestQuarantined == "" {
+			// ReadDir is name-sorted and names start with the sortable queue stamp,
+			// so the first .txt entry is always the oldest quarantined chunk.
+			backlog.oldestQuarantined = chunkQueuedAt(quarantineEntry.Name())
+		}
+	}
 	return backlog
+}
+
+// quarantineChunk moves a queued chunk whose conversation session cannot be identified into
+// quarantineDir(), where it is kept intact but NEVER retried. It returns an error when the move
+// fails; the chunk then stays in the queue and the caller must surface it as stuck.
+//
+// Junior Tip [why quarantine exists at all, 2026-07-30]: the server made session_id mandatory
+// on every write (ADR-0014), and the only session this plugin can PROVE a chunk belongs to is
+// the one in its own "Claude Code session <id>" header. Writing a headerless chunk under any
+// other id — the container, the current conversation, the client's last registered session —
+// would merge two conversations' memories, breaking the inviolable "1 Claude session =
+// 1 AnhurDB session" rule. Losing availability (the chunk waits for a human) is acceptable;
+// losing attribution (the chunk lands in the wrong session) is not.
+func quarantineChunk(cfg config, queuedPath string, chunkName string) error {
+	// 0700 (tighter than the 0755 queue dir): quarantined chunks are verbatim conversation
+	// excerpts that may sit on disk indefinitely, so keep them owner-only like the archive.
+	if mkdirErr := os.MkdirAll(cfg.quarantineDir(), 0o700); mkdirErr != nil {
+		logLine(cfg, fmt.Sprintf("ERROR: cannot create quarantine dir for %s: %v", queuedPath, mkdirErr))
+		return mkdirErr
+	}
+	quarantinedPath := filepath.Join(cfg.quarantineDir(), chunkName)
+	if renameErr := os.Rename(queuedPath, quarantinedPath); renameErr != nil {
+		logLine(cfg, fmt.Sprintf("ERROR: quarantine move failed for %s: %v", queuedPath, renameErr))
+		return renameErr
+	}
+	logLine(cfg, fmt.Sprintf("ERROR: chunk has no session marker — quarantined %s -> %s (will NOT be persisted; needs manual review)", queuedPath, quarantinedPath))
+	return nil
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
