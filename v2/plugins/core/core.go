@@ -82,14 +82,45 @@ type config struct {
 	// I/O included) so nothing is ever dropped. See archiveTranscript.
 	archive    bool
 	archiveDir string
+
+	// Diagnóstico do carregamento de configuração — ver envfile.go.
+	// Junior Tip [nunca guardam o VALOR da chave]: keySource diz de ONDE a chave
+	// veio (environment | file | missing) para o log. O blackout de 12,8 dias foi
+	// invisível porque nada registrava isso: a mesma invocação podia funcionar ou
+	// pular dependendo do shell que a lançou, e o log não distinguia os casos.
+	keySource   string
+	envFilePath string
+	envFileVars int
+	envFileErr  error
 }
 
 // loadConfig reads the runtime config from the environment, falling back to the plugin identity's
 // defaults for the two values that differ between plugins (state dir + container).
 func loadConfig(plugin Config) config {
 	stateDir := envOr("ANHUR_STATE_DIR", filepath.Join(homeDir(), plugin.StateDirName))
-	return config{
-		apiKey: os.Getenv("ANHUR_API_KEY"),
+
+	// Junior Tip [ler o próprio arquivo, não confiar no shell — 2026-07-30]: os
+	// hooks fazem `. <stateDir>/env`, mas sourcing sem `export` cria variável de
+	// SHELL que o processo filho não herda. Foi assim que o plugin passou 12,8
+	// dias com 743 skips consecutivos e zero persists, em silêncio. Carregar o
+	// arquivo aqui torna o binário autocontido: funciona sob qualquer executor de
+	// hook, em qualquer shell, e o carregamento vira código testável. Ver
+	// envfile.go para o formato aceito e a regra de precedência.
+	_, apiKeyWasAlreadyInEnvironment := os.LookupEnv("ANHUR_API_KEY")
+	envFilePath := resolveEnvFilePath(stateDir)
+	injectedCount, envFileErr := loadEnvFileInto(envFilePath)
+
+	resolvedAPIKey := os.Getenv("ANHUR_API_KEY")
+	loaded := config{
+		apiKey: resolvedAPIKey,
+		// keySource / envFileNote alimentam o log de diagnóstico — NUNCA o valor
+		// da chave. Foi a precedência do ambiente herdado do terminal que produziu
+		// 187 sucessos intercalados e mascarou a falha; sem registrar a fonte, o
+		// próximo diagnóstico volta a ser adivinhação.
+		keySource:   apiKeySource(apiKeyWasAlreadyInEnvironment, resolvedAPIKey),
+		envFilePath: envFilePath,
+		envFileVars: injectedCount,
+		envFileErr:  envFileErr,
 		// Junior Tip [the SDK owns the default, 2026-07-17]: this used to default to
 		// http://localhost:8000 — a dead port on every machine not running a dev stack, so a key
 		// set without ANHUR_URL dialled nothing, recall injected nothing, and the process still
@@ -110,6 +141,7 @@ func loadConfig(plugin Config) config {
 		archive:    os.Getenv("ANHUR_ARCHIVE") != "false",
 		archiveDir: envOr("ANHUR_ARCHIVE_DIR", filepath.Join(stateDir, "archive")),
 	}
+	return loaded
 }
 
 func (cfg config) queueDir() string  { return filepath.Join(cfg.stateDir, "queue") }
@@ -152,10 +184,52 @@ func Run(args []string, plugin Config) {
 		logLine(cfg, "usage: "+plugin.BinaryName+" <recall|persist>")
 		return
 	}
+	// Junior Tip [a chave ausente agora GRITA, e o arquivo é salvo antes —
+	// 2026-07-30]: esta guarda produziu 743 skips consecutivos em 12,8 dias com
+	// exit 0, stdout vazio e stderr vazio. Duas coisas mudaram, e as duas são o
+	// ponto:
+	//
+	//  1. A mensagem vai também para o STDERR, que o Claude Code mostra. Um plugin
+	//     que não pode cumprir sua única função tem de ser visível — "never crash
+	//     the session" continua valendo (segue saindo com 0), mas silêncio total
+	//     não é a mesma coisa que não travar.
+	//  2. O ARQUIVO LOSSLESS é salvo ANTES de desistir. Ele existe justamente para
+	//     ser a rede quando a rede falha, e estava atrás deste mesmo return: a
+	//     salvaguarda morria junto com aquilo que ela deveria salvaguardar. Com o
+	//     arquivo em disco, uma chave ausente vira atraso recuperável, não perda.
 	if cfg.apiKey == "" {
-		logLine(cfg, "ANHUR_API_KEY not set — skipping")
+		diagnostic := "ANHUR_API_KEY not set (env file: " + cfg.envFilePath
+		if cfg.envFileErr != nil {
+			diagnostic += ", unreadable: " + cfg.envFileErr.Error()
+		} else {
+			diagnostic += ", " + strconv.Itoa(cfg.envFileVars) + " vars loaded"
+		}
+		diagnostic += ") — MEMORY IS NOT BEING SAVED"
+		logLine(cfg, diagnostic)
+		fmt.Fprintln(os.Stderr, "anhur-memory: "+diagnostic)
+
+		// A transcrição vai para o disco mesmo sem chave: recuperável depois.
+		// Mesma resolução de sessão/caminho que cmdPersist usa, para o arquivo
+		// cair com o mesmo nome que teria caído se a chave estivesse presente.
+		if len(args) > 1 && args[1] == "persist" && cfg.archive {
+			var stdinInput hookInput
+			_ = json.NewDecoder(os.Stdin).Decode(&stdinInput)
+			transcriptPath := resolveTranscript(stdinInput)
+			if transcriptPath == "" {
+				logLine(cfg, "archive without key: transcript not found")
+			} else {
+				sessionID := stdinInput.SessionID
+				if sessionID == "" {
+					sessionID = "anon-" + filepath.Base(transcriptPath)
+				}
+				archiveTranscript(cfg, sessionID, transcriptPath)
+				logLine(cfg, "transcript archived despite missing key — recoverable (session="+sessionID+")")
+			}
+		}
 		return
 	}
+	logLine(cfg, "config: key source="+cfg.keySource+" env file="+cfg.envFilePath+
+		" vars="+strconv.Itoa(cfg.envFileVars))
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.httpTimeout+5*time.Second)
 	defer cancel()
