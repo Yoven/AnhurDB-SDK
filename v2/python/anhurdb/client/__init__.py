@@ -405,15 +405,26 @@ class Memory:
           default type episodic). Use when you need ``score`` / ``type`` /
           ``metadata`` persisted without extraction.
 
-        When ``mode="ingest"`` and the server returns 404 (OSS), the SDK falls
-        back to ``/records`` automatically.
+        Trap (PARITY_SPEC.md ~L84): pinning ``score``, ``type``, or a
+        non-empty ``metadata`` also forces ``/records`` even under
+        ``mode="ingest"`` — the ingest endpoint's body has no field for any
+        of the three, so a plain ingest call would silently drop the pin.
+        Mirrors Go (``client.go`` ``Add`` / ``forceRecordsPath``) and
+        TypeScript (``memory.ts`` ``add`` / ``forceRecordsPath``); all three
+        SDKs now agree. Plain ``add(text)`` (no pins) prefers ingest; 404
+        falls back to ``/records`` (OSS).
 
         Args:
             text:       The text to remember (required, non-empty).
             mode:       ``"ingest"`` or ``"regular"``.
-            score:      Importance 1-10 (``mode="regular"`` only).
-            type:       Memory type (``mode="regular"`` only).
-            metadata:   Optional metadata (``mode="regular"`` only).
+            score:      Importance 1-10. Pinning it (any mode) forces the
+                        ``/records`` path.
+            type:       Memory type. Pinning it (any mode) forces the
+                        ``/records`` path.
+            metadata:   Optional metadata. A non-empty dict (any mode)
+                        forces the ``/records`` path; an empty dict or
+                        ``None`` does not (matches Go's
+                        ``len(cfg.metadata) > 0`` guard).
             session_id: Override session; defaults to ``self.session_id``.
 
         Returns:
@@ -428,21 +439,42 @@ class Memory:
             session_id = await mem.create_session()
             await mem.add("User prefers dark mode", mode="ingest",
                           session_id=session_id)
-            await mem.add("Pinned fact", mode="regular", score=8,
+            # Pinned score forces /records even though mode="ingest" — the
+            # score is honored, not silently dropped.
+            await mem.add("Pinned fact", mode="ingest", score=8,
                           type=MemoryType.PREFERENCE)"""
         if not text:
             raise ValueError("text cannot be empty")
         if mode not in ("ingest", "regular"):
             raise ValueError('mode must be "ingest" or "regular"')
 
-        if mode == "ingest":
+        # PARITY_SPEC.md ~L84 / L22: pinning score, type, OR metadata forces
+        # the synchronous /records create path even under mode="ingest" —
+        # mirrors Go (client.go Add, forceRecordsPath) and TypeScript
+        # (memory.ts add, forceRecordsPath). An empty metadata dict is NOT a
+        # pin, matching Go's `len(cfg.metadata) > 0` check — only a
+        # non-empty dict counts.
+        #
+        # Junior Tip [never let a pin evaporate]: POST /api/v1/ingest's body
+        # is only {content, container_tag, session_id} — score, type, and
+        # metadata have no field to land in on that endpoint. Before this
+        # fix, the routing decision only looked at `mode`, so
+        # add(text, mode="ingest", score=8) still called _try_ingest()
+        # first; whenever ingest succeeded (the common case), the pinned
+        # score was silently discarded — no exception, no warning, the
+        # caller just got back a record that quietly did not have the
+        # importance it asked for. That is exactly the class of bug this
+        # project treats as the worst kind: silent data loss (see
+        # CLAUDE.md "fail loud, never silently lose"). Route pinned calls
+        # straight to _create_record(), the only path that actually
+        # persists all three fields.
+        pinned = score is not None or type is not None or bool(metadata)
+
+        if mode == "ingest" and not pinned:
             if self._ingest_available is not False:
                 ingest_result = await self._try_ingest(text, session_id)
                 if ingest_result is not None:
                     return ingest_result
-            return await self._create_record(
-                text, score, type, metadata, session_id
-            )
 
         return await self._create_record(text, score, type, metadata, session_id)
 

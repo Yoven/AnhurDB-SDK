@@ -9,6 +9,11 @@ Covers:
      every 5xx immediately with NO client-side retry.
   4. read_content returns a verbatim plain-text body instead of wrapping it in
      {"message": text[:1000]} and truncating at 1000 chars.
+  5. add() with a pinned score/type ALSO forces /api/v1/records when mode is
+     left at its "ingest" default (PARITY_SPEC.md ~L84) — see
+     TestAddPersistsScoreType.test_score_type_with_default_mode_forces_records_path,
+     mirroring Go/TypeScript. More coverage (metadata, empty-dict-not-pinned)
+     lives in tests/test_http_mock.py::TestAddForceRecordsPathOnPin.
 """
 
 from aiohttp import web
@@ -117,17 +122,25 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
             self.assertEqual(ingest_payload["container_tag"], "u1")
 
     @unittest_run_loop
-    async def test_score_type_with_default_mode_still_uses_ingest(self):
-        """mode defaults to ingest — score/type are ignored, not rerouted."""
+    async def test_score_type_with_default_mode_forces_records_path(self):
+        """mode defaults to "ingest", but a pinned score/type must still force
+        /api/v1/records (PARITY_SPEC.md ~L84) — /ingest's body has no field for
+        either and would silently drop the pin. Mirrors Go
+        (client.go forceRecordsPath) and TypeScript (memory.ts
+        forceRecordsPath). This assertion previously encoded the opposite
+        (verified parity bug: Python alone dropped the pin on ingest success);
+        corrected together with the Go/TS-matching fix in add()."""
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="k", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add(
                 "plain with pins", score=8, type=MemoryType.PREFERENCE
             )
-            self.assertEqual(result["mode"], "cloud")
-            self.assertIn("last_ingest", self.app)
-            self.assertNotIn("last_record", self.app)
+            self.assertEqual(result["mode"], "oss")
+            self.assertIn("last_record", self.app)
+            self.assertNotIn("last_ingest", self.app)
+            self.assertEqual(self.app["last_record"]["score"], 8)
+            self.assertEqual(self.app["last_record"]["type"], "preference")
 
     @unittest_run_loop
     async def test_read_content_plain_text_verbatim(self):

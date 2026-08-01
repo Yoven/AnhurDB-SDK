@@ -765,5 +765,127 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
                 await client.profile("tag1")
 
 
+class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
+    """Memory.add() must force POST /api/v1/records whenever score, type, or
+    metadata is pinned — even under mode="ingest" — because POST
+    /api/v1/ingest's body is only {content, container_tag, session_id} and has
+    no field for any of the three. Before the fix, add(mode="ingest",
+    score=8) still tried /ingest first and silently dropped the pin whenever
+    ingest succeeded.
+
+    Verified parity bug: PARITY_SPEC.md ~L84/L22. Mirrors Go
+    (client.go Add / forceRecordsPath) and TypeScript
+    (memory.ts add / forceRecordsPath) — all three now agree.
+    """
+
+    async def get_application(self):
+        app = web.Application()
+        app["ingest_calls"] = []
+        app["records_calls"] = []
+
+        async def capture_ingest(request):
+            data = await request.json()
+            app["ingest_calls"].append(data)
+            return web.json_response({
+                "id": 42,
+                "records": [
+                    {"id": 42, "type": "episodic", "summary": data["content"][:50]},
+                ],
+            })
+
+        async def capture_records(request):
+            data = await request.json()
+            app["records_calls"].append(data)
+            return web.json_response({"id": 100, "uuid": data.get("uuid", "")})
+
+        app.router.add_post("/api/v1/sessions", handle_sessions_create)
+        app.router.add_post("/api/v1/ingest", capture_ingest)
+        app.router.add_post("/api/v1/records", capture_records)
+        return app
+
+    @unittest_run_loop
+    async def test_add_ingest_no_pins_hits_ingest(self):
+        """(1) Plain add(mode="ingest") with no pins → POST /api/v1/ingest,
+        not /records."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add("plain text", mode="ingest")
+            self.assertEqual(result["mode"], "cloud")
+        self.assertEqual(len(self.app["ingest_calls"]), 1)
+        self.assertEqual(len(self.app["records_calls"]), 0)
+
+    @unittest_run_loop
+    async def test_add_ingest_with_pinned_score_hits_records(self):
+        """(2) add(mode="ingest", score=8) must force /records and persist
+        score=8 — /ingest has no score field and would silently drop it."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add("pinned score", mode="ingest", score=8)
+            self.assertEqual(result["mode"], "oss")
+        self.assertEqual(
+            len(self.app["ingest_calls"]), 0,
+            "ingest must be skipped entirely when a pin is present",
+        )
+        self.assertEqual(len(self.app["records_calls"]), 1)
+        self.assertEqual(self.app["records_calls"][0]["score"], 8)
+
+    @unittest_run_loop
+    async def test_add_ingest_with_pinned_type_hits_records(self):
+        """(3) add(mode="ingest", type=...) must force /records and persist
+        the pinned type."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add(
+                "pinned type", mode="ingest", type=MemoryType.FACT
+            )
+            self.assertEqual(result["mode"], "oss")
+        self.assertEqual(len(self.app["ingest_calls"]), 0)
+        self.assertEqual(len(self.app["records_calls"]), 1)
+        self.assertEqual(self.app["records_calls"][0]["type"], "fact")
+
+    @unittest_run_loop
+    async def test_add_ingest_with_pinned_metadata_hits_records(self):
+        """(3) add(mode="ingest", metadata={'k': 'v'}) must force /records and
+        persist the metadata — /ingest's body has no metadata field."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add(
+                "pinned metadata", mode="ingest", metadata={"k": "v"}
+            )
+            self.assertEqual(result["mode"], "oss")
+        self.assertEqual(len(self.app["ingest_calls"]), 0)
+        self.assertEqual(len(self.app["records_calls"]), 1)
+        sent_metadata = json.loads(self.app["records_calls"][0]["metadata"])
+        self.assertEqual(sent_metadata["k"], "v")
+
+    @unittest_run_loop
+    async def test_add_ingest_with_empty_metadata_dict_is_not_pinned(self):
+        """Empty metadata ({}) is NOT a pin — matches Go's
+        `len(cfg.metadata) > 0` guard — so add(mode="ingest", metadata={})
+        must still try /ingest first."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add("empty metadata", mode="ingest", metadata={})
+            self.assertEqual(result["mode"], "cloud")
+        self.assertEqual(len(self.app["ingest_calls"]), 1)
+        self.assertEqual(len(self.app["records_calls"]), 0)
+
+    @unittest_run_loop
+    async def test_add_regular_mode_hits_records(self):
+        """(4) add(mode="regular") always hits /records, pins or not."""
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add("regular text", mode="regular")
+            self.assertEqual(result["mode"], "oss")
+        self.assertEqual(len(self.app["ingest_calls"]), 0)
+        self.assertEqual(len(self.app["records_calls"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

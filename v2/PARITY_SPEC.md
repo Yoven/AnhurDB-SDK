@@ -76,7 +76,7 @@ API. This document is the public contract; deviations are bugs.
 
 | Topic | Behavior |
 |---|---|
-| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. **Agent UX:** query string is sent as `text` (FTS5) — not embedding similarity; prefer `smart_search` / MCP `recall` for conceptual RAG without a vector. |
+| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. **Agent UX:** the server auto-embeds the query `text` server-side (`AnhurDB/server/handler/search_query_vector.go::resolveSearchQueryVectorB64`, since 2026-07-15) and blends it with FTS5 for hybrid ranking — callers do not need to submit a vector. `smart_search` remains the weight-boosted lexical door (MCP `recall`) for callers who want lexical-weighted ranking instead. |
 | `smart_search` | Same scope enum via `?scope=` (default `sessions`). Prefer for conceptual text queries (weight-boosted FTS). |
 | `search_by_type` | Tenant-store type index only — **no `scope` / not a Shared Data plane switch**. Use `search_*` helpers or `scope=` for specialty docs. |
 | `/search/global` | Server deprecated alias only — SDKs must not call it. |
@@ -84,7 +84,7 @@ API. This document is the public contract; deviations are bugs.
 | `add` vs `create` | **Session-first:** `create_session` (or `open_session`) before any write. **Write paths:** `add(text, mode="ingest")` → `POST /ingest` (episodic + async extraction, LLM billed). `create(...)` → `POST /records` (one typed record, no extraction). **Trap:** `add` with pinned `type`/`score`/`metadata` skips ingest and hits `/records`. Never both for the same turn. Unregistered client session → fail loud before HTTP. |
 | `create` | Python uses `CreateRequest`; Go uses options; TypeScript uses `CreateOptions`. |
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |
-| `query` AST validation | Since 2026-07-28 the server rejects a malformed filter with a **named HTTP 400** instead of dropping the predicate: bare value instead of an operator object, empty operator object `{}`, empty `$in`, unknown operator, and a non-scalar operator value. The dropped predicate used to widen the result set and answer 200 — a silent wrong answer. Client-side pre-validation is **not** at parity; see "Known parity gaps". |
+| `query` AST validation | Since 2026-07-28 the server rejects a malformed filter with a **named HTTP 400** instead of dropping the predicate: bare value instead of an operator object, empty operator object `{}`, empty `$in`, unknown operator, and a non-scalar operator value. The dropped predicate used to widen the result set and answer 200 — a silent wrong answer. Client-side pre-validation reached parity in Go SDK v2.0.13 (2026-07-30); one narrow, structural residual difference remains — see "Known parity gaps". |
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |
 
 ## Known parity gaps
@@ -92,31 +92,35 @@ API. This document is the public contract; deviations are bugs.
 Deviations from this contract are bugs (see Principles). These are the open ones,
 recorded here so they are tracked rather than rediscovered.
 
-### Query builder pre-validation (`query` / `POST /api/v1/query`) — recorded 2026-07-29
+### Query builder pre-validation (`query` / `POST /api/v1/query`) — recorded 2026-07-29, closed 2026-07-30 (Go SDK v2.0.13)
 
-The server-side AST contract is identical for all three SDKs. What is **not**
-identical is how much each builder catches before the request leaves the process.
-Principle 4 ("fail loud — no silent drops") is now enforced server-side for every
-language; the gap is in the quality and timing of the error.
+The server-side AST contract is identical for all three SDKs. Client-side
+pre-validation reached parity in Go SDK v2.0.13 (2026-07-30) —
+`v2/golang/client/query_validation.go` adds `QueryRequest.Validate()`, and
+`Query()` calls it before the request leaves the process (commit `68ebcc8`,
+2026-07-29). Go now raises the same class of local error Python and
+TypeScript always have; Principle 4 ("fail loud — no silent drops") is
+enforced at the same layer in all three, not just server-side.
 
 | Guard | Python `QueryBuilder` | TypeScript `QueryBuilder` | Go `QueryRequest` |
 |---|---|---|---|
-| Filter/sort column whitelist (17 columns, mirrors the server) | yes, raises `ValueError` | yes, throws `Error` | **no** — reaches the server, HTTP 400 `invalid filter field` |
+| Filter/sort column whitelist (17 columns, mirrors the server) | yes, raises `ValueError` | yes, throws `Error` | yes, since v2.0.13 — `Validate()` errors locally, `query: field "<f>" is not allowed in filters` |
 | Operator whitelist (`$eq $gt $gte $lt $lte $in`) | yes, raises `ValueError` | yes, throws `Error` | n/a — `QueryOp` is a closed struct, no unknown operator is expressible |
-| `limit` range 1–1000 | yes, raises `ValueError` | yes, throws `Error` | **no** — server silently falls back to the default 50 when `limit <= 0`, caps at 1000 above it, and echoes neither |
-| `offset >= 0` | yes, raises `ValueError` | yes, throws `Error` | **no** — server silently falls back to 0, not echoed in the response |
-| Cannot emit an empty operator object | yes (fluent path) | yes (fluent path) | **no** — see below |
-| Empty `$in` guarded before the request | no | no | no |
+| `limit` range 1–1000 | yes, raises `ValueError` | yes, throws `Error` | yes, since v2.0.13 — `Validate()` errors locally instead of relying on the server's silent fallback |
+| `offset >= 0` | yes, raises `ValueError` | yes, throws `Error` | yes, since v2.0.13 — `Validate()` errors locally instead of relying on the server's silent fallback |
+| Cannot emit an empty operator object | yes (fluent path) | yes (fluent path) | yes, since v2.0.13 — `QueryOp.isEmpty()` inside `Validate()` |
+| Empty `$in` guarded before the request | no | no | yes, since v2.0.13 — `QueryOp.hasEmptyInList()` gives it a **dedicated** message (`$in requires a non-empty list of values`), distinct from the generic "no operator" case; Python and TypeScript still reach the server for this one |
 
-**Go, `client.QueryOp` — the material gap.** All six operator fields are tagged
-`omitempty`, so `QueryOp{}`, `QueryOp{In: []interface{}{}}` and `QueryOp{Eq: nil}`
-all marshal to `{}`, which the server now answers with HTTP 400
-`filter "<field>" has no operator`. Two consequences beyond the 400 itself:
-
-- an empty `$in` from Go reports the generic "has no operator" message instead of
-  the `$in`-specific one Python and TypeScript trigger;
-- `$eq: null` is **not expressible from Go**, although the server accepts a null
-  scalar. Python and TypeScript can send it.
+**Residual gap — `$eq: null` is still not expressible from Go.** `QueryOp.Eq`
+is `interface{}` tagged `omitempty` (`v2/golang/client/types.go`); a Go `nil`
+interface value is indistinguishable from an unset field, so neither
+`Validate()` nor the wire encoding can tell "caller wants `$eq: null`" apart
+from "caller set nothing" — `Validate()` reports the latter:
+`filter "<field>" has no operator`. The server accepts an explicit null
+scalar, and Python/TypeScript can send it; Go cannot without bypassing the
+SDK and posting raw JSON. This is a type-system constraint of the closed
+`QueryOp` struct (would need an `Option[T]`-style wrapper to close), not a
+missed validation check, and is not currently planned.
 
 Escape hatches that bypass pre-validation and reach the server raw: Python
 `Filter({...})` (copies the dict with no validation) and TypeScript a hand-built
