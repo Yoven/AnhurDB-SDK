@@ -76,7 +76,7 @@ API. This document is the public contract; deviations are bugs.
 
 | Topic | Behavior |
 |---|---|
-| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. **Agent UX:** the server auto-embeds the query `text` server-side (`AnhurDB/server/handler/search_query_vector.go::resolveSearchQueryVectorB64`, since 2026-07-15) and blends it with FTS5 for hybrid ranking — callers do not need to submit a vector. `smart_search` remains the weight-boosted lexical door (MCP `recall`) for callers who want lexical-weighted ranking instead. |
+| `search` / `recall` | Both hit `POST /api/v1/search`. Default `scope=sessions` (chat plane; never `shared-*`). Shared Data requires explicit scope or a `search_*` helper. **Agent UX:** the server auto-embeds the query `text` server-side (`AnhurDB/server/handler/search_query_vector.go::resolveSearchQueryVectorB64`, since 2026-07-15) and blends it with FTS5 for hybrid ranking — callers do not need to submit a vector. `smart_search` remains the weight-boosted lexical door (MCP: `search` with `strategy=lexical`; MCP `recall` is the RRF fan-out) for callers who want lexical-weighted ranking instead. |
 | `smart_search` | Same scope enum via `?scope=` (default `sessions`). Prefer for conceptual text queries (weight-boosted FTS). |
 | `search_by_type` | Tenant-store type index only — **no `scope` / not a Shared Data plane switch**. Use `search_*` helpers or `scope=` for specialty docs. |
 | `/search/global` | Server deprecated alias only — SDKs must not call it. |

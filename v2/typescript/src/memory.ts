@@ -282,13 +282,18 @@ export class Memory {
     // "pinned" and never use the ingest pipeline. See the doc-comment above.
     //
     // force the records path. The ingest endpoint's request body is only
-    // metadata, so a metadata-only add routed to /ingest would lose it. Go and
-    // Python route metadata to /records for the same reason — the three agree.
+    // metadata, so a metadata-only add routed to /ingest would lose it. Go
+    // (`len(cfg.metadata) > 0`) and Python (`bool(metadata)`) both treat an
+    // empty metadata object as "no pin" — a caller passing `{metadata: {}}`
+    // is not asking for anything to persist beyond the pipeline default, so
+    // it must not force the synchronous /records path either. Mirror that
+    // here: require a non-empty object, not just a defined one.
     const forceRecordsPath =
       writeMode === "regular" ||
       options?.score !== undefined ||
       options?.type !== undefined ||
-      options?.metadata !== undefined;
+      (options?.metadata !== undefined &&
+        Object.keys(options.metadata).length > 0);
 
     const score = options?.score ?? 5;
     const type: MemoryType = options?.type ?? "episodic";

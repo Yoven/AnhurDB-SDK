@@ -88,7 +88,11 @@ async function main(): Promise<number> {
       score: 8,
       sessionUuid: recordUuid || undefined,
     });
-    emit("Create", true, `id=${createRes.id} session=${recordUuid}`);
+    // AddResult (create()'s return type) has no top-level `id` — the created
+    // record's id lives at `records[0].id`, same shape `addRecordId()`
+    // already extracts for Add above. `createRes.id` does not exist on
+    // AddResult and always printed "id=undefined".
+    emit("Create", true, `id=${addRecordId(createRes)} session=${recordUuid}`);
   } catch (err) {
     failCount++;
     emit("Create", false, "", err);

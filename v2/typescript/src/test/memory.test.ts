@@ -82,6 +82,84 @@ describe("Memory.add() validation", () => {
   });
 });
 
+// ── add() routing: empty metadata must NOT count as a pin ──────
+// Junior Tip [three-way parity]: Go's forceRecordsPath checks
+// `len(cfg.metadata) > 0`; Python's checks `bool(metadata)` — both treat an
+// empty `{}` as "no pin". Before this fix the TS check was
+// `metadata !== undefined`, so `add(text, {metadata: {}})` was misrouted to
+// the synchronous /records path even though the caller pinned nothing.
+// These tests lock the routing decision by asserting which endpoint the
+// mocked fetch actually receives — mirrors
+// python/tests/test_http_mock.py::TestAddForceRecordsPathOnPin.
+describe("Memory.add() metadata pin routing (parity: Go len()>0, Python bool())", () => {
+  const mockIngestVsRecords = (): {
+    calls: { ingest: number; records: number };
+    restore: () => void;
+  } => {
+    const originalFetch = globalThis.fetch;
+    const calls = { ingest: 0, records: 0 };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/v1/ingest")) {
+        calls.ingest++;
+        return new Response(
+          JSON.stringify({
+            id: 1,
+            records: [{ id: 1, type: "episodic", summary: "x" }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.includes("/api/v1/records")) {
+        calls.records++;
+        return new Response(JSON.stringify({ id: 2, uuid: "sess-1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected URL in mock: ${url}`);
+    }) as typeof fetch;
+    return {
+      calls,
+      restore: () => {
+        globalThis.fetch = originalFetch;
+      },
+    };
+  };
+
+  it("add(text, {metadata: {}}) is NOT a pin — still hits /api/v1/ingest", async () => {
+    const mock = mockIngestVsRecords();
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const result = await mem.add("empty metadata", {
+        metadata: {},
+        sessionId: "sess-1",
+      });
+      assert.equal(result.mode, "cloud");
+      assert.equal(mock.calls.ingest, 1);
+      assert.equal(mock.calls.records, 0);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  it("add(text, {metadata: {k: 'v'}}) IS a pin — forces /api/v1/records", async () => {
+    const mock = mockIngestVsRecords();
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const result = await mem.add("pinned metadata", {
+        metadata: { k: "v" },
+        sessionId: "sess-1",
+      });
+      assert.equal(result.mode, "oss");
+      assert.equal(mock.calls.ingest, 0);
+      assert.equal(mock.calls.records, 1);
+    } finally {
+      mock.restore();
+    }
+  });
+});
+
 describe("Memory.search() validation", () => {
   it("rejects empty query", async () => {
     const mem = new Memory({ apiKey: "key", userId: "u" });

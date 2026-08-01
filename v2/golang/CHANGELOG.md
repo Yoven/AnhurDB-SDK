@@ -28,17 +28,41 @@ records, err := mem.Query(ctx, client.NewQuery().Where("type", client.QueryOp{})
 
 Consequences to be aware of:
 
-- `QueryOp{In: []interface{}{}}` reports the generic *"has no operator"* message,
-  not the `$in`-specific one, because the empty slice is dropped before it reaches
-  the server. Guard empty slices in your own code before calling `Where`.
+> **Correction (2026-07-29, same day, `v2/golang/v2.0.13`):** the first and
+> third bullets below described the Go SDK as it stood when this entry was
+> written (01:52 UTC+1) — about 9.5 hours before `client/query_validation.go`
+> shipped at 11:31 UTC+1 (commit `68ebcc8`, tag `v2/golang/v2.0.13`), same
+> calendar day. That commit added
+> `QueryRequest.Validate()`, called by `Query()` before any request leaves the
+> process, bringing Go to parity with Python's and TypeScript's client-side
+> validation. The bullets are corrected in place below (marked **"as of
+> v2.0.13"**) rather than deleted, since they remain an accurate record of the
+> narrow window between the server change and the client-side fix.
+
+- `QueryOp{In: []interface{}{}}` used to report the generic *"has no operator"*
+  message, not the `$in`-specific one, because the empty slice was dropped
+  before it reached the server. **As of v2.0.13:** `Validate()` checks for an
+  empty `$in` list before the generic empty-operator check, so the Go SDK now
+  returns the dedicated local error `query: filter "<field>": $in requires a
+  non-empty list of values` — no round trip, no generic message. Guarding
+  empty slices in caller code is no longer required to get the right message.
 - `$eq: null` is currently **not expressible from Go**. The server accepts a null
   scalar, but `omitempty` erases it. Use Python/TypeScript or a hand-built JSON body
-  if you need it.
-- Unlike the Python and TypeScript builders, `QueryRequest.Where` applies **no
-  client-side column whitelist** and `Limit`/`Offset` apply **no range check**. A bad
-  column name only fails at the server (400 `invalid filter field`), and an
-  out-of-range limit or offset is silently adjusted server-side (see the last
-  section) with nothing echoed back in the response.
+  if you need it. **Still true as of v2.0.13** — `Validate()` changes what gets
+  rejected before sending, not `QueryOp`'s wire encoding, so this gap is
+  unaffected by that fix.
+- Unlike the Python and TypeScript builders, `QueryRequest.Where` used to apply
+  **no client-side column whitelist** and `Limit`/`Offset` used to apply **no
+  range check** — a bad column name only failed at the server (400 `invalid
+  filter field`), and an out-of-range limit or offset was silently adjusted
+  server-side (see the last section) with nothing echoed back in the response.
+  **As of v2.0.13:** `Validate()` checks `Filters` and `Sort` field names
+  against the same column whitelist the server uses, and rejects a `limit`
+  outside `[1, 1000]` or a negative `offset` with a named local error — both
+  now fail before the request is built, matching Python/TypeScript. The
+  server-side fallback behaviour described above is unchanged and still
+  applies to any request that reaches it by another path (hand-built JSON, a
+  `QueryRequest` built without going through `Validate()`, another SDK).
 
 ### Filter shapes that used to be silently dropped and now return 400
 
@@ -79,7 +103,13 @@ did not receive with a 200.
    interface — and for any hand-built `QueryRequest`/JSON with a bare value or a
    `$neq`/`$nin`/`$like` operator.
 3. Any of those returns `*client.APIError` with `StatusCode == 400` and a `Body` of
-   `{"error": "<message above>"}`:
+   `{"error": "<message above>"}` — **except** an empty `$in`, a disallowed
+   filter/sort column, or an out-of-range `limit`/`offset`, which **as of
+   v2.0.13** are caught by `QueryRequest.Validate()` before any request is
+   sent: those return a plain `error` (not `*client.APIError`), so the
+   `errors.As` check below falls through to the generic `err != nil` branch
+   instead — check for that first if you need to distinguish "never left the
+   process" from "the server said no":
 
 ```go
 records, queryError := mem.Query(ctx, request)
