@@ -3,7 +3,7 @@
  *
  *   ANHUR_API_KEY=... npx tsx AnhurDB-SDK/v2/scripts/parity/probe_typescript.ts
  */
-import { Memory } from "../../typescript/src/index.js";
+import { Memory, sessionsAll } from "../../typescript/src/index.js";
 
 function emit(operation: string, ok: boolean, detail = "", err?: unknown): void {
   const status = ok ? "PASS" : "FAIL";
@@ -94,14 +94,16 @@ async function main(): Promise<number> {
     emit("Create", false, "", err);
   }
 
+  // Junior Tip [ADR-0014]: sessions is MANDATORY in the search family —
+  // sessionsAll() means "every session in scope"; omitting it is an error.
   const ops: Array<[string, () => Promise<unknown>]> = [
-    ["Search", () => mem.search("AnhurDB SDK probe")],
+    ["Search", () => mem.search("AnhurDB SDK probe", sessionsAll())],
     ["Profile", () => mem.profile()],
     ["CountByType", () => mem.countByType()],
     ["ListSessions", () => mem.listSessions()],
     ["Recent", () => mem.recent(5)],
-    ["SmartSearch", () => mem.smartSearch("AnhurDB", 5)],
-    ["Recall", () => mem.recall("AnhurDB", 5)],
+    ["SmartSearch", () => mem.smartSearch("AnhurDB", sessionsAll(), 5)],
+    ["Recall", () => mem.recall("AnhurDB", sessionsAll(), 5)],
     ["ListTypes", async () => mem.listTypes()],
   ];
   for (const [name, run] of ops) {

@@ -11,7 +11,13 @@ from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../python"))
 
-from anhurdb import CreateRequest, EntityModel, Memory, MemoryType  # noqa: E402
+from anhurdb import (  # noqa: E402
+    CreateRequest,
+    EntityModel,
+    Memory,
+    MemoryType,
+    sessions_all,
+)
 
 
 def emit(operation: str, ok: bool, detail: str = "", err: Any = None) -> None:
@@ -101,14 +107,16 @@ async def main() -> int:
             fail_count += 1
             emit("Create", False, err=exc)
 
+        # Junior Tip [ADR-0014]: sessions is MANDATORY in the search family —
+        # sessions_all() means "every session in scope"; omitting it is an error.
         async_ops = [
-            ("Search", mem.search("AnhurDB SDK probe")),
+            ("Search", mem.search("AnhurDB SDK probe", sessions_all())),
             ("Profile", mem.profile()),
             ("CountByType", mem.count_by_type()),
             ("ListSessions", mem.list_sessions()),
             ("Recent", mem.recent(limit=5)),
-            ("SmartSearch", mem.smart_search("AnhurDB", limit=5)),
-            ("Recall", mem.recall("AnhurDB", limit=5)),
+            ("SmartSearch", mem.smart_search("AnhurDB", sessions_all(), limit=5)),
+            ("Recall", mem.recall("AnhurDB", sessions_all(), limit=5)),
         ]
         for op_name, coro in async_ops:
             try:
