@@ -644,6 +644,8 @@ class Memory:
         limit: int = 10,
         type_filter: Optional[str] = None,
         scope: str = "sessions",
+        skip_query_embed: bool = False,
+        skip_cognitive_rerank: bool = False,
     ) -> List[SearchResult]:
         """Hybrid plane search via ``POST /api/v1/search``.
 
@@ -693,6 +695,12 @@ class Memory:
         }
         if type_filter:
             payload["type_filter"] = type_filter
+        # Knobs de ablação (paridade REST/MCP/Go/TS, 2026-08-07): omitidos
+        # quando False para preservar o wire default do servidor.
+        if skip_query_embed:
+            payload["skip_query_embed"] = True
+        if skip_cognitive_rerank:
+            payload["skip_cognitive_rerank"] = True
         data = await self._connection.post("/api/v1/search", payload)
         return _parse_search_results(data)
 

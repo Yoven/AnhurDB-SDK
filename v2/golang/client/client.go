@@ -541,6 +541,12 @@ func (m *Memory) Search(ctx context.Context, query string, sessions []string, op
 	if cfg.typeFilter != "" {
 		payload["type_filter"] = cfg.typeFilter
 	}
+	if cfg.skipQueryEmbed {
+		payload["skip_query_embed"] = true
+	}
+	if cfg.skipCognitiveRerank {
+		payload["skip_cognitive_rerank"] = true
+	}
 
 	respBytes, err := m.conn.PostRead(ctx, "/api/v1/search", payload)
 	if err != nil {

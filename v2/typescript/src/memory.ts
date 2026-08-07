@@ -371,6 +371,14 @@ export class Memory {
     if (options?.typeFilter) {
       payload.type_filter = options.typeFilter;
     }
+    // Knobs de ablação (paridade REST/MCP/Go/Py, 2026-08-07): omitidos quando
+    // falsos para preservar o wire default do servidor.
+    if (options?.skipQueryEmbed) {
+      payload.skip_query_embed = true;
+    }
+    if (options?.skipCognitiveRerank) {
+      payload.skip_cognitive_rerank = true;
+    }
 
     // Search is a read-shaped POST endpoint.
     const data = await this.client.postRead<{

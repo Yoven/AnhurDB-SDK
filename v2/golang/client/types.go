@@ -464,6 +464,12 @@ type searchConfig struct {
 	walkGoalVector []byte
 	walkTargetTag  string
 	walkMaxCost    float64
+	// skipQueryEmbed / skipCognitiveRerank são os knobs de ablação do
+	// /api/v1/search (paridade com REST e MCP, 2026-08-07 — antes o SDK só
+	// sabia rodar o híbrido default e um agente não conseguia medir as pernas).
+	// Zero value = omitir a chave = comportamento default do servidor.
+	skipQueryEmbed      bool
+	skipCognitiveRerank bool
 }
 
 // applyReadOptions folds a variadic ReadOption slice into a searchConfig.
@@ -489,6 +495,24 @@ func WithLimit(n int) SearchOption {
 func WithTypeFilter(t string) SearchOption {
 	return func(cfg *searchConfig) {
 		cfg.typeFilter = t
+	}
+}
+
+// WithSkipQueryEmbed desliga a perna vetorial da consulta: a busca roda só
+// léxico (FTS5) + Content SimHash. É a perna "keyword" das ablação/medições —
+// mesmo knob do REST (skip_query_embed) e do MCP (lexical_only).
+func WithSkipQueryEmbed() SearchOption {
+	return func(cfg *searchConfig) {
+		cfg.skipQueryEmbed = true
+	}
+}
+
+// WithSkipCognitiveRerank desliga o rerank cognitivo (recência/tipo/peso/
+// valid_until — ADR-0011 A3), mantendo o score RRF puro. Serve para medir o
+// efeito do rerank e para agentes que querem ranking neutro.
+func WithSkipCognitiveRerank() SearchOption {
+	return func(cfg *searchConfig) {
+		cfg.skipCognitiveRerank = true
 	}
 }
 

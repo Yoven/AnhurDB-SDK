@@ -148,6 +148,16 @@ export interface SearchOptions {
   typeFilter?: MemoryType;
   /** Search plane (default `sessions`). */
   scope?: SearchScope;
+  /**
+   * Desliga a perna vetorial da consulta (busca só léxico+SimHash) — a perna
+   * "keyword" das medições. Paridade REST/MCP/Go/Py (2026-08-07).
+   */
+  skipQueryEmbed?: boolean;
+  /**
+   * Desliga o rerank cognitivo (recência/tipo/peso — ADR-0011 A3), mantendo o
+   * score RRF puro.
+   */
+  skipCognitiveRerank?: boolean;
 }
 
 /**
@@ -434,6 +444,9 @@ export interface SearchPayload {
   /** `["*"]` for every session in the scope, or up to 1000 explicit uuids. */
   sessions: string[];
   type_filter?: string;
+  /** Omitido quando false — preserva o default do servidor. */
+  skip_query_embed?: boolean;
+  skip_cognitive_rerank?: boolean;
 }
 
 /**
