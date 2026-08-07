@@ -672,34 +672,51 @@ export interface CreateOptions {
 
 // ── Error types ──────────────────────────────────────────────
 
-/** Base error for all AnhurDB SDK errors. */
+/** Base error for all AnhurDB SDK errors.
+ *
+ * `statusCode` carries the HTTP status when the error came from an HTTP
+ * response (undefined otherwise) — callers branch on the REAL status instead
+ * of parsing the message (e.g. `waitForUpload` treats a transient 404 as
+ * "pending"). Additive and backward-compatible. */
 export class AnhurError extends Error {
-  constructor(message: string) {
+  readonly statusCode?: number;
+  constructor(message: string, statusCode?: number) {
     super(message);
     this.name = "AnhurError";
+    this.statusCode = statusCode;
   }
 }
 
 /** Raised when authentication fails (invalid API key, expired token). */
 export class AnhurAuthError extends AnhurError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, statusCode?: number) {
+    super(message, statusCode);
     this.name = "AnhurAuthError";
   }
 }
 
 /** Raised when a request is malformed or rejected by the server. */
 export class AnhurQueryError extends AnhurError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, statusCode?: number) {
+    super(message, statusCode);
     this.name = "AnhurQueryError";
   }
 }
 
 /** Raised when the SDK cannot reach the AnhurDB server. */
 export class AnhurConnectionError extends AnhurError {
+  constructor(message: string, statusCode?: number) {
+    super(message, statusCode);
+    this.name = "AnhurConnectionError";
+  }
+}
+
+/** Raised by `waitForUpload` when the upload did not reach a terminal status
+ * within the timeout. Parity: Go `ErrUploadWaitTimeout` / Python
+ * `AnhurUploadWaitTimeout`. */
+export class AnhurUploadWaitTimeout extends AnhurError {
   constructor(message: string) {
     super(message);
-    this.name = "AnhurConnectionError";
+    this.name = "AnhurUploadWaitTimeout";
   }
 }

@@ -211,20 +211,24 @@ export class HttpClient {
       if (response.status === 401 || response.status === 403) {
         throw new AnhurAuthError(
           `Authentication failed (HTTP ${response.status})`,
+          response.status,
         );
       }
       if (response.status === 400 || response.status === 422) {
         throw new AnhurQueryError(
           `Invalid request (HTTP ${response.status}): ${bodyText}`,
+          response.status,
         );
       }
       if (response.status === 404) {
         throw new AnhurQueryError(
           `Resource not found (HTTP 404): ${path}`,
+          404,
         );
       }
       throw new AnhurError(
         `Server error (HTTP ${response.status}): ${bodyText}`,
+        response.status,
       );
     }
 
@@ -333,10 +337,12 @@ export class HttpClient {
       if (response.status === 401 || response.status === 403) {
         typedError = new AnhurAuthError(
           `Authentication failed (HTTP ${response.status})`,
+          response.status,
         );
       } else if (response.status === 400 || response.status === 422) {
         typedError = new AnhurQueryError(
           `Invalid request (HTTP ${response.status}): ${bodyText}`,
+          response.status,
         );
       } else if (response.status === 404) {
         typedError = new AnhurQueryError(

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .connection import HTTPConnection
-from .exceptions import AnhurError, AnhurQueryError
+from .exceptions import AnhurError, AnhurQueryError, AnhurUploadWaitTimeout
 from .session_filter import (
     MAX_SESSION_FILTER_UUIDS,
     SESSION_WILDCARD,
@@ -1628,6 +1628,73 @@ class Memory:
         return await self._connection.get(
             f"/api/v1/upload/{upload_id}/status"
         )
+
+    async def wait_for_upload(
+        self,
+        upload_id: int,
+        timeout: float = 120.0,
+        interval: float = 5.0,
+        not_found_grace: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Poll ``upload_status`` until the upload reaches a terminal state.
+
+        Parity: Go ``WaitForUpload`` / TypeScript ``waitForUpload`` — same
+        state machine, same defaults (PARITY_SPEC.md).
+
+        Junior Tip [por que 404 vira "pendente" no começo — medido
+        2026-08-07]: as leituras do AnhurDB são load-balanced; logo após o
+        POST de upload um follower que ainda não aplicou a entrada devolve
+        404 legítimo por alguns segundos (read-your-writes). Dentro de
+        ``not_found_grace`` o 404 é espera; DEPOIS dela ele re-levanta — um id
+        inválido não pode virar espera infinita (falhar alto, nunca engolir).
+
+        Args:
+            upload_id: The upload ID returned by ``upload_file()``.
+            timeout: Total wait budget in seconds.
+            interval: Pause between polls in seconds.
+            not_found_grace: How long an HTTP 404 counts as "not applied yet".
+
+        Returns:
+            The final status payload — INCLUDING ``status="failed"`` (a failed
+            ingest is terminal data the caller must inspect, not a transport
+            error).
+
+        Raises:
+            AnhurQueryError: the 404 persisted beyond ``not_found_grace``.
+            AnhurUploadWaitTimeout: no terminal status within ``timeout``.
+        """
+        import asyncio
+        import time as _time
+
+        started_at = _time.monotonic()
+        last_status = "never-seen"
+        while True:
+            try:
+                status_payload = await self.upload_status(upload_id)
+            except AnhurQueryError as query_error:
+                if query_error.status_code != 404:
+                    raise
+                if _time.monotonic() - started_at >= not_found_grace:
+                    raise
+                last_status = "not-found-yet"
+            else:
+                if isinstance(status_payload, dict):
+                    status_text = str(status_payload.get("status") or "").lower()
+                    if (
+                        status_payload.get("completed") is True
+                        or status_payload.get("error")
+                        or status_text in ("completed", "saved", "done", "failed")
+                    ):
+                        return status_payload
+                    if status_text:
+                        last_status = status_text
+
+            if _time.monotonic() - started_at + interval > timeout:
+                raise AnhurUploadWaitTimeout(
+                    f"upload {upload_id} not terminal after {timeout}s "
+                    f"(last={last_status})"
+                )
+            await asyncio.sleep(interval)
 
     # ── Temporal Versioning ────────────────────────────────────────
 

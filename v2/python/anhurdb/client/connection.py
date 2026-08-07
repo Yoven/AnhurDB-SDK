@@ -364,7 +364,8 @@ class HTTPConnection:
                 elif response.status in (301, 302, 303, 307, 308):
                     raise AnhurError(
                         f"Server returned redirect (HTTP {response.status}). "
-                        f"Redirects are disabled to prevent credential leakage."
+                        f"Redirects are disabled to prevent credential leakage.",
+                        status_code=response.status,
                     )
                 elif response.status >= 500:
                     raise AnhurError(f"Server error (HTTP {response.status}): {body_text[:500]}")
@@ -445,27 +446,33 @@ class HTTPConnection:
                 # never the API key or full URL (which could leak in logs).
                 if response.status in (401, 403):
                     raise AnhurAuthError(
-                        f"Authentication failed (HTTP {response.status})"
+                        f"Authentication failed (HTTP {response.status})",
+                        status_code=response.status,
                     )
                 elif response.status in (400, 422):
                     raise AnhurQueryError(
-                        f"Invalid request (HTTP {response.status}): {body_text[:500]}"
+                        f"Invalid request (HTTP {response.status}): {body_text[:500]}",
+                        status_code=response.status,
                     )
                 elif response.status == 404:
                     raise AnhurQueryError(
-                        f"Resource not found (HTTP 404): {path}"
+                        f"Resource not found (HTTP 404): {path}",
+                        status_code=404,
                     )
                 elif response.status == 409:
                     raise AnhurQueryError(
-                        f"Conflict (HTTP 409): {body_text[:500]}"
+                        f"Conflict (HTTP 409): {body_text[:500]}",
+                        status_code=409,
                     )
                 elif response.status == 415:
                     raise AnhurQueryError(
-                        f"Unsupported media type (HTTP 415): {body_text[:500]}"
+                        f"Unsupported media type (HTTP 415): {body_text[:500]}",
+                        status_code=415,
                     )
                 elif response.status == 429:
                     raise AnhurError(
-                        f"Rate limited (HTTP 429): {body_text[:200]}"
+                        f"Rate limited (HTTP 429): {body_text[:200]}",
+                        status_code=429,
                     )
                 elif response.status in (301, 302, 303, 307, 308):
                     # Redirects are disabled for security. Log the attempt.
@@ -476,7 +483,8 @@ class HTTPConnection:
                 elif response.status >= 500:
                     raise AnhurError(
                         f"Server error (HTTP {response.status}): "
-                        f"{body_text[:500]}"
+                        f"{body_text[:500]}",
+                        status_code=response.status,
                     )
 
                 if not body_text:

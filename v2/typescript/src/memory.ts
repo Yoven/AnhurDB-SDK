@@ -9,6 +9,7 @@
  */
 
 import { HttpClient } from "./client.js";
+import { AnhurError, AnhurUploadWaitTimeout } from "./types.js";
 import {
   appendSessionsQueryParam,
   normalizeSessions,
@@ -1291,6 +1292,68 @@ export class Memory {
     return this.client.get<UploadStatusResult>(
       `/api/v1/upload/${uploadId}/status`,
       undefined);
+  }
+
+  /**
+   * Poll `uploadStatus` until the upload reaches a terminal state.
+   *
+   * Parity: Go `WaitForUpload` / Python `wait_for_upload` — same state
+   * machine, same defaults (PARITY_SPEC.md).
+   *
+   * Junior Tip [por que 404 vira "pendente" no começo — medido 2026-08-07]:
+   * as leituras do AnhurDB são load-balanced; logo após o POST de upload um
+   * follower que ainda não aplicou a entrada devolve 404 legítimo por alguns
+   * segundos (read-your-writes). Dentro de `notFoundGraceMs` o 404 é espera;
+   * DEPOIS dela ele re-lança — um id inválido não pode virar espera infinita
+   * (falhar alto, nunca engolir).
+   *
+   * Returns the final payload — INCLUDING `status="failed"` (a failed ingest
+   * is terminal data the caller must inspect, not a transport error). Throws
+   * `AnhurQueryError` when the 404 persists beyond the grace window, and
+   * `AnhurUploadWaitTimeout` when no terminal status arrives in time.
+   */
+  async waitForUpload(
+    uploadId: number,
+    options?: {
+      timeoutMs?: number;
+      intervalMs?: number;
+      notFoundGraceMs?: number;
+    },
+  ): Promise<UploadStatusResult> {
+    const timeoutMs = options?.timeoutMs ?? 120_000;
+    const intervalMs = options?.intervalMs ?? 5_000;
+    const notFoundGraceMs = options?.notFoundGraceMs ?? 30_000;
+
+    const startedAt = Date.now();
+    let lastStatus = "never-seen";
+    for (;;) {
+      try {
+        const statusPayload = await this.uploadStatus(uploadId);
+        const statusText = String(statusPayload?.status ?? "").toLowerCase();
+        if (
+          statusPayload?.completed === true ||
+          Boolean(statusPayload?.error) ||
+          ["completed", "saved", "done", "failed"].includes(statusText)
+        ) {
+          return statusPayload;
+        }
+        if (statusText) lastStatus = statusText;
+      } catch (thrown) {
+        const isTransientNotFound =
+          thrown instanceof AnhurError &&
+          thrown.statusCode === 404 &&
+          Date.now() - startedAt < notFoundGraceMs;
+        if (!isTransientNotFound) throw thrown;
+        lastStatus = "not-found-yet";
+      }
+
+      if (Date.now() - startedAt + intervalMs > timeoutMs) {
+        throw new AnhurUploadWaitTimeout(
+          `upload ${uploadId} not terminal after ${timeoutMs}ms (last=${lastStatus})`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
   }
 
   // ══════════════════════════════════════════════════════════════

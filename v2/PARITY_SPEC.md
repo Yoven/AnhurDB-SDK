@@ -62,6 +62,7 @@ API. This document is the public contract; deviations are bugs.
 | new_session | `NewSession` / `new_session` / `newSession` | Client-side id rotation only — does **not** register; writes fail until create/open_session |
 | upload_file | `UploadFile` / `upload_file` / `uploadFile` | `POST /api/v1/upload` |
 | upload_status | `UploadStatus` / `upload_status` / `uploadStatus` | `GET /api/v1/upload/{id}/status` |
+| wait_for_upload | `WaitForUpload` / `wait_for_upload` / `waitForUpload` | polling client-side sobre upload_status — sem rota própria |
 | list_entities | `ListEntities` / `list_entities` / `listEntities` | `GET /api/v1/entities/list` |
 | search_entities | `SearchEntities` / `search_entities` / `searchEntities` | `GET /api/v1/entities` |
 | upsert_entity | `UpsertEntity` / `upsert_entity` / `upsertEntity` | `POST /api/v1/entities` |
@@ -154,3 +155,29 @@ is accepted and skipped server-side and has never contributed to the result.
 - Every row in the table above is implemented in all three languages.
 - Default cloud URL is `https://anhurdb.yoven.ai`.
 - Entity type whitelist uses `organization`, not `org`.
+
+## wait_for_upload (2026-08-07)
+
+Polling de upload com semântica IDÊNTICA nos três SDKs. Motivação medida em
+produção: leituras são load-balanced, então logo após o `POST /upload` um
+follower que ainda não aplicou a entrada devolve **404 legítimo e transiente**
+(read-your-writes). Antes deste helper cada cliente tratava isso de um jeito —
+o runner Go tolerava, o Python morria, o TS passava por sorte de timing.
+
+Contrato (defaults iguais nos três: timeout 120s, interval 5s, grace 30s):
+
+- 404 **dentro** da janela de graça → estado "pendente", continua o polling.
+- 404 **além** da graça → o erro real re-emerge (`ErrNotFound` /
+  `AnhurQueryError(status_code=404)` / `AnhurQueryError.statusCode===404`) —
+  id inválido não pode virar espera infinita (falhar alto).
+- Terminal = `completed=true` OU `error` presente OU status em
+  `completed|saved|done|failed`. **`failed` retorna o payload** — ingest
+  falhado é dado terminal que o chamador inspeciona, não erro de transporte.
+- Timeout → erro tipado com o último status visto: Go `ErrUploadWaitTimeout`,
+  Python `AnhurUploadWaitTimeout`, TS `AnhurUploadWaitTimeout`.
+- Erros de transporte/5xx durante o polling são transientes por default — o
+  loop É o retry.
+
+Suporte: os erros HTTP dos três SDKs carregam o status estruturado
+(Go `ErrNotFound` tipado; Python `AnhurError.status_code`; TS
+`AnhurError.statusCode`) — nunca parsear a mensagem.
