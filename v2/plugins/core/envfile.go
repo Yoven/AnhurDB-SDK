@@ -88,7 +88,20 @@ func loadEnvFileInto(envFilePath string) (injectedCount int, readErr error) {
 			continue
 		}
 		// Ambiente vence: nunca sobrescreve o que já veio de fora.
-		if _, alreadySet := os.LookupEnv(variableName); alreadySet {
+		//
+		// Junior Tip [DEFINIDA-E-VAZIA não é "veio de fora", 2026-07-31]: antes
+		// bastava LookupEnv dizer "existe" para o valor do arquivo ser ignorado — e
+		// uma variável definida como string vazia EXISTE. O efeito: um
+		// `export ANHUR_API_KEY=` esquecido num shell rc, ou um `env:` vazio num
+		// manifesto, DESLIGAVA a memória enquanto uma chave perfeitamente válida
+		// estava no arquivo ao lado, e o log dizia "key source=missing" sem apontar
+		// para o culpado. É a forma exata do apagão de 12,8 dias de julho de 2026:
+		// não uma falha, um silêncio. Pior, o próprio Go já discordava de si mesmo —
+		// envOr() (ANHUR_URL, ANHUR_CONTAINER, ANHUR_ARCHIVE_DIR) sempre tratou vazio
+		// como ausente, então só a chave se comportava assim. Achado pelo harness de
+		// paridade contra o Python, que já fazia certo (config.py _first_non_empty).
+		if existingValue, alreadySet := os.LookupEnv(variableName); alreadySet &&
+			strings.TrimSpace(existingValue) != "" {
 			continue
 		}
 		if setErr := os.Setenv(variableName, variableValue); setErr == nil {

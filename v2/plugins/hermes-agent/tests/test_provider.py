@@ -12,6 +12,22 @@ import json
 import pytest
 
 
+# Junior Tip [a fila mudou de lugar, não de sentido, 2026-07-31]: até a fila com
+# estado, "está enfileirado" se provava com um glob em ``queue_dir/*.json``. Agora
+# é um ESTADO numa linha do SQLite, e o arquivo achatado é só o piso para quando o
+# banco não abre. Os invariantes testados são os mesmos — nada é escrito sob sessão
+# alheia, nada é perdido, a ordem da conversa é preservada — então os helpers abaixo
+# seguem a prova para onde ela vive, em vez de fixar o mecanismo antigo.
+def queued_turns(provider):
+    """(session_id, content) de tudo aguardando entrega, do mais antigo ao mais novo."""
+    return [(row[1], row[2]) for row in provider._queue.list_pending()]
+
+
+def quarantined_turns(provider):
+    """Conteúdo dos turnos parados esperando decisão humana."""
+    return [row[1] for row in provider._queue.list_quarantined()]
+
+
 HERMES_SESSION_ID = "20260730_143012_a1b2c3d4"
 
 
@@ -150,11 +166,12 @@ def test_turn_without_any_session_is_quarantined_not_guessed(
         provider.sync_turn("homeless turn", "reply")
 
     assert state.ingested == []
-    quarantined = list((provider.config.queue_dir / "quarantine").glob("*.json"))
+    quarantined = quarantined_turns(provider)
     assert len(quarantined) == 1
-    envelope = json.loads(quarantined[0].read_text(encoding="utf-8"))
-    assert "homeless turn" in envelope["content"]
-    assert envelope["session_id"] == ""
+    assert "homeless turn" in quarantined[0]
+    # E nada disso pode ter virado um turno entregavel: adivinhar a sessao
+    # fundiria duas conversas.
+    assert queued_turns(provider) == []
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +190,7 @@ def test_write_failure_queues_and_next_turn_drains_in_order(
     provider.sync_turn("turn one", "reply one")
 
     assert state.ingested == []
-    assert len(list(provider.config.queue_dir.glob("*.json"))) == 1
+    assert len(queued_turns(provider)) == 1
 
     state.failing_paths.clear()
     provider.sync_turn("turn two", "reply two")
@@ -182,7 +199,7 @@ def test_write_failure_queues_and_next_turn_drains_in_order(
     assert len(persisted) == 2
     assert "turn one" in persisted[0]  # recovered first — ordering preserved
     assert "turn two" in persisted[1]
-    assert list(provider.config.queue_dir.glob("*.json")) == []
+    assert queued_turns(provider) == []
 
 
 def test_turn_is_queued_even_when_the_key_is_missing(
@@ -196,11 +213,10 @@ def test_turn_is_queued_even_when_the_key_is_missing(
     provider.sync_turn("still worth keeping", "yes")
 
     assert state.ingested == []
-    queued = list(provider.config.queue_dir.glob("*.json"))
+    queued = queued_turns(provider)
     assert len(queued) == 1
-    envelope = json.loads(queued[0].read_text(encoding="utf-8"))
-    assert envelope["session_id"] == HERMES_SESSION_ID
-    assert "still worth keeping" in envelope["content"]
+    assert queued[0][0] == HERMES_SESSION_ID
+    assert "still worth keeping" in queued[0][1]
 
 
 def test_session_registration_failure_still_keeps_the_turn(
@@ -214,7 +230,7 @@ def test_session_registration_failure_still_keeps_the_turn(
     provider.sync_turn("turn during outage", "reply")
 
     assert state.ingested == []
-    assert len(list(provider.config.queue_dir.glob("*.json"))) == 1
+    assert len(queued_turns(provider)) == 1
 
     state.failing_paths.clear()
     provider.sync_turn("turn after recovery", "reply")
@@ -252,7 +268,7 @@ def test_non_primary_context_does_not_write(make_provider, fake_anhurdb):
     provider.sync_turn("subagent chatter", "reply")
 
     assert state.ingested == []
-    assert list(provider.config.queue_dir.glob("*.json")) == []
+    assert queued_turns(provider) == []
 
 
 # ---------------------------------------------------------------------------

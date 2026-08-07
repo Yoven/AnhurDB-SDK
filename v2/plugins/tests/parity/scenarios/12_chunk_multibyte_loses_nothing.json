@@ -1,0 +1,20 @@
+{
+  "name": "12_chunk_multibyte_loses_nothing",
+  "rule": "chunk",
+  "why": "Real transcripts are full of em dashes, accents, CJK and emoji, and this is where the two languages legitimately differ: Go cuts on UTF-8 byte boundaries (hardSplitRunes) while Python cuts on code points. Boundaries may differ; LOSS may not. A byte cut in the middle of a rune would corrupt the record and is what hardSplitRunes exists to prevent.",
+  "given": {
+    "fixture": "transcript_unicode.txt",
+    "max_chars": 8000
+  },
+  "expect": {
+    "all_within_limit": true,
+    "rejoin_equals_input": true,
+    "rejoined_sha256": "36c1098527ded8c2f797f1375f825c8c235d4ec816def2f9ce6749b792db5eae",
+    "input_sha256": "36c1098527ded8c2f797f1375f825c8c235d4ec816def2f9ce6749b792db5eae"
+  },
+  "not_compared": {
+    "chunk_count": "Different UNITS, both correct: the Go limit is 24000 BYTES (len() on a Go string counts bytes) and the Python limit is 24000 CODE POINTS. On multibyte text the same limit therefore yields a different number of chunks. Neither loses data - rejoined_sha256 above is the proof - and both stay under their own limit. Aligning the units would change record sizes in production for no integrity gain.",
+    "max_chunk_size": "Same reason: bytes on the Go side, code points on the Python side."
+  },
+  "on_failure": "rejoined_sha256 different from input_sha256 means bytes were lost or a rune was cut in half; a corrupted record is worse than a missing one because nothing flags it. Check hardSplitRunes (core.go) or the slice loop in split_into_chunks (hermes-agent/transcript.py)."
+}

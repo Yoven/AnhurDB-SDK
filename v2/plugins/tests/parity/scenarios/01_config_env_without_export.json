@@ -1,0 +1,25 @@
+{
+  "name": "01_config_env_without_export",
+  "rule": "config",
+  "why": "THE incident. Between 2026-07-18 and 2026-07-30 the env file lost its `export` lines, the hook sourced it into a SHELL variable the child process never inherited, and the binary read an empty os.Getenv: 743 hook runs, 743 skips, exit 0, empty stderr. Both implementations must now read the FILE themselves, so a file with no `export` still yields the key.",
+  "given": {
+    "env_file_location": "state_dir",
+    "env_file_lines": [
+      "ANHUR_API_KEY=anhur_parity_fixture_key_A",
+      "ANHUR_URL=http://127.0.0.1:8000",
+      "ANHUR_CONTAINER=parity-container"
+    ],
+    "process_env": {}
+  },
+  "expect": {
+    "api_key_source": "file",
+    "api_key_fingerprint": "4b66c49f462d",
+    "url": "http://127.0.0.1:8000",
+    "container": "parity-container",
+    "state_dir": "~/.anhur-hermes-memory",
+    "vars_loaded": 3,
+    "env_file_error": false
+  },
+  "not_compared": {},
+  "on_failure": "The plugin whose api_key_source is not `file` is back to depending on shell semantics — it will go silent again exactly like 2026-07-18. Fix the loader (Go: core/envfile.go loadEnvFileInto; Python: hermes-agent/config.py read_env_file) so a bare KEY=VALUE line is honoured."
+}

@@ -1,0 +1,28 @@
+{
+  "name": "06_config_empty_env_var_must_not_mask_file",
+  "rule": "config",
+  "why": "A wrapper script that does `export ANHUR_API_KEY=` (or a systemd unit with an empty Environment=) leaves the variable SET but empty. An empty string is not a value: it must not shadow a perfectly good key sitting in the env file. This is the same shape as the incident - configuration present, plugin inert - and it is the one case where the two implementations were found to disagree.",
+  "given": {
+    "env_file_location": "state_dir",
+    "env_file_lines": [
+      "ANHUR_API_KEY=anhur_parity_fixture_key_FILE",
+      "ANHUR_URL=http://127.0.0.1:8000",
+      "ANHUR_CONTAINER=parity-container"
+    ],
+    "process_env": {
+      "ANHUR_API_KEY": ""
+    }
+  },
+  "expect": {
+    "api_key_source": "file",
+    "api_key_fingerprint": "b7802f17dcd7",
+    "url": "http://127.0.0.1:8000",
+    "container": "parity-container",
+    "state_dir": "~/.anhur-hermes-memory",
+    "env_file_error": false
+  },
+  "not_compared": {
+    "vars_loaded": "Same documented difference as scenario 05: Go counts injected variables, Python counts parsed variables. Diagnostic only."
+  },
+  "on_failure": "A plugin reporting api_key_source=missing here is DISABLED by an empty environment variable while a valid key sits in its own env file. Python already treats empty as absent (config.py _first_non_empty). Go does not: core/envfile.go skips the file value when os.LookupEnv reports the variable as SET, and an empty string is set. Note that Go is inconsistent with ITSELF here - core.go envOr() (used for ANHUR_URL, ANHUR_CONTAINER, ANHUR_ARCHIVE_DIR) already falls back when the variable is empty, so only the API key behaves this way. Fix (Go, core/envfile.go loadEnvFileInto): skip the file value only when the existing variable is non-empty, i.e. `if existingValue, alreadySet := os.LookupEnv(name); alreadySet && strings.TrimSpace(existingValue) != \"\"`. Then re-run this harness: the scenario turns green with no other change."
+}

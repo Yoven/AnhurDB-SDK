@@ -1,0 +1,25 @@
+{
+  "name": "08_queue_drains_in_order",
+  "rule": "queue",
+  "why": "The queue is what makes a failed write a DELAY instead of a loss, so its ordering is memory ordering: turns must reach AnhurDB oldest-first, and each one must land in ITS OWN session. The two implementations sort by file name and both encode a sortable UTC stamp in that name, which is the shared rule under test. Items a and c belong to one conversation and b to another - if a drain ever collapses them into one session it breaks the inviolable rule `1 agent session = 1 AnhurDB session`.",
+  "given": {
+    "items": [
+      {"id": "a", "session": "sess-alpha", "body": "first turn of alpha"},
+      {"id": "b", "session": "sess-beta", "body": "only turn of beta"},
+      {"id": "c", "session": "sess-alpha", "body": "second turn of alpha"}
+    ],
+    "transport": "ok",
+    "drain_twice": false
+  },
+  "expect": {
+    "attempted": ["a@sess-alpha", "b@sess-beta", "c@sess-alpha"],
+    "persisted": ["a@sess-alpha", "b@sess-beta", "c@sess-alpha"],
+    "pending_after": [],
+    "quarantined_after": [],
+    "second_drain_attempted": [],
+    "every_item_accounted_for": true,
+    "remaining_bodies_intact": true
+  },
+  "not_compared": {},
+  "on_failure": "Order wrong => recovered memories are replayed out of sequence. A `@` suffix that does not match the item's own session => a cross-conversation merge, the failure the whole session-first design exists to prevent. Anything left in pending_after => the drain did not actually deliver."
+}

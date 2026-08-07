@@ -1,0 +1,26 @@
+{
+  "name": "09_queue_failure_mid_drain",
+  "rule": "queue",
+  "why": "Item b is permanently rejected (the real case: HTTP 409 `session has reached the maximum of 500 records`, which once sat in the queue for 10 days). This scenario used to pin a DELIBERATE disagreement between the two implementations; on 2026-07-31 both adopted the same rule, so those fields moved from `divergent` into `expect`. The rule now: a failure blocks the rest of ITS OWN session and nothing else. Within a session the order IS the conversation - delivering turn 7 while turn 5 is stuck writes the conversation permanently out of order, and no later consolidation repairs it. Across sessions there is no order to protect, and blocking everything would let one poisoned session freeze the whole queue forever, which is exactly the 10-day incident. Underneath, what must NEVER change: no item is deleted unless it was actually delivered, and every item is still accounted for.",
+  "given": {
+    "items": [
+      {"id": "a", "session": "sess-alpha", "body": "first turn"},
+      {"id": "b", "session": "sess-beta", "body": "the poison turn"},
+      {"id": "c", "session": "sess-alpha", "body": "third turn"}
+    ],
+    "transport": "reject:b",
+    "drain_twice": false
+  },
+  "expect": {
+    "attempted": ["a@sess-alpha", "b@sess-beta", "c@sess-alpha"],
+    "persisted": ["a@sess-alpha", "c@sess-alpha"],
+    "pending_after": ["b"],
+    "quarantined_after": [],
+    "second_drain_attempted": [],
+    "every_item_accounted_for": true,
+    "remaining_bodies_intact": true
+  },
+  "divergent": {},
+  "not_compared": {},
+  "on_failure": "The two arms differing on `attempted`/`persisted`/`pending_after` means the per-session blocking rule changed on ONE side - align both in the same commit, never patch one. If item c is missing from `persisted` while b is the only rejected item, somebody reintroduced GLOBAL head-of-line blocking and one poisoned session now freezes every other conversation. If item c appears in `persisted` while an EARLIER sess-alpha item is still pending, within-session ordering broke and the conversation is being written scrambled. If `every_item_accounted_for` or `remaining_bodies_intact` is false, stop everything: that is real data loss, not a policy difference."
+}

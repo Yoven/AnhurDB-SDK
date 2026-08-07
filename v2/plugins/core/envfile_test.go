@@ -128,3 +128,49 @@ func TestExplicitEnvFilePathOverride(t *testing.T) {
 		t.Errorf("resolveEnvFilePath = %q, want %q", got, customPath)
 	}
 }
+
+// TestEmptyEnvVarDoesNotMaskTheFileKey pins the blackout shape found by the
+// cross-language parity harness on 2026-07-31: a variable that EXISTS but is empty
+// (a stray `export ANHUR_API_KEY=` in a shell rc, an empty `env:` in a manifest)
+// used to suppress a perfectly valid key sitting in the env file — silently, with
+// the log blaming "missing". Python never had this bug; Go disagreed with itself,
+// since envOr() already treated empty as absent for every other variable.
+func TestEmptyEnvVarDoesNotMaskTheFileKey(t *testing.T) {
+	stateDir := t.TempDir()
+	envFilePath := filepath.Join(stateDir, "env")
+	if writeErr := os.WriteFile(envFilePath, []byte("ANHUR_API_KEY=key-from-file\n"), 0o600); writeErr != nil {
+		t.Fatalf("writing env file: %v", writeErr)
+	}
+	t.Setenv("ANHUR_API_KEY", "") // definida — e vazia
+
+	if _, loadErr := loadEnvFileInto(envFilePath); loadErr != nil {
+		t.Fatalf("loadEnvFileInto: %v", loadErr)
+	}
+	if got := os.Getenv("ANHUR_API_KEY"); got != "key-from-file" {
+		t.Fatalf("ANHUR_API_KEY = %q, want the file value — an empty variable "+
+			"silenced the memory while a valid key sat on disk", got)
+	}
+	// E o log tem de apontar para o ARQUIVO, não para o ambiente: numa investigação
+	// esta linha é a única pista, e mandar procurar no shell custa horas.
+	if source := apiKeySource(false, os.Getenv("ANHUR_API_KEY")); source != KeySourceFile {
+		t.Errorf("key source = %q, want %q", source, KeySourceFile)
+	}
+}
+
+// TestNonEmptyEnvVarStillWins guards the other direction: the override that CI,
+// tests and `ANHUR_URL=... plugin recall` depend on must keep working.
+func TestNonEmptyEnvVarStillWins(t *testing.T) {
+	stateDir := t.TempDir()
+	envFilePath := filepath.Join(stateDir, "env")
+	if writeErr := os.WriteFile(envFilePath, []byte("ANHUR_API_KEY=key-from-file\n"), 0o600); writeErr != nil {
+		t.Fatalf("writing env file: %v", writeErr)
+	}
+	t.Setenv("ANHUR_API_KEY", "key-from-environment")
+
+	if _, loadErr := loadEnvFileInto(envFilePath); loadErr != nil {
+		t.Fatalf("loadEnvFileInto: %v", loadErr)
+	}
+	if got := os.Getenv("ANHUR_API_KEY"); got != "key-from-environment" {
+		t.Errorf("ANHUR_API_KEY = %q, want the environment value (override broke)", got)
+	}
+}

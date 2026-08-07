@@ -1,0 +1,25 @@
+{
+  "name": "04_config_quoted_values",
+  "rule": "config",
+  "why": "Humans quote values, and `.env.example` files ship quoted. A loader that keeps the quotes sends `\"anhur_...\"` as the X-API-Key header: every request 401s while the plugin still exits 0. One symmetric pair of quotes (single or double) must be stripped, and quotes INSIDE the value must survive.",
+  "given": {
+    "env_file_location": "state_dir",
+    "env_file_lines": [
+      "ANHUR_API_KEY=\"anhur_parity_fixture_key_A\"",
+      "ANHUR_URL='http://127.0.0.1:8000'",
+      "ANHUR_CONTAINER=  parity-container  "
+    ],
+    "process_env": {}
+  },
+  "expect": {
+    "api_key_source": "file",
+    "api_key_fingerprint": "4b66c49f462d",
+    "url": "http://127.0.0.1:8000",
+    "container": "parity-container",
+    "state_dir": "~/.anhur-hermes-memory",
+    "vars_loaded": 3,
+    "env_file_error": false
+  },
+  "not_compared": {},
+  "on_failure": "A fingerprint other than the expected one means that loader kept the quotes (or the surrounding spaces). Symptom in production: HTTP 401 on every write, memory silently empty."
+}

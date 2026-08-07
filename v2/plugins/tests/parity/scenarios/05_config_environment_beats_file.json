@@ -1,0 +1,29 @@
+{
+  "name": "05_config_environment_beats_file",
+  "rule": "config",
+  "why": "A variable already present in the process environment must never be overwritten by the file. That is what keeps `ANHUR_URL=... <plugin> recall` working for CI and one-off overrides. It is also the precedence that MASKED the 12,8-day blackout (187 interleaved successes whenever the key happened to be exported), which is why both plugins must report the SOURCE of the key, not just the key.",
+  "given": {
+    "env_file_location": "state_dir",
+    "env_file_lines": [
+      "ANHUR_API_KEY=anhur_parity_fixture_key_FILE",
+      "ANHUR_URL=http://from-the-file:8000",
+      "ANHUR_CONTAINER=container-from-file"
+    ],
+    "process_env": {
+      "ANHUR_API_KEY": "anhur_parity_fixture_key_ENV",
+      "ANHUR_URL": "http://from-the-environment:9000"
+    }
+  },
+  "expect": {
+    "api_key_source": "environment",
+    "api_key_fingerprint": "551573a92c10",
+    "url": "http://from-the-environment:9000",
+    "container": "container-from-file",
+    "state_dir": "~/.anhur-hermes-memory",
+    "env_file_error": false
+  },
+  "not_compared": {
+    "vars_loaded": "Different, documented meanings: Go reports how many variables it INJECTED into the process environment (core/envfile.go returns injectedCount, so a variable already set is not counted), Python reports how many it PARSED out of the file (config.py: env_file_variable_count = len(file_values)). Both numbers are diagnostics only - no branch reads them - and both loaders resolve the same values above. Worth aligning the wording one day; not worth failing a memory-integrity check today."
+  },
+  "on_failure": "If api_key_source is `file`, that plugin is ignoring an explicitly exported key - every override (CI, `ANHUR_URL=... hermes chat`, a rotated key exported for one run) silently writes to the wrong place."
+}

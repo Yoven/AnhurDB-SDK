@@ -527,6 +527,52 @@ AnhurDB-SDK/
 
 ---
 
+## Agent memory (Claude Code and Hermes plugins)
+
+Two plugins give an agent **persistent long-term memory in AnhurDB**, automatically: they
+recall a profile at session start and persist the conversation as it happens. You install
+them once; there is nothing to call from your code.
+
+| | Claude Code | Hermes Agent |
+|---|---|---|
+| **Directory** | [`v2/plugins/claude`](v2/plugins/claude) | [`v2/plugins/hermes-agent`](v2/plugins/hermes-agent) |
+| **Install guide** | [INSTALL.md](v2/plugins/claude/INSTALL.md) | [INSTALL.md](v2/plugins/hermes-agent/INSTALL.md) |
+| **Form** | Marketplace plugin + hooks, single static Go binary | Python `MemoryProvider` (`memory.provider: anhurdb`) |
+| **Recall** | `SessionStart` hook injects `<anhur-memory>` | `prefetch()` returns the profile block |
+| **Persist** | `Stop` / `SessionEnd` hooks | `sync_turn()` per turn |
+| **Verify** | `sh scripts/anhur-memory-verify.sh` | `python3 verify.py` |
+
+**Prove it works, don't assume it.** Each plugin ships a verifier that writes a real record
+and reads it back, ending in one line: `MEMORY IS ALIVE` / `MEMORY IS DEAD: <reason>`. Run
+the verifier — never the exit code of the engine itself, which is always `0` by design (a
+12.8-day outage in July 2026 consisted entirely of clean exits).
+
+### Never lose a memory
+
+Both plugins implement the same durability rule, and a cross-language harness
+([`v2/plugins/tests/parity`](v2/plugins/tests/parity)) fails the build if they drift apart:
+
+1. **Write to AnhurDB, retrying up to 3 times.** A blip — leader election, reconnect, a 503
+   during deploy — must not create local state. A definitive refusal (401, 409, 422) is not
+   retried: the server answered, and the answer will not change.
+2. **Only then queue locally**, in a SQLite queue with explicit state: `pending` / `sending`
+   / `quarantined`, plus retry count, failure reason and exponential backoff. "What is stuck
+   and why" is a question with an answer.
+3. **Drain on every session start and every persist**, oldest first. A failure blocks the rest
+   of *its own session* (inside a session, the order is the conversation) and nothing else.
+4. **Clear the local store once everything is delivered**, `VACUUM` included, so no delivered
+   conversation stays readable in a file outside AnhurDB.
+5. **Never guess a session.** A chunk whose owning conversation cannot be proven is
+   *quarantined*: kept whole, never sent, surfaced in every recall until a human decides.
+   Writing it under any other id would merge two conversations.
+6. **The flat file is the floor.** If SQLite cannot be opened at all, the write still lands on
+   disk as a plain file. A safety net that shares a failure mode with the thing it protects is
+   not a net.
+
+There is no retry limit anywhere in this path. An outage delays memory; it never destroys it.
+
+---
+
 ## SDK vs MCP
 
 | | SDK (REST) | MCP |

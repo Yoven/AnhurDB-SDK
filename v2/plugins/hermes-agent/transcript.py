@@ -106,12 +106,21 @@ def format_profile_block(
     dynamic_section = profile.get("dynamic") if isinstance(profile, dict) else {}
     stats_section = profile.get("stats") if isinstance(profile, dict) else {}
 
+    # Junior Tip [6 satélites + 1 curinga + 3 tópicos — decisão do dono,
+    # 2026-08-06]: o SERVIDOR cura o perfil (service/profile.go): um item por
+    # tipo, o mais pesado, mais um curinga. Este renderizador imprime o que
+    # chegar — a regra tem UM dono e as portas herdam juntas. A ordem e os
+    # títulos são idênticos aos do plugin do Claude (core.go formatMemory);
+    # divergir aqui seria o drift que o harness de paridade existe para pegar.
     for title, section, key in (
+        ("Highlight", static_section, "highlight"),
         ("Decisions", static_section, "decisions"),
         ("Facts", static_section, "facts"),
         ("Preferences", static_section, "preferences"),
-        ("Recent topics", dynamic_section, "recent_topics"),
+        ("Risks", static_section, "risks"),
         ("Open tasks", dynamic_section, "recent_tasks"),
+        ("Emotions", static_section, "emotions"),
+        ("Recent topics", dynamic_section, "recent_topics"),
     ):
         items = _string_list(section, key)[:recall_limit]
         if not items:

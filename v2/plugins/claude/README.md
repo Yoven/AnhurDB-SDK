@@ -446,6 +446,46 @@ SessionEnd   ─▶ persist ─▶ final flush of any remaining turns
 Each saved turn becomes a memory in AnhurDB. From there AnhurDB's **Smart Units** distill it into
 typed memories, keep them current, and retire contradicted facts so recall stays accurate over time.
 
+## What happens when AnhurDB is unreachable
+
+Nothing is lost, and — just as important — nothing is written locally that did not have to be.
+
+```
+persist ─▶ try AnhurDB, up to 3 attempts          (a 200 ms leader election never touches disk)
+        │  ├─ delivered ────────────────────────▶ done, no local state at all
+        │  └─ refused (401 / 409 / 422) ────────▶ stop early: the server answered, retrying
+        │                                          would only spend your turn to hear the same
+        └─ no usable response after 3 ──────────▶ queue.db  (state: pending)
+
+next persist / next SessionStart
+        └─ drain oldest first ─▶ delivered ─────▶ row deleted; when the queue empties, VACUUM
+                              └▶ failed ────────▶ back to pending, with the reason and a
+                                                  doubling backoff (capped at 30 min)
+```
+
+**`~/.anhur-claude-memory/queue.db`** — the queue, with explicit state per item: `pending`,
+`sending`, `quarantined`, plus `retry_count`, `last_error` and `next_attempt_at`. This replaced
+a scheme that encoded everything in the *file name*, where a chunk failing for ten days looked
+exactly like one queued a second ago.
+
+Rules worth knowing, because each one is a scar:
+
+- **A failure blocks only its own session.** Inside a conversation the order *is* the
+  conversation, so turn 7 never overtakes a stuck turn 5. Across conversations nothing is
+  blocked — one session hitting its record cap used to freeze the entire queue.
+- **There is no retry limit.** "Tried too many times" must never become "threw it away".
+  A dead backend costs one attempt per session per drain, not one per item.
+- **Quarantine is for chunks with no provable session** — never for an outage. They are kept
+  whole, never sent, and reported in every `<anhur-memory>` block until you decide. Writing
+  one under a guessed session id would merge two conversations, which is unrecoverable.
+- **If `queue.db` itself cannot be opened**, the turn is written as a plain `.txt` under
+  `queue/` and migrated in on the next run. The floor never depends on the thing above it.
+- **The verbatim transcript archive is independent of all of this** and is written before any
+  of it, so even a total failure of both queues leaves a lossless copy on disk.
+
+The Hermes Agent provider implements the identical rule in Python, and
+[`../tests/parity`](../tests/parity) fails if the two ever drift.
+
 ## Structured memory (Smart Units)
 
 Saving your turns is only half of it. Turning them into typed memories you can recall — `fact`,

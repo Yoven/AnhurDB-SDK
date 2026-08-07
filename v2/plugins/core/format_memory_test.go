@@ -19,7 +19,7 @@ func TestFormatMemory_BacklogWarning(t *testing.T) {
 	cfg := config{container: "fable-1", recallLimit: 10}
 	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 186.0, "sessions": 18.0}}
 
-	clean := formatMemory(cfg, profile, queueBacklog{})
+	clean := formatMemory(cfg, profile, queueBacklog{}, healthyArchiveForTest())
 	if strings.Contains(clean, "Unpersisted backlog") {
 		t.Fatal("empty queue must not inject a backlog warning")
 	}
@@ -28,7 +28,7 @@ func TestFormatMemory_BacklogWarning(t *testing.T) {
 		chunkCount:   2,
 		oldestChunk:  "2026-07-17T03:34:53Z",
 		lastFlushErr: errors.New(`AnhurDB API error (HTTP 409): {"error":"session has reached the maximum of 500 records"}`),
-	})
+	}, healthyArchiveForTest())
 	for _, want := range []string{
 		"Unpersisted backlog",
 		"2 chunk(s)",
@@ -59,12 +59,12 @@ func TestFormatMemory_QuarantineWarning(t *testing.T) {
 	cfg := config{container: "fable-1", recallLimit: 10}
 	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 10.0, "sessions": 2.0}}
 
-	clean := formatMemory(cfg, profile, queueBacklog{})
+	clean := formatMemory(cfg, profile, queueBacklog{}, healthyArchiveForTest())
 	if strings.Contains(clean, "Quarantined") {
 		t.Fatal("empty quarantine must not inject a quarantine warning")
 	}
 
-	warned := formatMemory(cfg, profile, queueBacklog{quarantinedChunkCount: 3, oldestQuarantined: "2026-07-30T00:00:00Z"})
+	warned := formatMemory(cfg, profile, queueBacklog{quarantinedChunkCount: 3, oldestQuarantined: "2026-07-30T00:00:00Z"}, healthyArchiveForTest())
 	for _, want := range []string{
 		"Quarantined chunks",
 		"3 chunk(s)",
@@ -91,7 +91,7 @@ func TestFormatMemory_NoMCPToolAdvertisement(t *testing.T) {
 	cfg := config{container: "fable-1", recallLimit: 10}
 	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 1.0, "sessions": 1.0}}
 
-	block := formatMemory(cfg, profile, queueBacklog{})
+	block := formatMemory(cfg, profile, queueBacklog{}, healthyArchiveForTest())
 	if strings.Contains(block, "let you recall/store more") {
 		t.Error("block still advertises the mcp__anhurdb__* tools as usable")
 	}
@@ -113,4 +113,12 @@ func TestChunkQueuedAt(t *testing.T) {
 			t.Errorf("chunkQueuedAt(%q) = %q, want %q", testCase.chunkName, got, testCase.want)
 		}
 	}
+}
+
+// healthyArchiveForTest is the "redundancy is fine" value: renderArchiveWarning
+// writes nothing for it, so these tests keep asserting exactly what they always
+// asserted. A test that silently started exercising the DEGRADED path would look
+// green while proving something else.
+func healthyArchiveForTest() archiveHealth {
+	return archiveHealth{enabled: true, directory: "/tmp/archive", writable: true}
 }

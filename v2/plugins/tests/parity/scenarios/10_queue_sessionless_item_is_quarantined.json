@@ -1,0 +1,25 @@
+{
+  "name": "10_queue_sessionless_item_is_quarantined",
+  "rule": "queue",
+  "why": "An item whose owning conversation cannot be PROVEN must never be written anywhere: the container, the neighbouring item's session or the client's last registered session would each merge two conversations. It goes to quarantine/ intact, is never retried, and stays visible until a human decides. Item a drains first ON PURPOSE - that is what leaves a session registered on the shared client, the exact precondition under which the sessionless item used to be silently absorbed.",
+  "given": {
+    "items": [
+      {"id": "a", "session": "sess-alpha", "body": "a normal turn"},
+      {"id": "b", "session": "", "body": "orphan turn with no provable owner"},
+      {"id": "c", "session": "sess-alpha", "body": "another normal turn"}
+    ],
+    "transport": "ok",
+    "drain_twice": true
+  },
+  "expect": {
+    "attempted": ["a@sess-alpha", "c@sess-alpha"],
+    "persisted": ["a@sess-alpha", "c@sess-alpha"],
+    "pending_after": [],
+    "quarantined_after": ["b"],
+    "second_drain_attempted": [],
+    "every_item_accounted_for": true,
+    "remaining_bodies_intact": true
+  },
+  "not_compared": {},
+  "on_failure": "If `b` shows up in attempted/persisted, that implementation attributed an orphan turn to somebody else's conversation - stop and fix it before running the plugin again. If second_drain_attempted is not empty, quarantine is being retried, which is the loop that used to burn a request on every single run. If b is in pending_after instead of quarantined_after, it will be retried forever and the queue never drains."
+}

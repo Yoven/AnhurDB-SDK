@@ -1,0 +1,22 @@
+{
+  "name": "07_config_defaults_when_nothing_is_set",
+  "rule": "config",
+  "why": "Endpoint drift is a silent killer: the Go plugin used to default to http://localhost:8000, a dead port on every machine without a dev stack, so a valid key dialled nothing and still exited 0. Both plugins must default to the SAME endpoint (each takes it from its own SDK) and to the same container tag. If the SDKs ever move apart, this scenario catches it before a user does.",
+  "given": {
+    "env_file_location": "none",
+    "env_file_lines": [],
+    "process_env": {}
+  },
+  "expect": {
+    "api_key_source": "missing",
+    "api_key_fingerprint": "",
+    "url": "https://anhurdb.yoven.ai",
+    "container": "hermes-ltm",
+    "state_dir": "~/.anhur-hermes-memory",
+    "vars_loaded": 0
+  },
+  "not_compared": {
+    "env_file_error": "A MISSING env file is an error in Go (os.Open fails, so the diagnostic reads `unreadable: no such file`) and a non-error in Python (config.py returns ({}, \"\") on purpose, because configuration may legitimately come from ~/.hermes/.env or the shell). Behaviour is identical - both resolve no key and both say so loudly - only the wording of the message differs."
+  },
+  "on_failure": "A url other than the expected one means one plugin points at a stale endpoint: writes go nowhere and recall injects nothing, with no error anywhere. Compare golang/client/client.go DefaultCloudURL against python/anhurdb/client/__init__.py DEFAULT_CLOUD_URL."
+}

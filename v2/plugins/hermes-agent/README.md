@@ -158,8 +158,43 @@ recreating the provider. A provider that caches the session only in
 conversations merged into one record. That hook is the defence.
 
 **Drain before write.** Queued turns are replayed *before* the current turn is
-sent, so recovered memories keep their original order, and the drain stops at
-the first failure instead of burning N × timeout inside the user's turn.
+sent, so recovered memories keep their original order.
+
+**Local state is a last resort, not a first reflex.** A write is attempted up to
+**3 times** before anything touches disk, so a leader election or a reconnect
+never leaves a second copy of the user's memory locally. A definitive refusal
+(401, 409, 422) is *not* retried — the server answered, and repeating only
+spends the user's turn to hear the same thing. The turn is queued in both cases;
+what changes is *when* the disk gets involved. See `delivery_retry.py`.
+
+**The queue has explicit state.** `queue.db` (stdlib `sqlite3`, no new
+dependency) holds `pending` / `sending` / `quarantined` per item, with
+`retry_count`, `last_error` and a doubling backoff capped at 30 minutes. The
+previous scheme encoded everything in the *file name*, so a turn failing for ten
+days was indistinguishable from one queued a second ago. There is **no retry
+limit**: "tried too many times" must never become "threw it away".
+
+**A failure blocks only its own session.** Inside a conversation the order *is*
+the conversation, so turn 7 never overtakes a stuck turn 5. Across conversations
+nothing is blocked — global head-of-line blocking let one session at its record
+cap freeze every other conversation. Cost against a dead backend is one attempt
+per *session*, not per item.
+
+**Once everything is delivered, the local store is cleared** — `VACUUM`
+included, because `DELETE` only marks pages free and delivered conversation text
+stays readable in the file otherwise. Quarantined turns hold that cleanup: they
+are the only data that exists *nowhere else*.
+
+**The flat file is still the floor.** If `sqlite3` cannot open the database at
+all, `StateQueue` falls back to the original `DurableTurnQueue` envelopes. The
+`StateQueue` carries the floor inside it and is constructed *always*, never on
+demand — a recovery path that is only built at the moment of failure is a
+recovery path nobody has ever exercised.
+
+**The Claude Code plugin implements the identical rule in Go**, and
+[`../tests/parity`](../tests/parity) compares both arms on shared scenarios and
+fails if they drift. It is what caught the empty-`ANHUR_API_KEY` masking bug on
+the Go side on 2026-07-31.
 
 **Deliberate divergence from the Claude Code plugin:** only the rendered
 dialogue (`USER:` / `ASSISTANT:`) is persisted. The raw `messages` list with

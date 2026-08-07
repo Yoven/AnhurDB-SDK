@@ -1,0 +1,25 @@
+{
+  "name": "02_config_env_with_export",
+  "rule": "config",
+  "why": "The backups that still worked had `export` on every line, and `hermes memory setup` writes it too. The prefix is shell syntax, not part of the key name: both loaders must strip it and must NOT end up with a variable literally called `export ANHUR_API_KEY`.",
+  "given": {
+    "env_file_location": "state_dir",
+    "env_file_lines": [
+      "export ANHUR_API_KEY=anhur_parity_fixture_key_A",
+      "export ANHUR_URL=http://127.0.0.1:8000",
+      "export ANHUR_CONTAINER=parity-container"
+    ],
+    "process_env": {}
+  },
+  "expect": {
+    "api_key_source": "file",
+    "api_key_fingerprint": "4b66c49f462d",
+    "url": "http://127.0.0.1:8000",
+    "container": "parity-container",
+    "state_dir": "~/.anhur-hermes-memory",
+    "vars_loaded": 3,
+    "env_file_error": false
+  },
+  "not_compared": {},
+  "on_failure": "One loader stopped stripping `export `. If the fingerprint is empty, that plugin reads no key at all and persists NOTHING while still exiting 0."
+}

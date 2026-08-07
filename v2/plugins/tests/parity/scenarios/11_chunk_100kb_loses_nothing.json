@@ -1,0 +1,19 @@
+{
+  "name": "11_chunk_100kb_loses_nothing",
+  "rule": "chunk",
+  "why": "Chunking used to TRUNCATE a long delta to the last N characters and send only that - the head of a long turn simply disappeared, with no error. Now every piece is persisted (or queued). The fixture is a 161 KB transcript-shaped file that includes one 30 000-character line, so the hard-split path is exercised too. It is pure ASCII on purpose: Go slices bytes and Python slices code points, so only on ASCII can chunk COUNT and BOUNDARIES be compared exactly.",
+  "given": {
+    "fixture": "transcript_100kb.txt",
+    "max_chars": 24000
+  },
+  "expect": {
+    "chunk_count": 9,
+    "max_chunk_size": 24000,
+    "all_within_limit": true,
+    "rejoin_equals_input": true,
+    "rejoined_sha256": "eeb37efdf3bfdd8f787b7750734aaebb2a5ebf50fa6a7de7b173d91f30635936",
+    "input_sha256": "eeb37efdf3bfdd8f787b7750734aaebb2a5ebf50fa6a7de7b173d91f30635936"
+  },
+  "not_compared": {},
+  "on_failure": "rejoin_equals_input false, or a rejoined_sha256 that differs from input_sha256, means that implementation is DROPPING transcript bytes - the exact regression the no-truncation rule was written for; fix before anything else. all_within_limit false means an oversized record will be rejected by the server and queued forever. A chunk_count that changed on only one side is a boundary drift: check core.go splitIntoChunks against hermes-agent/transcript.py split_into_chunks. Verify the fixture itself with: sha256sum fixtures/transcript_100kb.txt"
+}

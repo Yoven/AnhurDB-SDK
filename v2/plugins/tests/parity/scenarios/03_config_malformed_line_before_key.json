@@ -1,0 +1,29 @@
+{
+  "name": "03_config_malformed_line_before_key",
+  "rule": "config",
+  "why": "The env file is written by hand, by setup scripts and by key rotation, so it can contain a merge leftover or a comment without `#`. Aborting the parse on a bad line would discard the key on the NEXT line - trading one problem for a worse one. Both loaders must skip the junk and keep going.",
+  "given": {
+    "env_file_location": "state_dir",
+    "env_file_lines": [
+      "# rotated 2026-07-14",
+      "this line has no equals sign at all",
+      "=value with no name",
+      "   ",
+      "ANHUR_API_KEY=anhur_parity_fixture_key_A",
+      "ANHUR_URL=http://127.0.0.1:8000",
+      "ANHUR_CONTAINER=parity-container"
+    ],
+    "process_env": {}
+  },
+  "expect": {
+    "api_key_source": "file",
+    "api_key_fingerprint": "4b66c49f462d",
+    "url": "http://127.0.0.1:8000",
+    "container": "parity-container",
+    "state_dir": "~/.anhur-hermes-memory",
+    "vars_loaded": 3,
+    "env_file_error": false
+  },
+  "not_compared": {},
+  "on_failure": "A loader that reports fingerprint \"\" here aborts on the malformed line and drops every variable after it. That is silent config loss: the file looks right to a human and the plugin persists nothing."
+}

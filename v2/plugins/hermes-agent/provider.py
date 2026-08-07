@@ -27,7 +27,9 @@ from .config import (
     load_plugin_config,
     log_diagnostic,
 )
+from .delivery_retry import deliver_with_retry
 from .memory_queue import BacklogSummary, DurableTurnQueue, QueueWriteError
+from .queue_store import StateQueue
 from .schemas import MEMORY_TOOL_SCHEMAS
 from .sdk_runtime import AnhurRuntime, AnhurRuntimeError
 from .tools import dispatch as dispatch_memory_tool
@@ -102,7 +104,12 @@ class AnhurDBMemoryProvider(_MemoryProviderBase):  # type: ignore[misc,valid-typ
         self._last_backlog = BacklogSummary()
 
         if self._config is not None:
-            self._queue = DurableTurnQueue(queue_dir=self._config.queue_dir)
+            # Junior Tip [StateQueue apresenta a MESMA interface do DurableTurnQueue,
+            # 2026-07-31]: enqueue/quarantine/drain/summarize são idênticos, e o
+            # StateQueue carrega o DurableTurnQueue dentro de si como PISO. O provider
+            # não precisa saber qual das duas está ativa — só que a memória não se
+            # perde. Se o SQLite não abrir, tudo continua caindo no arquivo achatado.
+            self._queue = StateQueue(queue_dir=self._config.queue_dir)
 
     # -- identity ------------------------------------------------------------
 
@@ -330,18 +337,28 @@ class AnhurDBMemoryProvider(_MemoryProviderBase):  # type: ignore[misc,valid-typ
         self._last_backlog = self._drain_queue()
 
         for chunk in chunks:
-            try:
-                self._runtime.ingest_turn(target_session_id, chunk)
-            except Exception as ingest_error:  # noqa: BLE001
-                # Junior Tip [aqui é `Exception`, não `AnhurRuntimeError`]: o
-                # objetivo desta linha não é classificar o erro, é garantir que
-                # NENHUM caminho de falha — inclusive um bug nosso — termine com
-                # o turno só na memória do processo. Qualquer coisa que estoure
-                # vira um arquivo no disco e uma linha de log alta.
+            # Junior Tip [3 tentativas ANTES do disco, 2026-07-31]: gravar local é
+            # último recurso. Um blip — eleição de líder, reconexão, 503 de deploy —
+            # não pode criar uma segunda cópia da memória do usuário. Só depois de o
+            # banco não responder MAX_DELIVERY_ATTEMPTS vezes (ou responder um "não"
+            # definitivo) o turno desce para a fila.
+            #
+            # Junior Tip [o `except Exception` mora dentro do deliver_with_retry]: o
+            # objetivo nunca foi classificar o erro, foi garantir que NENHUM caminho
+            # de falha — inclusive um bug nosso — termine com o turno só na memória
+            # do processo. Isso continua valendo: o outcome só é sucesso quando o
+            # AnhurDB aceitou; qualquer outra coisa vira fila e log alto.
+            outcome = deliver_with_retry(
+                lambda pinned_chunk=chunk: self._runtime.ingest_turn(
+                    target_session_id, pinned_chunk
+                )
+            )
+            if not outcome.delivered:
                 self._report_problem(
                     "ingest",
-                    f"AnhurDB write failed ({ingest_error}) — the turn is queued "
-                    "on disk and retried on the next turn",
+                    f"AnhurDB write failed after {outcome.attempts_made} attempt(s) "
+                    f"({outcome.terminality_label}: {outcome.error}) — the turn is "
+                    "queued on disk and retried on the next turn",
                 )
                 self._queue_turn(target_session_id, chunk)
 
@@ -500,18 +517,28 @@ class AnhurDBMemoryProvider(_MemoryProviderBase):  # type: ignore[misc,valid-typ
         """
         if self._runtime is None or not self._session_id:
             return
-        try:
-            self._runtime.register_session(self._session_id)
+        # Junior Tip [o registro retenta pelo mesmo motivo que a escrita, 2026-07-31]:
+        # o servidor exige sessão registrada ANTES do write (session-first). Se o
+        # registro cai num blip e não retenta, TODOS os turnos daquele intervalo
+        # descem para o disco — a regra "gravar local é último recurso" seria burlada
+        # pela porta dos fundos. O par Go (core/core.go, cmdPersist) envolve
+        # CreateSession no mesmo deliver_with_retry; deixar só um lado retentando
+        # criaria uma divergência que um cliente descobriria antes de nós.
+        outcome = deliver_with_retry(
+            lambda: self._runtime.register_session(self._session_id)
+        )
+        if outcome.delivered:
             self._log(
                 logging.INFO,
                 f"{origin}: session {self._session_id} registered in AnhurDB",
             )
-        except AnhurRuntimeError as register_error:
-            self._report_problem(
-                f"register-{origin}",
-                f"could not register session {self._session_id} "
-                f"({register_error}) — turns will be queued until it succeeds",
-            )
+            return
+        self._report_problem(
+            f"register-{origin}",
+            f"could not register session {self._session_id} after "
+            f"{outcome.attempts_made} attempt(s) ({outcome.terminality_label}: "
+            f"{outcome.error}) — turns will be queued until it succeeds",
+        )
 
     def _build_profile_block(self, backlog: BacklogSummary) -> str:
         if self._runtime is None or self._config is None:

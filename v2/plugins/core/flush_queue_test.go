@@ -61,6 +61,21 @@ func seedQueueChunk(t *testing.T, cfg config, fileName string, chunkBody string)
 	}
 }
 
+// quarantinedChunks reads back everything parked in quarantine for this state dir, so the
+// tests below assert against the chunk's CONTENT and REASON rather than against a file path.
+func quarantinedChunks(t *testing.T, cfg config) []queueItem {
+	t.Helper()
+	store, storeErr := queueStoreFor(cfg)
+	if storeErr != nil {
+		t.Fatalf("queue store unavailable: %v", storeErr)
+	}
+	quarantinedItems, listErr := store.ListQuarantined()
+	if listErr != nil {
+		t.Fatalf("listing quarantined chunks: %v", listErr)
+	}
+	return quarantinedItems
+}
+
 // TestFlushQueue_MarkerlessChunkIsQuarantinedNotInherited pins the inviolable rule
 // "1 Claude session = 1 AnhurDB session" at the queue-drain boundary.
 //
@@ -121,15 +136,24 @@ func TestFlushQueue_MarkerlessChunkIsQuarantinedNotInherited(t *testing.T) {
 	}
 
 	// It was quarantined INTACT (no silent loss) and removed from the retry queue.
-	quarantinedBytes, readErr := os.ReadFile(filepath.Join(cfg.quarantineDir(), markerlessName))
-	if readErr != nil {
-		t.Fatalf("markerless chunk not found in quarantine: %v", readErr)
+	//
+	// Junior Tip [a quarentena mudou de lugar, não de sentido, 2026-07-31]: até a fila
+	// com estado, quarentena era um ARQUIVO em queue/quarantine/. Agora é um ESTADO numa
+	// linha. O invariante testado é o mesmo — o chunk é preservado inteiro, nunca é
+	// reenviado, e continua visível até um humano resolver — então este teste segue a
+	// prova para onde ela vive, em vez de fixar o mecanismo antigo.
+	quarantinedItems := quarantinedChunks(t, cfg)
+	if len(quarantinedItems) != 1 {
+		t.Fatalf("quarantined chunks = %d, want 1", len(quarantinedItems))
 	}
-	if string(quarantinedBytes) != markerlessChunk {
+	if quarantinedItems[0].Content != markerlessChunk {
 		t.Errorf("quarantined chunk content mutated")
 	}
+	if quarantinedItems[0].LastError == "" {
+		t.Error("quarantined chunk carries no reason — a human cannot resolve what it cannot explain")
+	}
 	if _, statErr := os.Stat(filepath.Join(cfg.queueDir(), markerlessName)); !os.IsNotExist(statErr) {
-		t.Errorf("markerless chunk left in the queue after quarantine (would retry forever)")
+		t.Errorf("markerless chunk left as a queue file after quarantine (would migrate/retry forever)")
 	}
 
 	// And it is surfaced in the backlog recall renders, separate from the retryable count.
@@ -184,8 +208,9 @@ func TestFlushQueue_MarkerlessChunkAloneMakesNoWrites(t *testing.T) {
 	if sessionCalls != 0 || ingestCalls != 0 {
 		t.Errorf("markerless chunk caused network writes (sessions=%d ingests=%d), want none", sessionCalls, ingestCalls)
 	}
-	if _, statErr := os.Stat(filepath.Join(cfg.quarantineDir(), markerlessName)); statErr != nil {
-		t.Errorf("markerless chunk not quarantined: %v", statErr)
+	quarantinedItems := quarantinedChunks(t, cfg)
+	if len(quarantinedItems) != 1 || quarantinedItems[0].Content != markerlessChunk {
+		t.Errorf("markerless chunk not quarantined intact: %+v", quarantinedItems)
 	}
 	if backlog.quarantinedChunkCount != 1 || backlog.chunkCount != 0 {
 		t.Errorf("backlog = {quarantined:%d retryable:%d}, want {1, 0}", backlog.quarantinedChunkCount, backlog.chunkCount)

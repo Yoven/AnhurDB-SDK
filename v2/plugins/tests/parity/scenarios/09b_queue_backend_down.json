@@ -1,0 +1,26 @@
+{
+  "name": "09b_queue_backend_down",
+  "rule": "queue",
+  "why": "The everyday failure: AnhurDB is unreachable (stack restarting, laptop offline). Nothing may be lost and nothing may be quarantined - the items simply wait. This scenario used to pin a declared divergence in `attempted`; on 2026-07-31 both sides adopted per-session blocking and it resolved, so the field moved into `expect`. The cost it existed to measure is now bounded on both arms: one attempt per DISTINCT SESSION, not one per item. That matters because the Go plugin runs inside a Claude Code hook with ANHUR_HTTP_TIMEOUT (15 s default) per attempt - a 50-item backlog against a dead backend used to be 50 timeouts in one hook, and Claude Code kills a slow hook, and a killed hook is a persist that did not happen.",
+  "given": {
+    "items": [
+      {"id": "a", "session": "sess-alpha", "body": "first turn"},
+      {"id": "b", "session": "sess-beta", "body": "second turn"},
+      {"id": "c", "session": "sess-alpha", "body": "third turn"}
+    ],
+    "transport": "down",
+    "drain_twice": false
+  },
+  "expect": {
+    "attempted": ["a@sess-alpha", "b@sess-beta"],
+    "persisted": [],
+    "pending_after": ["a", "b", "c"],
+    "quarantined_after": [],
+    "second_drain_attempted": [],
+    "every_item_accounted_for": true,
+    "remaining_bodies_intact": true
+  },
+  "divergent": {},
+  "not_compared": {},
+  "on_failure": "`pending_after` must list all three items in queue order: an item that disappeared while the backend was down is exactly the silent loss this queue exists to prevent. `quarantined_after` must be empty - an unreachable backend is not an attribution problem, and quarantining here would park recoverable turns where nothing retries them. `attempted` growing to one entry PER ITEM means per-session blocking was lost on that arm, and the hook is back to N x timeout; `attempted` shrinking to a single entry means the blocking went global again and one dead session now stalls every other conversation."
+}

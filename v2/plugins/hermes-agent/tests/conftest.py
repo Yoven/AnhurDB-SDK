@@ -84,8 +84,10 @@ def plugin_modules(plugin):
         short_name: sys.modules[f"{PLUGIN_PACKAGE_NAME}.{short_name}"]
         for short_name in (
             "config",
+            "delivery_retry",
             "memory_queue",
             "provider",
+            "queue_store",
             "schemas",
             "sdk_runtime",
             "tools",
