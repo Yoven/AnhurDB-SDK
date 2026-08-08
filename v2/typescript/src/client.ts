@@ -257,9 +257,22 @@ export class HttpClient {
     return this.request<T>({ method: "PATCH", path, body });
   }
 
-  /** Send a DELETE request. */
-  async delete(path: string): Promise<void> {
-    await this.request<void>({ method: "DELETE", path });
+  /**
+   * Send a DELETE request, optionally with query parameters, and return the
+   * parsed body.
+   *
+   * Junior Tip [por que um DELETE que devolve corpo]: `DELETE
+   * /api/v1/records/{id}` responde vazio, mas `DELETE /api/v1/records/by-file`
+   * responde a CONTAGEM do que foi apagado — e essa contagem é a resposta ao
+   * usuário ("apaguei 511"), não um detalhe. O default `T = void` mantém os
+   * chamadores antigos intactos.
+   *
+   * Junior Tip [por que query string e não corpo]: corpo em DELETE é descartado
+   * por vários proxies e pelo `fetch` do navegador. Os parâmetros viajam na URL
+   * para que os três SDKs falem o mesmo dialeto do servidor.
+   */
+  async delete<T = void>(path: string, params?: QueryParams): Promise<T> {
+    return this.request<T>({ method: "DELETE", path, params });
   }
 
   // ── Core request method ──────────────────────────────────────

@@ -8,7 +8,14 @@ so users can import from a single location::
 """
 
 from .enums import MemoryType, MemoryStatus
-from .record import Record, SearchResult, CreateRequest, EntityModel, EntityEdge
+from .record import (
+    CreateRequest,
+    DeleteFileResult,
+    EntityEdge,
+    EntityModel,
+    Record,
+    SearchResult,
+)
 from .session import SessionStats
 
 __all__ = [
@@ -17,6 +24,7 @@ __all__ = [
     "Record",
     "SearchResult",
     "CreateRequest",
+    "DeleteFileResult",
     "SessionStats",
     "EntityModel",
     "EntityEdge",

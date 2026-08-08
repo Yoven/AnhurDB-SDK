@@ -284,20 +284,41 @@ func (c *HTTPConnection) Patch(ctx context.Context, path string, body interface{
 	return c.handleResponse(resp)
 }
 
-// Delete sends a DELETE request to the given path.
+// Delete sends a DELETE request to the given path and discards the body.
 func (c *HTTPConnection) Delete(ctx context.Context, path string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.BaseURL+path, nil)
-	if err != nil {
-		return fmt.Errorf("creating DELETE request: %w", err)
+	_, deleteErr := c.DeleteWithParams(ctx, path, nil)
+	return deleteErr
+}
+
+// DeleteWithParams sends a DELETE request with optional query parameters and
+// returns the response body.
+//
+// Junior Tip [por que um DELETE que devolve corpo]: DELETE /api/v1/records/{id}
+// responde vazio, mas DELETE /api/v1/records/by-file responde a CONTAGEM do que
+// foi apagado — e essa contagem é a resposta do usuário ("apaguei 511"), não um
+// detalhe. Descartar o corpo aqui transformaria "apaguei 0" num sucesso mudo,
+// que é exatamente o modo de falha que este endpoint existe para evitar.
+//
+// Junior Tip [por que query string e não corpo]: net/http aceita corpo em
+// DELETE, mas proxies e o fetch do navegador o descartam. Os parâmetros deste
+// verbo viajam na URL para que os três SDKs falem o mesmo dialeto do servidor.
+func (c *HTTPConnection) DeleteWithParams(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	fullURL := c.BaseURL + path
+	if len(params) > 0 {
+		fullURL += "?" + params.Encode()
+	}
+
+	req, requestErr := http.NewRequestWithContext(ctx, http.MethodDelete, fullURL, nil)
+	if requestErr != nil {
+		return nil, fmt.Errorf("creating DELETE request: %w", requestErr)
 	}
 	// DELETE is a write.
 	c.setHeaders(req)
 
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return ErrConnectionFail
+	resp, doErr := c.HTTPClient.Do(req)
+	if doErr != nil {
+		return nil, ErrConnectionFail
 	}
 
-	_, err = c.handleResponse(resp)
-	return err
+	return c.handleResponse(resp)
 }

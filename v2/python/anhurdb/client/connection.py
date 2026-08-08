@@ -288,15 +288,27 @@ class HTTPConnection:
             Parsed JSON response body."""
         return await self._request("PATCH", path, body=json_data)
 
-    async def delete(self, path: str) -> Any:
+    async def delete(
+        self,
+        path: str,
+        params: Optional[QueryParams] = None,
+    ) -> Any:
         """Send a DELETE request.
 
+        Junior Tip [por que DELETE aceita query e devolve corpo]: ``DELETE
+        /api/v1/records/{id}`` responde vazio, mas ``DELETE
+        /api/v1/records/by-file`` responde a CONTAGEM do que foi apagado — e a
+        contagem é a resposta ao usuário ("apaguei 511"), não um detalhe.
+        Os parâmetros viajam na URL porque corpo em DELETE é descartado por
+        vários proxies e clientes.
+
         Args:
-            path: API path (e.g. ``/api/v1/records/42``).
+            path:   API path (e.g. ``/api/v1/records/42``).
+            params: Optional query-string parameters.
 
         Returns:
-            Parsed JSON response body (usually empty)."""
-        return await self._request("DELETE", path)
+            Parsed JSON response body (empty dict when the server sends none)."""
+        return await self._request("DELETE", path, params=params)
 
     async def post_multipart(
         self,

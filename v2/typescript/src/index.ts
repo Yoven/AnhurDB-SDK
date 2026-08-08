@@ -89,6 +89,9 @@ export type {
   UploadStatusResult,
   // Batch
   BatchUpdateResult,
+  // Delete file (whole ingested document)
+  DeleteFileOptions,
+  DeleteFileResult,
 } from "./types.js";
 export {
   AnhurError,

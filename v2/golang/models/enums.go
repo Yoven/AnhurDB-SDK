@@ -7,7 +7,14 @@ the same values.
 package models
 
 // MemoryType defines the cognitive memory types in AnhurDB.
-// Canonical AnhurDB taxonomy (12 types).
+// Canonical AnhurDB taxonomy (13 types).
+//
+// Junior Tip [taxonomy SSOT]: this list is NOT free-form. Its authority is
+// AnhurCore's core.yaml, mirrored by the server's schema.MemoryTypes and by the
+// MCP list_types tool. A type declared here but absent server-side is rejected
+// with HTTP 400 on create; a type served by the server but missing here silently
+// shrinks ListTypes() and — in TypeScript — makes the value a compile error for
+// the caller. Keep all three SDKs and core.yaml in step, in the same change.
 type MemoryType string
 
 const (
@@ -23,6 +30,7 @@ const (
 	TypeConsolidated MemoryType = "consolidated"  // Agent-synthesised summary
 	TypeHub          MemoryType = "hub"           // Cross-session cluster
 	TypeFile         MemoryType = "file"          // Uploaded document root
+	TypeRouter       MemoryType = "router"        // Macro-theme backbone: a hub of hubs (ADR-0005)
 )
 
 // MemoryStatus defines the lifecycle status of a record.

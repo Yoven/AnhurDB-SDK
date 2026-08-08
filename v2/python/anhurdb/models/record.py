@@ -119,6 +119,36 @@ class SearchResult(BaseModel):
     similarity: float = 0.0
 
 
+class DeleteFileResult(BaseModel):
+    """
+    Response of ``DELETE /api/v1/records/by-file`` — apagar TODO o rastro de um
+    arquivo ingerido (root + capítulos + satélites) de uma sessão.
+
+    ``matched_count`` é o que o prefixo ENCONTROU; ``deleted_count`` é o que o
+    cluster realmente apagou. Em ``dry_run`` só ``matched_count`` é preenchido:
+    nada foi escrito, então ``deleted_count`` fica 0 de propósito.
+
+    Junior Tip [por que a contagem faz parte do contrato]: "apaguei 0 registros"
+    tem de ser visível para o chamador. Um método que devolvesse apenas ``None``
+    transformaria um prefixo errado em sucesso silencioso — e perda silenciosa é
+    a falha número um deste projeto.
+
+    ``deleted_ids`` e ``raft_index`` chegam com ``omitempty`` do servidor: em
+    dry-run, ou quando nada casou, as chaves não existem no JSON. Ausência aqui
+    é informação legítima, não erro de parse — por isso ambos têm default.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    session_uuid: str = Field(default="")
+    ingest_key_prefix: str = Field(default="")
+    matched_count: int = Field(default=0)
+    deleted_count: int = Field(default=0)
+    deleted_ids: List[int] = Field(default_factory=list)
+    dry_run: bool = Field(default=False)
+    raft_index: int = Field(default=0)
+
+
 class EntityModel(BaseModel):
     """
     A named entity in the AnhurDB knowledge graph (Layer 2).

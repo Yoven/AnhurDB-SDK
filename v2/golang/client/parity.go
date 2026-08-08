@@ -420,6 +420,7 @@ func (m *Memory) ListTypes() []models.MemoryType {
 		models.TypeConsolidated,
 		models.TypeHub,
 		models.TypeFile,
+		models.TypeRouter,
 	}
 }
 

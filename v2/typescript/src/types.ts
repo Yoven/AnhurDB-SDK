@@ -14,7 +14,16 @@
 
 // ── Memory types (cognitive epistemology) ────────────────────
 
-/** Cognitive memory types defined by the AnhurDB epistemology. */
+/**
+ * Cognitive memory types defined by the AnhurDB epistemology (13 types).
+ *
+ * The authority is AnhurCore's `core.yaml`, mirrored by the server's
+ * `schema.MemoryTypes` and the MCP `list_types` tool — not this union. Because
+ * this is a closed union, a type the server serves but that is missing here is a
+ * COMPILE ERROR for the caller, not a runtime warning: it is the strictest of
+ * the three SDKs, so it drifts loudest. Keep Go, Python, TypeScript and
+ * `core.yaml` in step, in the same change.
+ */
 export type MemoryType =
   | "episodic"
   | "fact"
@@ -27,7 +36,9 @@ export type MemoryType =
   | "emotion"
   | "consolidated"
   | "hub"
-  | "file";
+  | "file"
+  /** Macro-theme backbone: a hub of hubs (ADR-0005). */
+  | "router";
 
 /** Lifecycle status of a cognitive record. */
 export type MemoryStatus =
@@ -384,6 +395,49 @@ export interface UploadStatusResult {
 /** Result from batch status update. */
 export interface BatchUpdateResult {
   updated_count: number;
+}
+
+// ── Delete file (whole ingested document) ────────────────────
+
+/**
+ * Response of `DELETE /api/v1/records/by-file` — apagar TODO o rastro de um
+ * arquivo ingerido (root + capítulos + satélites) de uma sessão.
+ *
+ * `matched_count` é o que o prefixo ENCONTROU; `deleted_count` é o que o
+ * cluster realmente apagou. Em dry-run só `matched_count` é preenchido: nada
+ * foi escrito, então `deleted_count` fica 0 de propósito.
+ *
+ * Junior Tip [por que a contagem faz parte do contrato]: "apaguei 0 registros"
+ * tem de ser visível para o chamador. Um método que devolvesse `void`
+ * transformaria um prefixo errado em sucesso silencioso — e perda silenciosa é
+ * a falha número um deste projeto.
+ *
+ * `deleted_ids` e `raft_index` são OPCIONAIS porque o servidor os emite com
+ * `omitempty`: em dry-run, ou quando nada casou, as chaves não existem no JSON.
+ * Ausência aqui é informação legítima, não erro de parse.
+ */
+export interface DeleteFileResult {
+  session_uuid: string;
+  ingest_key_prefix: string;
+  matched_count: number;
+  deleted_count: number;
+  deleted_ids?: number[];
+  dry_run: boolean;
+  raft_index?: number;
+}
+
+/** Optional arguments of `Memory.deleteFile`. */
+export interface DeleteFileOptions {
+  /**
+   * Count only, write nothing.
+   *
+   * Junior Tip [dry-run é a rede de segurança, não um detalhe de debug]: a
+   * interface mostra "isto vai apagar 511 registros" ANTES de o usuário
+   * confirmar. Apagar um documento inteiro é operação de mão pesada; a contagem
+   * prévia é o que separa "removi a edição velha da lei" de "removi a
+   * biblioteca".
+   */
+  dryRun?: boolean;
 }
 
 // ── Internal / wire-level types ──────────────────────────────

@@ -22,6 +22,8 @@ import type {
   ContextResult,
   CreateOptions,
   CreateSessionOptions,
+  DeleteFileOptions,
+  DeleteFileResult,
   EntityGraphResult,
   EntityRecord,
   EntityTimelineResult,
@@ -862,6 +864,7 @@ export class Memory {
       "consolidated",
       "hub",
       "file",
+      "router",
     ];
   }
 
@@ -1170,6 +1173,71 @@ export class Memory {
    */
   async delete(recordId: number): Promise<void> {
     await this.client.delete(`/api/v1/records/${recordId}`);
+  }
+
+  /**
+   * Remove EVERY record produced by one ingested file inside a session — the
+   * root record, every chapter and every satellite — via
+   * `DELETE /api/v1/records/by-file`.
+   *
+   * Junior Tip [por que este método existe — o delete que mentia]: `delete(id)`
+   * apaga UM record. Um arquivo ingerido vira centenas deles (root + capítulos
+   * + satélites), então apagar a ficha do arquivo deixava o CONHECIMENTO vivo:
+   * a busca continuava respondendo com o livro "apagado". Sem `deleteFile` não
+   * existe "trocar a edição velha pela nova" — as duas coexistiriam para
+   * sempre, disputando a mesma busca.
+   *
+   * A identidade do arquivo é o prefixo `<checksum16>` que o file_ingestor
+   * grava em `metadata.ingest_key` (root: `"<c16>:root"`; capítulo:
+   * `"<c16>:<total>:<índice>"`) e em `metadata.chapter_ingest_key` (satélite).
+   * Um prefixo alcança as três formas.
+   *
+   * A remoção é soft-delete REPLICADO (tombstone via Raft): o registro fica
+   * archived/status=deleted, some da busca e do tier analítico, e continua
+   * restaurável — a auditoria não é perdida.
+   *
+   * Passe `{ dryRun: true }` para contar sem apagar — a rede de segurança que a
+   * interface mostra antes de o usuário confirmar.
+   *
+   * O tamanho mínimo (8) e o conjunto de caracteres do prefixo são validados no
+   * SERVIDOR (fonte única da verdade) e chegam como `AnhurQueryError` HTTP 400.
+   *
+   * @param sessionUuid     - Session that owns the file's records.
+   * @param ingestKeyPrefix - The file's `<checksum16>` identity.
+   * @param options         - `{ dryRun }` — count only, write nothing.
+   * @throws Error when either argument is empty/blank (fails locally, without a
+   *         round trip).
+   *
+   * @example
+   * ```ts
+   * const preview = await mem.deleteFile(sessionId, "ef9976f1ef5d5176", { dryRun: true });
+   * if (preview.matched_count > 0 && confirmed) {
+   *   await mem.deleteFile(sessionId, "ef9976f1ef5d5176");
+   * }
+   * ```
+   */
+  async deleteFile(
+    sessionUuid: string,
+    ingestKeyPrefix: string,
+    options: DeleteFileOptions = {}): Promise<DeleteFileResult> {
+    // Validação local mínima: o vazio nunca merece uma ida ao servidor, e o
+    // erro local nomeia o argumento do SDK.
+    const trimmedSessionUuid = (sessionUuid ?? "").trim();
+    if (!trimmedSessionUuid) {
+      throw new Error("deleteFile: sessionUuid is required");
+    }
+    const trimmedIngestKeyPrefix = (ingestKeyPrefix ?? "").trim();
+    if (!trimmedIngestKeyPrefix) {
+      throw new Error("deleteFile: ingestKeyPrefix is required");
+    }
+
+    return this.client.delete<DeleteFileResult>(
+      "/api/v1/records/by-file",
+      {
+        session: trimmedSessionUuid,
+        ingest_key_prefix: trimmedIngestKeyPrefix,
+        dry_run: options.dryRun === true ? "true" : "false",
+      });
   }
 
   // ══════════════════════════════════════════════════════════════
