@@ -40,6 +40,9 @@ import type {
   ProfileResult,
   QueryResult,
   RecordPayload,
+  RelatedNode,
+  RetrievalMeta,
+  SearchHitSignals,
   SearchOptions,
   SearchPayload,
   SearchResult,
@@ -358,6 +361,49 @@ export class Memory {
     query: string,
     sessions: string[],
     options?: SearchOptions): Promise<SearchResult[]> {
+    const { results } = await this.runSearch(query, sessions, options);
+    return results;
+  }
+
+  /**
+   * Same request/ranking as {@link search}, but also returns the ADR-0012
+   * `retrieval` diagnostics block (which arms ran, degradation reason,
+   * RESOLVED astar/entity-jaccard weights after any per-request override).
+   *
+   * Junior Tip [why a separate method instead of changing `search()`'s
+   * return type]: `search()` already ships as `Promise<SearchResult[]>` and
+   * existing callers iterate/destructure that array directly — widening it to
+   * `{results, retrieval}` would be a breaking change for every current
+   * caller. This method is opt-in additive surface for callers that want the
+   * diagnostics, e.g. an ablation harness confirming its
+   * {@link SearchOptions.astarWeight} override actually took effect
+   * server-side. Named `searchWithRetrieval` (not `searchWithMeta`) to match
+   * Go `SearchWithRetrieval` / Python `search_with_retrieval` — same concept,
+   * TS camelCase (2026-08-10, cross-SDK name alignment).
+   *
+   * @returns `results` (same shape as {@link search}) plus `retrieval` —
+   *   `undefined` only if the server response omitted the block entirely
+   *   (older server version).
+   */
+  async searchWithRetrieval(
+    query: string,
+    sessions: string[],
+    options?: SearchOptions): Promise<{ results: SearchResult[]; retrieval?: RetrievalMeta }> {
+    return this.runSearch(query, sessions, options);
+  }
+
+  /**
+   * Shared implementation behind {@link search} and
+   * {@link searchWithRetrieval} — builds the wire payload, posts
+   * `/api/v1/search`, and nests the response. Kept private so the two public
+   * methods cannot drift on payload construction (the exact bug class
+   * ADR-0014's session-filter Junior Tips warn about: two assembly sites for
+   * the same request silently diverging).
+   */
+  private async runSearch(
+    query: string,
+    sessions: string[],
+    options?: SearchOptions): Promise<{ results: SearchResult[]; retrieval?: RetrievalMeta }> {
     if (!query) {
       throw new Error("query cannot be empty");
     }
@@ -381,16 +427,40 @@ export class Memory {
     if (options?.skipCognitiveRerank) {
       payload.skip_cognitive_rerank = true;
     }
+    // astar_weight / entity_jaccard_weight: nil-vs-zero contract (server
+    // `*float64`) — `undefined` means "not asked", `0` means "asked for
+    // zero". Checking `!== undefined` (not truthiness) is load-bearing: a
+    // caller passing `astarWeight: 0` to disable the leg for one query must
+    // reach the server as JSON `0`, not be dropped like `skip_query_embed`'s
+    // falsy-omit above.
+    if (options?.astarWeight !== undefined) {
+      payload.astar_weight = options.astarWeight;
+    }
+    if (options?.entityJaccardWeight !== undefined) {
+      payload.entity_jaccard_weight = options.entityJaccardWeight;
+    }
+    // expand_related (ADR-0021): same falsy-omit discipline as
+    // skip_query_embed/skip_cognitive_rerank above — bool, default false,
+    // omitted (not sent as `false`) when not requested, so the wire body is
+    // byte-identical to today for every caller who never opts in.
+    if (options?.expandRelated) {
+      payload.expand_related = true;
+    }
 
     // Search is a read-shaped POST endpoint.
     const data = await this.client.postRead<{
       results?: Array<{
         record?: Record<string, unknown>;
         similarity?: number;
+        provenance?: string;
+        scope?: string;
+        signals?: SearchHitSignals;
+        related_nodes?: RelatedNode[];
       }>;
+      retrieval?: RetrievalMeta;
     }>("/api/v1/search", payload);
 
-    return this.nestSearchResults(data.results);
+    return { results: this.nestSearchResults(data.results), retrieval: data.retrieval };
   }
 
   /**
@@ -2005,15 +2075,34 @@ export class Memory {
    * default a missing `similarity` to 0. Matches Python `SearchResult(record,
    * similarity)` (the reference) and Go `SearchResult{Record, Similarity}`. NOTE
    * the score key is `similarity`, NOT `score`.
+   *
+   * Junior Tip [second data-loss bug, same shape, found 2026-08-10]: this method
+   * used to copy ONLY `record`/`similarity` off the raw hit even though the
+   * server has sent `provenance`/`scope`/`signals` per hit since ADR-0012 — a
+   * caller on `scope=shared_all` had no way to tell which plane
+   * (`tenant_shared` vs `client_shared`) actually produced a given hit. Copy
+   * every field the server sends, not just the two the SDK happened to model
+   * first; `signals` stays `undefined` unless the caller separately asked the
+   * server for `debug_signals` (see {@link SearchResult.signals}); likewise
+   * `related_nodes` (ADR-0021) stays `undefined` unless the request set
+   * {@link SearchOptions.expandRelated} (see {@link SearchResult.related_nodes}).
    */
   private nestSearchResults(
     results?: Array<{
       record?: Record<string, unknown>;
       similarity?: number;
+      provenance?: string;
+      scope?: string;
+      signals?: SearchHitSignals;
+      related_nodes?: RelatedNode[];
     }>): SearchResult[] {
     return (results ?? []).map((item) => ({
       record: (item.record ?? {}) as unknown as MemoryRecord,
       similarity: item.similarity ?? 0,
+      ...(item.provenance !== undefined ? { provenance: item.provenance } : {}),
+      ...(item.scope !== undefined ? { scope: item.scope } : {}),
+      ...(item.signals !== undefined ? { signals: item.signals } : {}),
+      ...(item.related_nodes !== undefined ? { related_nodes: item.related_nodes } : {}),
     }));
   }
 

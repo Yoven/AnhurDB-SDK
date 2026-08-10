@@ -515,16 +515,42 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 // exact-word matching), not an embedding. For conceptual RAG without a
 // vector, prefer SmartSearch (or MCP recall).
 func (m *Memory) Search(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
+	results, _, searchErr := m.searchWithRetrieval(ctx, query, sessions, opts...)
+	return results, searchErr
+}
+
+// SearchWithRetrieval is Search plus the server's RetrievalMeta block (ADR-0012,
+// wire-extended by ADR-0021): which search arms actually ran, whether the
+// query degraded, and the RESOLVED astar/entity-jaccard weights after any
+// per-request override.
+//
+// Junior Tip [why a new method instead of changing Search's return type]:
+// Search's signature ([]SearchResult, error) is public API that existing
+// callers already depend on — widening it to a 3-tuple would be a breaking
+// change for every caller in every repo that imports this SDK. Retrieval meta
+// is additive and opt-in-by-relevance (most callers never look at it), so it
+// gets its own method instead of forcing every caller to accept and discard a
+// third return value. Returns retrieval=nil when the server did not attach a
+// "retrieval" key to the response — nil is not an error, it just means the
+// server built no RetrievalMeta for this query.
+func (m *Memory) SearchWithRetrieval(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, *RetrievalMeta, error) {
+	return m.searchWithRetrieval(ctx, query, sessions, opts...)
+}
+
+// searchWithRetrieval is the shared implementation behind Search and
+// SearchWithRetrieval — centralised so the two public entry points can never
+// drift in payload shape or response decoding.
+func (m *Memory) searchWithRetrieval(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, *RetrievalMeta, error) {
 	if m.conn == nil {
-		return nil, ErrEmptyAPIKey
+		return nil, nil, ErrEmptyAPIKey
 	}
 	if query == "" {
-		return nil, ErrEmptyInput
+		return nil, nil, ErrEmptyInput
 	}
 
 	resolvedSessions, sessionsErr := normalizeSessionFilter(sessions)
 	if sessionsErr != nil {
-		return nil, sessionsErr
+		return nil, nil, sessionsErr
 	}
 
 	cfg := &searchConfig{limit: 10, scope: "sessions"}
@@ -547,15 +573,29 @@ func (m *Memory) Search(ctx context.Context, query string, sessions []string, op
 	if cfg.skipCognitiveRerank {
 		payload["skip_cognitive_rerank"] = true
 	}
+	// ADR-0021 (2026-08-10): same omit-unless-set discipline as the two flags
+	// above. astarWeight/entityJaccardWeight are pointers specifically so a
+	// caller-supplied 0.0 ("zero this leg for this query only") can be told
+	// apart from "never called the option" ("leave the server default alone")
+	// — dereference only after the nil check, never collapse the two.
+	if cfg.expandRelated {
+		payload["expand_related"] = true
+	}
+	if cfg.astarWeight != nil {
+		payload["astar_weight"] = *cfg.astarWeight
+	}
+	if cfg.entityJaccardWeight != nil {
+		payload["entity_jaccard_weight"] = *cfg.entityJaccardWeight
+	}
 
 	respBytes, err := m.conn.PostRead(ctx, "/api/v1/search", payload)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var resp searchResponse
 	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return nil, fmt.Errorf("parsing search response: %w", err)
+		return nil, nil, fmt.Errorf("parsing search response: %w", err)
 	}
 
 	// The wire envelope already IS the public SearchResult shape ({record,
@@ -564,9 +604,9 @@ func (m *Memory) Search(ctx context.Context, query string, sessions []string, op
 	// id/type/summary/metadata/content). Preserve the historical non-nil
 	// empty-slice contract when the server omits "results".
 	if resp.Results == nil {
-		return []SearchResult{}, nil
+		return []SearchResult{}, resp.Retrieval, nil
 	}
-	return resp.Results, nil
+	return resp.Results, resp.Retrieval, nil
 }
 
 // SearchSessions searches chat sessions only (scope=sessions).

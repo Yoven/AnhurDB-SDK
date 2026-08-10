@@ -107,6 +107,88 @@ class Record(BaseModel):
     content: Optional[Any] = None
 
 
+class SearchHitSignals(BaseModel):
+    """
+    Per-hit ablation debug signals (ADR-0012), mirroring Go
+    ``model.SearchHitSignals`` (``server/model/record.go``).
+
+    Only populated by the server when the request asked for debug signals
+    (``debug_signals``); otherwise ``SearchResult.signals`` is ``None`` and
+    this model is never constructed. All fields use Go's zero-value ==
+    "not reported" convention (every Go field carries ``omitempty``), so a
+    plain scalar default here is the correct mirror — there is no wire
+    distinction between "rank is 0" and "rank omitted" to preserve.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    fts_rank: int = Field(default=0)
+    semantic_rank: int = Field(default=0)
+    simhash_rank: int = Field(default=0)
+    simhash_hamming: int = Field(default=0)
+    rrf_score: float = Field(default=0.0)
+    semantic_cosine: float = Field(default=0.0)
+
+
+class RelatedNode(BaseModel):
+    """
+    A bounded, summary-only neighbour of a search hit (ADR-0021
+    ``expand_related``).
+
+    Junior Tip [why this is not a ``Record``]: ADR-0021 is explicit that
+    ``related_nodes`` is a SUMMARY projection (id/type/summary/weight), not
+    the full ``Record`` — no ``content``, no internal fields — precisely so
+    expansion cannot multiply the response payload by N. Do not widen this
+    model to carry more of ``Record`` without re-reading the ADR's "Formato
+    de resposta proposto" section first.
+
+    Server-side status (2026-08-11): implemented and live on REST and gRPC
+    (server/model/record.go has ``RelatedNode`` and ``SearchRequest.ExpandRelated``;
+    the MCP ``search`` tool and this SDK's ``search()``/``search_with_retrieval()``
+    both send ``expand_related`` and parse ``related_nodes`` back). Session/plane
+    admission is enforced server-side (reuses the same ``WalkAdmission`` the A*
+    leg uses) — this model itself does not, and should not, decide what's safe
+    to show; it only carries whatever bounded summary the server already vetted.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    id: Optional[int] = Field(default=0)
+    type: str = Field(default="")
+    summary: str = Field(default="")
+    weight: float = Field(default=0.0)
+
+
+class RetrievalMeta(BaseModel):
+    """
+    Retrieval-arm metadata (ADR-0012), mirroring Go ``model.RetrievalMeta``
+    (``server/model/record.go``) — which search arms ran, whether semantic
+    degraded, and the RESOLVED astar/entity-jaccard weights actually used
+    for the query (after any per-request override was applied).
+
+    Attached to the response envelope only, never per-hit (see
+    ``SearchResponse.retrieval``) — the server omits the whole ``retrieval``
+    key when it has nothing to report (``bundle.go``:
+    ``if retrieval != nil { payload["retrieval"] = retrieval }``).
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    mode: str = Field(default="")
+    signals_used: List[str] = Field(default_factory=list)
+    semantic_attempted: bool = Field(default=False)
+    semantic_used: bool = Field(default=False)
+    degraded: bool = Field(default=False)
+    reason: str = Field(default="")
+    elapsed_ms: int = Field(default=0)
+    content_simhash_enabled: bool = Field(default=False)
+    content_simhash_weight: float = Field(default=0.0)
+    astar_enabled: bool = Field(default=False)
+    astar_weight: float = Field(default=0.0)
+    entity_jaccard_enabled: bool = Field(default=False)
+    entity_jaccard_weight: float = Field(default=0.0)
+
+
 class SearchResult(BaseModel):
     """
     A single search hit combining a record with its relevance score.
@@ -115,8 +197,50 @@ class SearchResult(BaseModel):
     and ``/api/v1/search/smart``.
     """
 
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
     record: Record
     similarity: float = 0.0
+
+    # Junior Tip [2026-08-10 — the débito técnico ADR-0021 flagged]: these three
+    # existed on the server wire (server/model/record.go SearchResult) long
+    # before this SDK ever read them — the SDK's manual field-by-field
+    # construction in ``_parse_search_results`` simply never picked them up,
+    # so every SDK caller was silently blind to which plane answered a
+    # shared_all hit, and to debug signals, even though the server always
+    # sent them. Fixed alongside expand_related in the same batch (ADR-0021
+    # "Decisão pendente do dono" #2 — resolved: yes, same batch).
+    provenance: str = Field(default="")
+    scope: str = Field(default="")
+    signals: Optional[SearchHitSignals] = Field(default=None)
+    # None = server did not send the key (expand_related was not requested,
+    # or the server predates ADR-0021). Empty list = expand_related WAS
+    # requested and the hit legitimately has zero neighbours. That
+    # distinction is real information — collapsing it to a single default
+    # would erase "no neighbours" vs "didn't ask" in exactly the way this
+    # codebase's own doc string above already condemns for other fields.
+    related_nodes: Optional[List[RelatedNode]] = Field(default=None)
+
+
+class SearchResponse(BaseModel):
+    """
+    Full envelope from ``POST /api/v1/search``: typed hits plus the optional
+    ADR-0012 ``retrieval`` block.
+
+    Junior Tip [why this is a NEW type instead of changing search()'s return]:
+    ``Memory.search()`` has returned ``List[SearchResult]`` since before this
+    change, and every existing caller (docs, PARITY_SPEC.md, this repo's own
+    tests) iterates that list directly. Retyping search() to return an
+    envelope would be a breaking change for all of them for a field
+    (``retrieval``) most callers never asked for. ``Memory.search_with_retrieval()``
+    issues the identical request and returns this richer envelope instead —
+    additive, not a replacement.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    results: List[SearchResult] = Field(default_factory=list)
+    retrieval: Optional[RetrievalMeta] = Field(default=None)
 
 
 class DeleteFileResult(BaseModel):

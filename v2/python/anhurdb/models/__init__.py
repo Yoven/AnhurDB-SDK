@@ -14,6 +14,10 @@ from .record import (
     EntityEdge,
     EntityModel,
     Record,
+    RelatedNode,
+    RetrievalMeta,
+    SearchHitSignals,
+    SearchResponse,
     SearchResult,
 )
 from .session import SessionStats
@@ -23,6 +27,10 @@ __all__ = [
     "MemoryStatus",
     "Record",
     "SearchResult",
+    "SearchResponse",
+    "SearchHitSignals",
+    "RelatedNode",
+    "RetrievalMeta",
     "CreateRequest",
     "DeleteFileResult",
     "SessionStats",

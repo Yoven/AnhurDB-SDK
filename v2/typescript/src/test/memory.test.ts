@@ -513,6 +513,229 @@ describe("Memory.search (nested SearchResult shape)", () => {
   });
 });
 
+// ── search() astar/entity-jaccard weight overrides (ADR-0021) ─
+// Junior Tip [nil-vs-zero on the wire]: `astarWeight`/`entityJaccardWeight`
+// mirror the server's `*float64` contract — `undefined` (not passed) must
+// omit the wire key entirely (server keeps its own default), while an
+// explicit `0` must reach the server as JSON `0` (server rescales the leg to
+// zero for this query only). A naive `if (options?.astarWeight)` truthiness
+// check would silently swallow the `0` case — these tests lock the `!==
+// undefined` behavior so a future refactor cannot regress it quietly.
+describe("Memory.search() astar/entity-jaccard weight overrides", () => {
+  const emptyEnvelope = { results: [], count: 0 };
+
+  const captureBody = async (
+    run: (mem: Memory) => Promise<unknown>,
+  ): Promise<Record<string, unknown>> => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> = {};
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify(emptyEnvelope), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      await run(mem);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    return capturedBody;
+  };
+
+  it("omits astar_weight/entity_jaccard_weight from the payload when not passed", async () => {
+    const body = await captureBody((mem) => mem.search("q", sessionsAll()));
+    assert.ok(!("astar_weight" in body));
+    assert.ok(!("entity_jaccard_weight" in body));
+  });
+
+  it("sends astar_weight when set to a positive value", async () => {
+    const body = await captureBody((mem) =>
+      mem.search("q", sessionsAll(), { astarWeight: 0.4 }));
+    assert.equal(body.astar_weight, 0.4);
+  });
+
+  it("sends an explicit astar_weight: 0 (does not treat it as omitted)", async () => {
+    const body = await captureBody((mem) =>
+      mem.search("q", sessionsAll(), { astarWeight: 0 }));
+    assert.ok("astar_weight" in body);
+    assert.equal(body.astar_weight, 0);
+  });
+
+  it("sends entity_jaccard_weight independently of astar_weight", async () => {
+    const body = await captureBody((mem) =>
+      mem.search("q", sessionsAll(), { entityJaccardWeight: 0 }));
+    assert.ok(!("astar_weight" in body));
+    assert.ok("entity_jaccard_weight" in body);
+    assert.equal(body.entity_jaccard_weight, 0);
+  });
+
+  // ── expand_related (ADR-0021) ──────────────────────────────
+  // Junior Tip [bool, not nil-vs-zero]: unlike astar/entity-jaccard weight,
+  // expand_related is a plain bool with no "explicit zero" case to protect —
+  // same falsy-omit discipline as skip_query_embed/skip_cognitive_rerank.
+  it("omits expand_related from the payload when not passed", async () => {
+    const body = await captureBody((mem) => mem.search("q", sessionsAll()));
+    assert.ok(!("expand_related" in body));
+  });
+
+  it("omits expand_related from the payload when explicitly false", async () => {
+    const body = await captureBody((mem) =>
+      mem.search("q", sessionsAll(), { expandRelated: false }));
+    assert.ok(!("expand_related" in body));
+  });
+
+  it("sends expand_related: true when requested", async () => {
+    const body = await captureBody((mem) =>
+      mem.search("q", sessionsAll(), { expandRelated: true }));
+    assert.equal(body.expand_related, true);
+  });
+
+  it("sends astar_weight and expand_related together without interfering", async () => {
+    const body = await captureBody((mem) =>
+      mem.search("q", sessionsAll(), { expandRelated: true, astarWeight: 0.2 }));
+    assert.equal(body.expand_related, true);
+    assert.equal(body.astar_weight, 0.2);
+  });
+});
+
+// ── search() provenance/scope/signals/related_nodes + searchWithRetrieval() (ADR-0021) ─
+// Junior Tip [the debt ADR-0021 flagged]: the server has sent
+// `provenance`/`scope`/`signals` per hit, and a top-level `retrieval` block,
+// since ADR-0012 — but `nestSearchResults` only ever copied `record`/
+// `similarity`, so an SDK caller had no way to see which plane answered a
+// `shared_all` hit. `related_nodes` (ADR-0021, expand_related) has the same
+// shape of debt: real server field, dropped by the SDK until modeled. These
+// tests pin the fix directly against a raw server envelope shaped exactly
+// like the real response (see AnhurDB/server/handler/bundle.go
+// hybridResponsePayloadWithRetrieval and record_search_expand_related.go).
+describe("Memory.search() surfaces provenance/scope/signals/related_nodes + searchWithRetrieval()", () => {
+  const fullEnvelope = {
+    results: [
+      {
+        record: { id: 1, uuid: "u1", type: "fact", summary: "s", status: "saved", weight: 1, score: 5, created_at: "t", updated_at: "t" },
+        similarity: 0.5,
+        provenance: "tenant_shared",
+        scope: "shared_all",
+        signals: {
+          fts_rank: 1,
+          semantic_rank: 2,
+          rrf_score: 0.9,
+          semantic_cosine: 0.87,
+        },
+        related_nodes: [
+          { id: 123, type: "fact", summary: "Works remotely", weight: 0.7 },
+          { id: 456, type: "preference", summary: "Prefers async standups", weight: 0.4 },
+        ],
+      },
+    ],
+    count: 1,
+    scope: "shared_all",
+    bundle_hash: "abc",
+    bundle_ordering: "hybrid",
+    retrieval: {
+      mode: "balanced",
+      signals_used: ["fts", "semantic"],
+      semantic_attempted: true,
+      semantic_used: true,
+      degraded: false,
+      elapsed_ms: 12,
+      content_simhash_enabled: true,
+      content_simhash_weight: 0.1,
+      astar_enabled: true,
+      astar_weight: 0.3,
+      entity_jaccard_enabled: false,
+      entity_jaccard_weight: 0,
+    },
+  };
+
+  const withMockedFetch = async (
+    run: (mem: Memory) => Promise<unknown>,
+  ): Promise<unknown> => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(fullEnvelope), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      return await run(mem);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  };
+
+  it("search() carries provenance/scope/signals/related_nodes onto each SearchResult", async () => {
+    const results = (await withMockedFetch((mem) =>
+      mem.search("q", sessionsAll()))) as SearchResult[];
+    assert.equal(results[0].provenance, "tenant_shared");
+    assert.equal(results[0].scope, "shared_all");
+    assert.deepEqual(results[0].signals, {
+      fts_rank: 1,
+      semantic_rank: 2,
+      rrf_score: 0.9,
+      semantic_cosine: 0.87,
+    });
+    assert.equal(results[0].related_nodes?.length, 2);
+    assert.equal(results[0].related_nodes?.[0].id, 123);
+    assert.equal(results[0].related_nodes?.[0].summary, "Works remotely");
+    assert.equal(results[0].related_nodes?.[0].weight, 0.7);
+  });
+
+  it("nestSearchResults leaves related_nodes undefined (not []) when the server omits it", async () => {
+    // A hit from a request that never set expandRelated (or a server that
+    // predates ADR-0021) sends no `related_nodes` key at all — the SDK must
+    // NOT default it to an empty array, since `undefined` vs `[]` are two
+    // different facts (not-requested vs requested-but-nothing-found).
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ results: [{ record: { id: 1 }, similarity: 0.1 }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const results = (await mem.search("q", sessionsAll())) as SearchResult[];
+      assert.equal(results[0].related_nodes, undefined);
+      assert.ok(!("related_nodes" in results[0]));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("searchWithRetrieval() returns the same results plus the retrieval block", async () => {
+    const { results, retrieval } = (await withMockedFetch((mem) =>
+      mem.searchWithRetrieval("q", sessionsAll()))) as {
+      results: SearchResult[];
+      retrieval?: { mode: string; astar_weight: number; degraded: boolean };
+    };
+    assert.equal(results[0].provenance, "tenant_shared");
+    assert.ok(retrieval);
+    assert.equal(retrieval?.mode, "balanced");
+    assert.equal(retrieval?.astar_weight, 0.3);
+    assert.equal(retrieval?.degraded, false);
+  });
+
+  it("searchWithRetrieval() leaves retrieval undefined when the server omits the block", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    try {
+      const mem = new Memory({ apiKey: "key", userId: "u" });
+      const { retrieval } = await mem.searchWithRetrieval("q", sessionsAll());
+      assert.equal(retrieval, undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 // ── Anchor-seed removal (single request, surface 422) ─────────
 // Junior Tip [contract, 2026-07-06]: the SDK USED to catch a 422 "episodic
 // anchor" on a derived (fact/decision/…) create, fabricate a SYNTHETIC episodic

@@ -28,6 +28,8 @@ from ..models import (
     EntityModel,
     MemoryType,
     Record,
+    RetrievalMeta,
+    SearchResponse,
     SearchResult,
     SessionStats,
 )
@@ -133,18 +135,53 @@ def _utc_timestamp() -> str:
 def _parse_search_results(data: Any) -> List[SearchResult]:
     """Parse a raw search-endpoint envelope into typed ``SearchResult`` objects.
 
-    Returns an empty list when the payload is not the expected envelope object."""
+    Returns an empty list when the payload is not the expected envelope object.
+
+    Junior Tip [2026-08-10 — stop discarding fields the server already sends]:
+    before this fix, this function hand-picked only ``record``/``similarity``
+    off each hit, so ``provenance``/``scope``/``signals`` (present on the wire
+    since before this SDK existed — see ``server/model/record.go``
+    ``SearchResult``) were read off the network and then thrown away before
+    ever reaching a ``SearchResult`` instance. That is silent data loss of the
+    exact kind CLAUDE.md calls the project's worst failure mode: a caller
+    using ``shared_all`` scope had no SDK-visible way to tell which plane
+    (``sessions``/``tenant_shared``/``client_shared``) answered a given hit.
+    Passing the WHOLE hit dict through ``SearchResult(**hit_fields)`` (with
+    only ``record`` pre-built, since it needs its own nested parse) means any
+    field the server adds next also survives without another manual edit
+    here — ``extra="ignore"`` on ``SearchResult`` still protects against
+    truly unknown keys, it just no longer discards KNOWN ones by omission.
+    """
     if not isinstance(data, dict):
         return []
     parsed: List[SearchResult] = []
     for hit in data.get("results", []):
-        parsed.append(
-            SearchResult(
-                record=Record(**hit["record"]),
-                similarity=hit.get("similarity", 0.0),
-            )
-        )
+        hit_fields: Dict[str, Any] = dict(hit)
+        # Required, same as the original hit["record"] — a hit with no
+        # "record" key is a malformed server response (record has no
+        # omitempty on the Go side), not a value to paper over with an
+        # empty placeholder. Fail loud (KeyError), never fabricate.
+        hit_fields["record"] = Record(**hit_fields["record"])
+        parsed.append(SearchResult(**hit_fields))
     return parsed
+
+
+def _parse_search_response(data: Any) -> SearchResponse:
+    """Parse a raw search-endpoint envelope into a full ``SearchResponse``
+    (typed hits + the optional ADR-0012 ``retrieval`` block).
+
+    Reuses ``_parse_search_results`` for the ``results`` array so the two
+    parse paths can never disagree about how a hit is built. ``retrieval`` is
+    ``None`` when the server omits the key entirely (``bundle.go``:
+    ``if retrieval != nil { payload["retrieval"] = retrieval }``) — a server
+    that predates ADR-0012, or a response shape that never attaches it."""
+    if not isinstance(data, dict):
+        return SearchResponse()
+    retrieval_data = data.get("retrieval")
+    return SearchResponse(
+        results=_parse_search_results(data),
+        retrieval=RetrievalMeta(**retrieval_data) if retrieval_data else None,
+    )
 
 
 def _parse_typed_records(data: Any) -> List[SearchResult]:
@@ -712,6 +749,63 @@ class Memory:
 
     # ── Search ─────────────────────────────────────────────────────
 
+    def _build_search_payload(
+        self,
+        query: str,
+        sessions: Sequence[str],
+        *,
+        limit: int,
+        type_filter: Optional[str],
+        scope: str,
+        skip_query_embed: bool,
+        skip_cognitive_rerank: bool,
+        expand_related: bool,
+        astar_weight: Optional[float],
+        entity_jaccard_weight: Optional[float],
+    ) -> Dict[str, Any]:
+        """Build the ``POST /api/v1/search`` body shared by ``search()`` and
+        ``search_with_retrieval()`` — one place so the two request paths
+        cannot silently diverge on which knobs get sent.
+
+        Every optional knob is OMITTED from the payload rather than sent at
+        its "off" value, matching the server's own ``omitempty`` wire
+        contract (``server/model/record.go`` ``SearchRequest``) and the
+        ``skip_query_embed`` precedent (commit ``ff7f803``): a caller who
+        never touched a knob gets the exact payload shape that existed
+        before the knob was added, so the server's own default (not the
+        SDK's) decides the behaviour."""
+        resolved_sessions = normalize_sessions(sessions)
+        payload: Dict[str, Any] = {
+            "text": query,
+            "limit": limit,
+            "scope": scope,
+            "sessions": resolved_sessions,
+        }
+        if type_filter:
+            payload["type_filter"] = type_filter
+        # Knobs de ablação (paridade REST/MCP/Go/TS, 2026-08-07): omitidos
+        # quando False para preservar o wire default do servidor.
+        if skip_query_embed:
+            payload["skip_query_embed"] = True
+        if skip_cognitive_rerank:
+            payload["skip_cognitive_rerank"] = True
+        # ADR-0021 (2026-08-10): expand_related is bool/opt-in, same
+        # omit-when-false discipline as the ablation knobs above.
+        if expand_related:
+            payload["expand_related"] = True
+        # astar_weight / entity_jaccard_weight: None means "caller never set
+        # this", NOT "set it to 0.0". The server distinguishes the two with
+        # a *float64 (nil vs 0.0) for exactly this reason — see
+        # server/model/record.go SearchRequest.AstarWeight's Junior Tip. A
+        # plain float default of 0.0 here would make "explicitly asked for
+        # 0.0" and "never asked" indistinguishable on the wire, silently
+        # forcing every unset caller into an explicit-zero override.
+        if astar_weight is not None:
+            payload["astar_weight"] = astar_weight
+        if entity_jaccard_weight is not None:
+            payload["entity_jaccard_weight"] = entity_jaccard_weight
+        return payload
+
     async def search(
         self,
         query: str,
@@ -722,6 +816,9 @@ class Memory:
         scope: str = "sessions",
         skip_query_embed: bool = False,
         skip_cognitive_rerank: bool = False,
+        expand_related: bool = False,
+        astar_weight: Optional[float] = None,
+        entity_jaccard_weight: Optional[float] = None,
     ) -> List[SearchResult]:
         """Hybrid plane search via ``POST /api/v1/search``.
 
@@ -742,16 +839,42 @@ class Memory:
         (FTS5 exact-word matching), not an embedding. For conceptual RAG
         without a vector, prefer ``smart_search`` (or MCP ``recall``).
 
+        Each hit's ``.provenance`` / ``.scope`` / ``.signals`` are populated
+        straight from the server response (fixed 2026-08-10 — previously
+        silently discarded by the SDK parser). ``.related_nodes`` is
+        populated when ``expand_related=True`` and the walk found neighbours
+        within budget; ``None`` means either the flag was off or nothing was
+        found — see ``docs/decisions/ADR-0021-search-expand-related.md``
+        (implemented on REST/gRPC/MCP/all 3 SDKs as of 2026-08-11). Session/
+        plane admission is enforced server-side for every neighbour, the
+        same guarantee the rest of a hit's own visibility already has.
+
         Args:
-            query:       Query string sent as FTS ``text`` (required).
-            sessions:    Session filter (required) — ``sessions_all()`` or uuids.
-            limit:       Maximum results (default 10).
-            type_filter: Optional memory type filter.
-            scope:       Search plane (default ``sessions``).
+            query:                 Query string sent as FTS ``text`` (required).
+            sessions:               Session filter (required) — ``sessions_all()`` or uuids.
+            limit:                  Maximum results (default 10).
+            type_filter:            Optional memory type filter.
+            scope:                  Search plane (default ``sessions``).
+            expand_related:         ADR-0021 opt-in — ask the server to attach a
+                                    bounded ``related_nodes`` summary to each
+                                    surviving top-K hit. Default ``False``,
+                                    omitted from the wire when unset.
+            astar_weight:           Per-request override of
+                                    ``ANHUR_SEARCH_ASTAR_WEIGHT`` for this query
+                                    only. ``None`` (default) = use the server's
+                                    configured weight; omitted from the wire.
+                                    Pass ``0.0`` explicitly to disable the A*
+                                    arm's contribution for just this query —
+                                    that is NOT the same as leaving this unset.
+            entity_jaccard_weight:  Per-request override of
+                                    ``ANHUR_ENTITY_JACCARD_WEIGHT`` for this
+                                    query only. Same ``None``-vs-``0.0`` contract
+                                    as ``astar_weight``.
 
         Returns:
             List of typed ``SearchResult`` objects (nested ``.record`` +
-            ``.similarity``).
+            ``.similarity`` + ``.provenance``/``.scope``/``.signals``/
+            ``.related_nodes``).
 
         Raises:
             AnhurError: ``INVALID_PARAM: ...`` when the session filter is
@@ -762,23 +885,66 @@ class Memory:
             hits = await mem.search(
                 "what does this user do?", sessions_all(), limit=5
             )"""
-        resolved_sessions = normalize_sessions(sessions)
-        payload: Dict[str, Any] = {
-            "text": query,
-            "limit": limit,
-            "scope": scope,
-            "sessions": resolved_sessions,
-        }
-        if type_filter:
-            payload["type_filter"] = type_filter
-        # Knobs de ablação (paridade REST/MCP/Go/TS, 2026-08-07): omitidos
-        # quando False para preservar o wire default do servidor.
-        if skip_query_embed:
-            payload["skip_query_embed"] = True
-        if skip_cognitive_rerank:
-            payload["skip_cognitive_rerank"] = True
+        payload = self._build_search_payload(
+            query,
+            sessions,
+            limit=limit,
+            type_filter=type_filter,
+            scope=scope,
+            skip_query_embed=skip_query_embed,
+            skip_cognitive_rerank=skip_cognitive_rerank,
+            expand_related=expand_related,
+            astar_weight=astar_weight,
+            entity_jaccard_weight=entity_jaccard_weight,
+        )
         data = await self._connection.post("/api/v1/search", payload)
         return _parse_search_results(data)
+
+    async def search_with_retrieval(
+        self,
+        query: str,
+        sessions: Sequence[str],
+        *,
+        limit: int = 10,
+        type_filter: Optional[str] = None,
+        scope: str = "sessions",
+        skip_query_embed: bool = False,
+        skip_cognitive_rerank: bool = False,
+        expand_related: bool = False,
+        astar_weight: Optional[float] = None,
+        entity_jaccard_weight: Optional[float] = None,
+    ) -> SearchResponse:
+        """Identical request to ``search()``, but returns the full envelope
+        including the ADR-0012 ``retrieval`` block (which search arms ran,
+        whether semantic degraded, the RESOLVED astar/entity-jaccard
+        weights actually used).
+
+        Added instead of changing ``search()``'s return type so existing
+        callers of ``search()`` (which every SDK caller today is) keep
+        their ``List[SearchResult]`` unchanged. Use this method only when
+        you specifically need ``.retrieval``; otherwise prefer ``search()``.
+
+        Args:
+            (identical to ``search()`` — see its docstring for each.)
+
+        Returns:
+            ``SearchResponse`` with ``.results`` (same as ``search()``'s
+            return value) and ``.retrieval`` (``None`` if the server did not
+            attach the block)."""
+        payload = self._build_search_payload(
+            query,
+            sessions,
+            limit=limit,
+            type_filter=type_filter,
+            scope=scope,
+            skip_query_embed=skip_query_embed,
+            skip_cognitive_rerank=skip_cognitive_rerank,
+            expand_related=expand_related,
+            astar_weight=astar_weight,
+            entity_jaccard_weight=entity_jaccard_weight,
+        )
+        data = await self._connection.post("/api/v1/search", payload)
+        return _parse_search_response(data)
 
     async def search_sessions(
         self, query: str, sessions: Sequence[str], **kwargs: Any

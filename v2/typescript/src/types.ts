@@ -169,6 +169,38 @@ export interface SearchOptions {
    * score RRF puro.
    */
   skipCognitiveRerank?: boolean;
+  /**
+   * Overrides `ANHUR_SEARCH_ASTAR_WEIGHT` for THIS query only (ablation / A-B
+   * sweep, no server restart needed). `undefined` (the default — field not
+   * sent) keeps the server's configured weight; an explicit `0` rescales the
+   * A* leg to zero contribution for this query only, WITHOUT touching the
+   * server-wide default. Whether the A* arm runs AT ALL still comes from the
+   * server-side `ANHUR_SEARCH_ASTAR` toggle — this can only rescale an
+   * already-enabled leg, never turn it on for a tenant where it is off.
+   * Mirrors `model.SearchRequest.AstarWeight` (`*float64`, same nil-vs-zero
+   * contract) in `AnhurDB/server/model/record.go`.
+   */
+  astarWeight?: number;
+  /**
+   * Overrides `ANHUR_ENTITY_JACCARD_WEIGHT` for THIS query only. Same
+   * nil-vs-zero contract as {@link astarWeight}: `undefined` preserves the
+   * server default, `0` explicitly zeroes the leg for this query. Only takes
+   * effect when `ANHUR_ENTITY_JACCARD_ENABLED` is already true server-side.
+   */
+  entityJaccardWeight?: number;
+  /**
+   * Opt-in, budget-bounded expansion (ADR-0021): when `true`, each top-K hit
+   * that survives final ranking gets a small summary of its DIRECTLY
+   * connected graph nodes (depth 1, `related_ids`/`main_ids`) attached as
+   * {@link SearchResult.related_nodes}. Reuses the same A-star / WalkAdmission
+   * session/plane boundary the A* RRF leg already enforces — it can never
+   * surface a record outside the caller's session scope. Omitted from the
+   * wire payload when `false`/unset (default false = zero extra cost, byte
+   * -identical response to today). Mirrors `model.SearchRequest.ExpandRelated`
+   * in `AnhurDB/server/model/record.go`; Go `WithExpandRelated()` / Python
+   * `expand_related=True` are the equivalent knobs in the other two SDKs.
+   */
+  expandRelated?: boolean;
 }
 
 /**
@@ -190,6 +222,101 @@ export interface SearchResult {
   record: MemoryRecord;
   /** Similarity score (0-1), a sibling of `record` — not inside it. */
   similarity: number;
+  /**
+   * The plane that produced this hit (`sessions` | `tenant_shared` |
+   * `client_shared`). Present on every hit — always sent by the server,
+   * `omitempty` only trims it when the resolver could not label a leg.
+   */
+  provenance?: string;
+  /**
+   * Echoes the REQUEST scope (may read `shared_all` while {@link provenance}
+   * names the specific leg that actually produced this hit).
+   */
+  scope?: string;
+  /**
+   * Per-hit ablation debug (fts/semantic/simhash ranks, RRF score, raw
+   * cosine). Server only populates this when the request carries
+   * `debug_signals=true` — a knob this SDK does not yet expose via
+   * {@link SearchOptions} (query-string only today, `?debug_signals=true`).
+   * Passing `signals` through here fixes the pre-existing bug where the SDK
+   * silently dropped it even on requests that DID ask for it via raw query
+   * string; it does not by itself make `search()` request debug signals.
+   */
+  signals?: SearchHitSignals;
+  /**
+   * Bounded summary of this hit's directly connected graph nodes (depth 1),
+   * populated ONLY when the request set {@link SearchOptions.expandRelated}
+   * to `true` (ADR-0021). Absent/undefined is not an error: it means either
+   * `expand_related` was false/unset, the caller's SDK/server predates
+   * ADR-0021, or the budget-bounded walk found nothing in scope for this hit
+   * (an empty `[]` vs. `undefined` both read as "nothing to show"). Field
+   * name kept snake_case (`related_nodes`, matching `provenance`/`scope`
+   * above already being plain server keys and {@link SearchHitSignals}'s own
+   * `fts_rank`-style fields) — this interface mirrors the server's wire JSON
+   * verbatim, the same convention {@link MemoryRecord} uses for
+   * `related_ids`/`main_ids`.
+   */
+  related_nodes?: RelatedNode[];
+}
+
+/**
+ * A bounded, admission-filtered summary of one node connected to a search
+ * hit's `related_ids`/`main_ids` graph edges (ADR-0021, `expand_related`).
+ *
+ * Deliberately excludes `content` and every internal `Record` field — this
+ * is a SUMMARY projection, not a full {@link MemoryRecord}; attaching N full
+ * records per hit would multiply the response payload. Mirrors
+ * `model.RelatedNode` in `AnhurDB/server/model/record.go` and
+ * AnhurCore's `RelatedNode` proto message field-for-field.
+ */
+export interface RelatedNode {
+  id: number;
+  type: string;
+  summary: string;
+  weight: number;
+}
+
+/**
+ * Per-hit ablation debug attached to a {@link SearchResult} (ADR-0012).
+ * Mirrors `model.SearchHitSignals` in `AnhurDB/server/model/record.go`
+ * exactly — server field names, snake_case, all `omitempty`.
+ */
+export interface SearchHitSignals {
+  fts_rank?: number;
+  semantic_rank?: number;
+  simhash_rank?: number;
+  simhash_hamming?: number;
+  rrf_score?: number;
+  semantic_cosine?: number;
+}
+
+/**
+ * Retrieval diagnostics for one search response (ADR-0012): which arms ran,
+ * whether semantic degraded, and the RESOLVED weights actually used (after
+ * any per-request {@link SearchOptions.astarWeight} /
+ * {@link SearchOptions.entityJaccardWeight} override was applied). Mirrors
+ * `model.RetrievalMeta` in `AnhurDB/server/model/record.go` field-for-field.
+ *
+ * Junior Tip [why this is not on `search()`'s return type]: `search()` keeps
+ * returning `SearchResult[]` for backward compatibility — existing callers
+ * destructure/iterate the array directly and would break if it became
+ * `{results, retrieval}`. Use {@link Memory.searchWithRetrieval} instead when
+ * this diagnostic block is needed.
+ */
+export interface RetrievalMeta {
+  mode: string;
+  signals_used: string[];
+  semantic_attempted: boolean;
+  semantic_used: boolean;
+  degraded: boolean;
+  reason?: string;
+  elapsed_ms: number;
+  content_simhash_enabled: boolean;
+  content_simhash_weight: number;
+  astar_enabled: boolean;
+  astar_weight: number;
+  entity_jaccard_enabled: boolean;
+  entity_jaccard_weight: number;
 }
 
 // ── profile() ────────────────────────────────────────────────
@@ -501,6 +628,17 @@ export interface SearchPayload {
   /** Omitido quando false — preserva o default do servidor. */
   skip_query_embed?: boolean;
   skip_cognitive_rerank?: boolean;
+  /**
+   * Omitido quando `undefined` — mesma disciplina nil-vs-zero de
+   * `model.SearchRequest.AstarWeight` no servidor (Go `*float64`): um `0`
+   * explícito precisa chegar como `0` no JSON, nunca ser confundido com
+   * "campo não enviado".
+   */
+  astar_weight?: number;
+  /** Omitido quando `undefined`. Mesmo contrato nil-vs-zero acima. */
+  entity_jaccard_weight?: number;
+  /** Omitido quando `false`/`undefined` — default false = zero custo extra. */
+  expand_related?: boolean;
 }
 
 /**

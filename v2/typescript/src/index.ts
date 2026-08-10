@@ -53,6 +53,9 @@ export type {
   SearchPayload,
   SearchScope,
   SearchResult,
+  SearchHitSignals,
+  RelatedNode,
+  RetrievalMeta,
   ProfileResult,
   // Extended
   MemoryRecord,
