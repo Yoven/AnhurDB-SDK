@@ -57,6 +57,8 @@ TENANT_ID = (CLIENT_ID + "_" if CLIENT_ID else "") + os.environ.get("RB_TENANT",
 SEND_TENANT = bool(CLIENT_ID or os.environ.get("RB_FORCE_TENANT"))
 GOLD_PATH = os.environ.get("RB_GOLD", "/tmp/rbench_gold.json")
 ORACLE_PATH = os.environ.get("RB_ORACLE", "/tmp/longmemeval_oracle.json")
+# Where scored runs are persisted. Set RB_RESULTS_DIR="" to disable.
+RESULTS_DIR = os.environ.get("RB_RESULTS_DIR", "results")
 
 
 def deterministic_session_uuid(question_id: str, source_session_id: str) -> str:
@@ -146,6 +148,61 @@ def build_create_request(session_uuid: str, turns: Sequence[Dict[str, Any]]) -> 
         weight=1.0,
         score=0,
     )
+
+
+def oracle_sha256() -> str:
+    """Checksum of the corpus actually used, so a run is traceable to its input."""
+    if not os.path.exists(ORACLE_PATH):
+        return ""
+    digest = hashlib.sha256()
+    with open(ORACLE_PATH, "rb") as corpus_file:
+        for block in iter(lambda: corpus_file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def save_results(result: Dict[str, Any], per_question: List[Dict[str, Any]]) -> str:
+    """Persist one scored run as JSON, with the context needed to interpret it.
+
+    Junior Tip [why a harness must write files]: printing to stdout makes every
+    comparison a manual transcription, and a number nobody can trace back to a
+    corpus, a configuration and a date is not evidence. Neither harness did this
+    originally, and the raw output of the published run was lost to /tmp — only
+    the hand-copied summary table survived. Results are written next to the
+    scripts so they can be committed alongside the claim they support.
+
+    The API key is never recorded. The endpoint is, because a result is
+    uninterpretable without knowing what it ran against.
+    """
+    if not RESULTS_DIR:
+        return ""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    payload = {
+        "harness": "rbench_sdk",
+        "tag": result["tag"],
+        "mode": result["mode"],
+        "finished_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "endpoint": BASE_URL,
+        "tenant": TENANT_ID,
+        "corpus": {
+            "oracle_file": os.path.basename(ORACLE_PATH),
+            "oracle_sha256": oracle_sha256(),
+            "n_per_type": int(os.environ.get("RB_NPER", "5")),
+        },
+        "config": {
+            "chatty_fraction": os.environ.get("RB_CHATTY_FRAC", "0.20"),
+            "chatty_chunks": os.environ.get("RB_CHATTY_CHUNKS", "3"),
+            "search_retries": os.environ.get("RB_SEARCH_RETRIES", "3"),
+            "measure_sleep_ms": os.environ.get("RB_MEASURE_SLEEP_MS", "0"),
+        },
+        "results": result,
+        "per_question": per_question,
+    }
+    output_path = os.path.join(RESULTS_DIR, "%s-%s.json" % (result["tag"], result["mode"]))
+    with open(output_path, "w") as results_file:
+        json.dump(payload, results_file, indent=2, sort_keys=True)
+        results_file.write("\n")
+    return output_path
 
 
 def open_memory() -> Memory:
@@ -267,6 +324,89 @@ async def ingest() -> None:
     )
 
 
+async def wait_until_searchable(gold: Dict[str, Any], probe_count: int = 3) -> None:
+    """Block until the ingested corpus is actually retrievable, or abort.
+
+    Junior Tip [the 0% trap]: ingestion returns before the corpus is indexed.
+    Measured on a clean instance, a scoring run started immediately after a
+    successful ingest reported 0.0% recall with zero results returned; the same
+    run twenty seconds later reported 100%. Neither number is a retrieval
+    result — the first is "you asked too early".
+
+    A benchmark that reports the first number has silently converted a timing
+    detail into an engine verdict, which is precisely the failure this project
+    exists to prevent. So we probe a few known-good questions and refuse to
+    score until the corpus answers, rather than letting a fast operator publish
+    a zero.
+    """
+    timeout_s = float(os.environ.get("RB_READY_TIMEOUT_S", "300") or "300")
+    poll_interval_s = float(os.environ.get("RB_READY_POLL_S", "5") or "5")
+    probes = list(gold.items())[:probe_count]
+    if not probes:
+        return
+
+    async def probe_total(memory: Memory) -> int:
+        """Total hits across the probe questions — the readiness signal."""
+        running_total = 0
+        for _, gold_entry in probes:
+            try:
+                hits = await memory.search(gold_entry["question"], ["*"], limit=10)
+            except AnhurAuthError as auth_error:
+                fail_loud("readiness probe (check ANHUR_API_KEY / tenant)", auth_error)
+            except AnhurError as probe_error:
+                if probe_error.status_code is None:
+                    fail_loud("readiness probe", probe_error)
+                hits = []
+            running_total += len(hits)
+        return running_total
+
+    # Junior Tip [why sustained stability, and why it is still a heuristic]:
+    # indexing advances in steps, so the probe count plateaus transiently. A
+    # gate requiring only TWO equal polls released on such a plateau and scored
+    # 16.7% on a corpus that reaches 100% once settled — a partial index
+    # deflates the number just as dishonestly as an empty one, only less
+    # visibly. Requiring several consecutive equal polls survives the plateaus.
+    # It remains a heuristic: the server exposes no "indexing complete" signal,
+    # and hit-count probing cannot distinguish "still indexing" from "genuinely
+    # poor retrieval". Raise RB_READY_STABLE_POLLS on slower deployments.
+    required_stable_polls = int(os.environ.get("RB_READY_STABLE_POLLS", "3") or "3")
+    memory = open_memory()
+    await memory.connect()
+    started_at = time.time()
+    previous_total = -1
+    stable_polls = 0
+    announced = False
+    try:
+        while time.time() - started_at < timeout_s:
+            current_total = await probe_total(memory)
+            if current_total > 0 and current_total == previous_total:
+                stable_polls += 1
+                if stable_polls >= required_stable_polls:
+                    if announced:
+                        print("  corpus settled after ~%ds (%d hits stable over %d polls)"
+                              % (int(time.time() - started_at), current_total, stable_polls))
+                    return
+            else:
+                stable_polls = 0
+            if not announced:
+                print("  waiting for the corpus to settle "
+                      "(ingest returns before indexing completes)...", flush=True)
+                announced = True
+            previous_total = current_total
+            await asyncio.sleep(poll_interval_s)
+    finally:
+        await memory.close()
+    fail_loud(
+        "readiness wait",
+        RuntimeError(
+            "the corpus did not settle within %ds (last probe total: %d hits). Either "
+            "ingest did not land in this tenant, or indexing is stuck. Scoring now would "
+            "report a deflated recall that says nothing about retrieval quality."
+            % (int(timeout_s), max(previous_total, 0))
+        ),
+    )
+
+
 async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
     """recall@k by session UUID over the pooled corpus, through the SDK.
 
@@ -275,11 +415,13 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
     rbench.py timings are raw REST; report the two separately, never merged.
     """
     gold: Dict[str, Any] = json.load(open(GOLD_PATH))
+    await wait_until_searchable(gold)
     sleep_ms = int(os.environ.get("RB_MEASURE_SLEEP_MS", "0") or "0")
     search_attempts = int(os.environ.get("RB_SEARCH_RETRIES", "3") or "3")
     hits_at_1 = hits_at_5 = hits_at_10 = questions_done = transient_failures = 0
     hits_by_type: Dict[str, List[int]] = {}
     latencies: List[float] = []
+    per_question: List[Dict[str, Any]] = []
     memory = open_memory()
     await memory.connect()
     for question_id, gold_entry in gold.items():
@@ -329,6 +471,22 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
         type_counter = hits_by_type.setdefault(gold_entry["type"], [0, 0])
         type_counter[0] += 1
         type_counter[1] += bool(any(u in relevant_uuids for u in result_uuids[:5]))
+        # Per-question detail makes two runs diffable: an aggregate that moved
+        # is a question that moved, and without this you cannot tell which.
+        per_question.append({
+            "question_id": question_id,
+            "type": gold_entry["type"],
+            "hit_at_1": bool(result_uuids[:1] and result_uuids[0] in relevant_uuids),
+            "hit_at_5": bool(any(u in relevant_uuids for u in result_uuids[:5])),
+            "hit_at_10": bool(any(u in relevant_uuids for u in result_uuids[:10])),
+            "rank_of_first_hit": next(
+                (position + 1 for position, uuid in enumerate(result_uuids) if uuid in relevant_uuids),
+                None,
+            ),
+            "returned": len(result_uuids),
+            "latency_s": round(latencies[-1], 4),
+            "search_failed": not search_succeeded,
+        })
         if questions_done == 1 or questions_done % 10 == 0 or questions_done == len(gold):
             print("  progress %d/%d recall@5_so_far=%.1f%% last_lat=%.2fs" % (
                 questions_done, len(gold), 100 * hits_at_5 / questions_done, latencies[-1]), flush=True)
@@ -350,8 +508,26 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
         print("\n  WARNING: %d/%d questions failed after retries (transient errors)."
               % (transient_failures, questions_done))
         print("  These count as misses and DEFLATE recall — do not report this run.")
-    return {"tag": tag, "n": questions_done, "mode": mode, "p50": p50, "p95": p95,
-            "transient_failures": transient_failures}
+    result: Dict[str, Any] = {
+        "tag": tag,
+        "n": questions_done,
+        "mode": mode,
+        "recall_at_1": round(100 * hits_at_1 / questions_done, 2),
+        "recall_at_5": round(100 * hits_at_5 / questions_done, 2),
+        "recall_at_10": round(100 * hits_at_10 / questions_done, 2),
+        "latency_p50_s": round(p50, 4),
+        "latency_p95_s": round(p95, 4),
+        "by_type": {
+            type_name: {"asked": asked, "hit_at_5": hit, "recall_at_5": round(100 * hit / asked, 2)}
+            for type_name, (asked, hit) in sorted(hits_by_type.items())
+        },
+        "transient_failures": transient_failures,
+        "usable": transient_failures == 0,
+    }
+    saved_to = save_results(result, per_question)
+    if saved_to:
+        print("\n  results written to %s" % saved_to)
+    return result
 
 
 if __name__ == "__main__":

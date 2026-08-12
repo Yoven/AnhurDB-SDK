@@ -125,6 +125,34 @@ numbers are not comparable to anything. Use a fresh, empty tenant for every
 measured run, and treat "I re-ran ingest to be safe" as a reason to discard the
 result.
 
+### Results are written to disk
+
+Each scored run writes `results/<tag>-<mode>.json` containing the aggregate
+recall and latency, a per-question breakdown (including the rank of the first
+correct hit), the endpoint and tenant, the corpus checksum, and the run
+configuration. Per-question detail is what makes two runs diffable: an
+aggregate that moved is a question that moved, and without the detail you
+cannot tell which. Set `RB_RESULTS_DIR=""` to disable.
+
+The API key is never recorded. The endpoint is, because a result is
+uninterpretable without knowing what produced it.
+
+### Ingest completes before the corpus is searchable
+
+Ingestion returns before indexing finishes. Measured on a clean instance, a
+scoring run started immediately after a successful ingest returned **zero
+results for every question** — a 0.0% that says nothing about retrieval.
+
+`rbench_sdk.py` therefore probes a few known questions and refuses to score
+until the hit count stops changing across `RB_READY_STABLE_POLLS` consecutive
+polls (default 3, five seconds apart). Raise it on slower deployments.
+
+This is a heuristic, and we would rather say so than imply precision: the
+server exposes no "indexing complete" signal, and hit-count probing cannot by
+itself distinguish "still indexing" from "genuinely poor retrieval". The gate
+exists to stop a fast operator from publishing a zero, not to certify that
+indexing has finished.
+
 ### If a run reports transient failures, throw it away
 
 `rbench_sdk.py` prints a warning when any question failed after exhausting

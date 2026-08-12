@@ -5,3 +5,7 @@ __pycache__/
 # corpus is NOT redistributed — download from the official release
 longmemeval_oracle.json
 rbench_gold.json
+
+# Scored runs are meant to be committed alongside the claims they support,
+# so results/ is NOT ignored. Only local scratch is.
+*.pyc
