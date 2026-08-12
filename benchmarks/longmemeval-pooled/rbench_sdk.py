@@ -327,17 +327,17 @@ async def ingest() -> None:
 async def wait_until_searchable(gold: Dict[str, Any], probe_count: int = 3) -> None:
     """Block until the ingested corpus is actually retrievable, or abort.
 
-    Junior Tip [the 0% trap]: ingestion returns before the corpus is indexed.
-    Measured on a clean instance, a scoring run started immediately after a
-    successful ingest reported 0.0% recall with zero results returned; the same
-    run twenty seconds later reported 100%. Neither number is a retrieval
-    result — the first is "you asked too early".
+    Junior Tip [a guard, not a diagnosis]: fresh records ARE retrievable
+    immediately — a single record inserted and queried in the same breath comes
+    back at t+0s on both the lexical and hybrid paths, with no embedding
+    present. This gate is not compensating for a write-path indexing lag.
 
-    A benchmark that reports the first number has silently converted a timing
-    detail into an engine verdict, which is precisely the failure this project
-    exists to prevent. So we probe a few known-good questions and refuse to
-    score until the corpus answers, rather than letting a fast operator publish
-    a zero.
+    It exists because a scoring run was once observed returning zero results
+    for every question right after a bulk ingest, on a corpus that answered
+    later. The cause was never isolated, so this is a defensive guard, not a
+    finding: it costs a few seconds and prevents a run that is measuring
+    nothing from being written out as a result. Do not cite it as evidence
+    about the engine.
     """
     timeout_s = float(os.environ.get("RB_READY_TIMEOUT_S", "300") or "300")
     poll_interval_s = float(os.environ.get("RB_READY_POLL_S", "5") or "5")

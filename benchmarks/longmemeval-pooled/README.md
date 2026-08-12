@@ -137,21 +137,26 @@ cannot tell which. Set `RB_RESULTS_DIR=""` to disable.
 The API key is never recorded. The endpoint is, because a result is
 uninterpretable without knowing what produced it.
 
-### Ingest completes before the corpus is searchable
+### The readiness gate — what it is, and what it is not for
 
-Ingestion returns before indexing finishes. Measured on a clean instance, a
-scoring run started immediately after a successful ingest returned **zero
-results for every question** — a 0.0% that says nothing about retrieval.
+Before scoring, `rbench_sdk.py` probes a few known questions and waits until
+the hit count stops changing across `RB_READY_STABLE_POLLS` consecutive polls
+(default 3, five seconds apart). Set it to 1 to effectively skip the wait.
 
-`rbench_sdk.py` therefore probes a few known questions and refuses to score
-until the hit count stops changing across `RB_READY_STABLE_POLLS` consecutive
-polls (default 3, five seconds apart). Raise it on slower deployments.
+**Be precise about why this exists.** Fresh records are retrievable
+immediately. On a clean instance, a single record inserted and queried in the
+same breath is returned at t+0s by both the lexical and the hybrid path, with
+no embedding present — the model-free legs (full-text and content fingerprints)
+carry retrieval while embeddings are still being computed, which is what they
+are designed to do. This gate is **not** compensating for a write-path
+indexing lag.
 
-This is a heuristic, and we would rather say so than imply precision: the
-server exposes no "indexing complete" signal, and hit-count probing cannot by
-itself distinguish "still indexing" from "genuinely poor retrieval". The gate
-exists to stop a fast operator from publishing a zero, not to certify that
-indexing has finished.
+What we did observe, once, is a scoring run returning zero results for every
+question right after a bulk ingest, where the same corpus answered later. We
+could not isolate the cause, and we will not dress a guess up as a finding. The
+gate is therefore a **defensive guard**: it costs a few seconds and stops a run
+that is measuring nothing from being written out as a result. It is not
+evidence about the engine and should not be cited as such.
 
 ### If a run reports transient failures, throw it away
 
