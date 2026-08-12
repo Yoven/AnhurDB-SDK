@@ -1,0 +1,9 @@
+# Python >= 3.11
+#
+# rbench.py (frozen REST harness) needs only:
+requests>=2.31,<3
+
+# rbench_sdk.py (recommended path) additionally needs the official SDK.
+# Install from PyPI once published, or from this repository:
+#   pip install -e ../../v2/python
+anhurdb>=2.0

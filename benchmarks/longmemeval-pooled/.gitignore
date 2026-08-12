@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+# corpus is NOT redistributed — download from the official release
+longmemeval_oracle.json
+rbench_gold.json
