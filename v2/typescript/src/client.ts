@@ -195,6 +195,8 @@ export class HttpClient {
           `Failed to connect to AnhurDB: request timeout (${
             REQUEST_TIMEOUT_MS / 1000
           }s)`,
+          undefined,
+          "timeout",
         );
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -330,6 +332,8 @@ export class HttpClient {
           `Failed to connect to AnhurDB: request timeout (${
             REQUEST_TIMEOUT_MS / 1000
           }s)`,
+          undefined,
+          "timeout",
         );
       }
       const message = err instanceof Error ? err.message : String(err);

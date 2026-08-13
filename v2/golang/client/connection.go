@@ -174,7 +174,7 @@ func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, ErrConnectionFail
+		return nil, newTransportError(req.Method+" "+path, err)
 	}
 
 	return c.handleResponse(resp)
@@ -186,7 +186,6 @@ func (c *HTTPConnection) Post(ctx context.Context, path string, body interface{}
 }
 
 // PostMultipart sends a multipart/form-data POST (file upload).
-//
 func (c *HTTPConnection) PostMultipart(
 	ctx context.Context,
 	path string,
@@ -222,7 +221,7 @@ func (c *HTTPConnection) PostMultipart(
 
 	resp, doErr := c.HTTPClient.Do(req)
 	if doErr != nil {
-		return nil, ErrConnectionFail
+		return nil, newTransportError(req.Method+" "+path, doErr)
 	}
 	return c.handleResponse(resp)
 }
@@ -252,7 +251,7 @@ func (c *HTTPConnection) post(ctx context.Context, path string, body interface{}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, ErrConnectionFail
+		return nil, newTransportError(req.Method+" "+path, err)
 	}
 
 	return c.handleResponse(resp)
@@ -278,7 +277,7 @@ func (c *HTTPConnection) Patch(ctx context.Context, path string, body interface{
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, ErrConnectionFail
+		return nil, newTransportError(req.Method+" "+path, err)
 	}
 
 	return c.handleResponse(resp)
@@ -317,7 +316,7 @@ func (c *HTTPConnection) DeleteWithParams(ctx context.Context, path string, para
 
 	resp, doErr := c.HTTPClient.Do(req)
 	if doErr != nil {
-		return nil, ErrConnectionFail
+		return nil, newTransportError(req.Method+" "+path, doErr)
 	}
 
 	return c.handleResponse(resp)

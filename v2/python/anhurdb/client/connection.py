@@ -20,6 +20,7 @@ Security hardening:
     REST and multipart paths.
   - HTTP 429 (Rate Limited) raises ``AnhurError`` so callers can retry."""
 
+import asyncio
 import aiohttp
 import json
 import re
@@ -368,11 +369,11 @@ class HTTPConnection:
                 elif response.status == 404:
                     raise AnhurQueryError(f"Resource not found (HTTP 404): {path}")
                 elif response.status == 409:
-                    raise AnhurQueryError(f"Conflict (HTTP 409): {body_text[:500]}")
+                    raise AnhurQueryError(f"Conflict (HTTP 409): {body_text[:500]}", status_code=409)
                 elif response.status == 415:
-                    raise AnhurQueryError(f"Unsupported media type (HTTP 415): {body_text[:500]}")
+                    raise AnhurQueryError(f"Unsupported media type (HTTP 415): {body_text[:500]}", status_code=415)
                 elif response.status == 429:
-                    raise AnhurError(f"Rate limited (HTTP 429): {body_text[:200]}")
+                    raise AnhurError(f"Rate limited (HTTP 429): {body_text[:200]}", status_code=429)
                 elif response.status in (301, 302, 303, 307, 308):
                     raise AnhurError(
                         f"Server returned redirect (HTTP {response.status}). "
@@ -380,7 +381,7 @@ class HTTPConnection:
                         status_code=response.status,
                     )
                 elif response.status >= 500:
-                    raise AnhurError(f"Server error (HTTP {response.status}): {body_text[:500]}")
+                    raise AnhurError(f"Server error (HTTP {response.status}): {body_text[:500]}", status_code=response.status)
 
                 if not body_text:
                     return {}
@@ -512,11 +513,24 @@ class HTTPConnection:
                         return body_text
                     return {"message": body_text[:1000]}
 
+        except asyncio.TimeoutError as exc:
+            # Junior Tip [MUST come before ClientError, 2026-08-13]:
+            # asyncio.TimeoutError is NOT a subclass of aiohttp.ClientError, so
+            # aiohttp's total-timeout escaped this handler entirely and reached
+            # callers raw — with str(exc) == '' and no status. A benchmark run
+            # aborted on exactly that empty error. On a write, a timeout means
+            # the server may or may not have committed; the SDK never retries
+            # writes for you.
+            raise AnhurConnectionError(
+                "request timed out (the server may still have processed it)",
+                kind=AnhurError.KIND_TIMEOUT,
+            ) from exc
         except aiohttp.ClientError as exc:
             # SECURITY: Do not include the full URL in error messages
             # as it could be logged and contains the server address.
             raise AnhurConnectionError(
-                f"Failed to connect to AnhurDB: {type(exc).__name__}"
+                f"Failed to connect to AnhurDB: {type(exc).__name__}",
+                kind=AnhurError.KIND_TRANSPORT,
             ) from exc
 
     # -- MCP tunnel (legacy/alternative transport) --------------------------
