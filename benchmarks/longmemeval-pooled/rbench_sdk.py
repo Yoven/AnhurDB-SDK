@@ -419,6 +419,7 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
     sleep_ms = int(os.environ.get("RB_MEASURE_SLEEP_MS", "0") or "0")
     search_attempts = int(os.environ.get("RB_SEARCH_RETRIES", "3") or "3")
     hits_at_1 = hits_at_5 = hits_at_10 = questions_done = transient_failures = 0
+    degraded_queries = 0
     hits_by_type: Dict[str, List[int]] = {}
     latencies: List[float] = []
     per_question: List[Dict[str, Any]] = []
@@ -435,9 +436,19 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
             try:
                 # ["*"] = every session in scope — the pooled protocol
                 # (each query searches the whole corpus, with interference).
-                search_hits = await memory.search(
+                # Junior Tip [medir sem olhar a meta e medir outra coisa,
+                # 2026-08-13]: o servidor informa se a perna densa caiu
+                # (retrieval.degraded / semantic_used). Ignorar isso mistura
+                # consultas hibridas com consultas que viraram lexico puro na
+                # MESMA execucao — foi assim que duas rodadas identicas deram
+                # 81.0% e 77.0% de recall@5 sem explicacao aparente.
+                response = await memory.search_with_retrieval(
                     gold_entry["question"], ["*"], limit=10, skip_query_embed=lexical_only,
                 )
+                search_hits = response.results
+                retrieval = getattr(response, "retrieval", None)
+                if retrieval is not None and getattr(retrieval, "degraded", False):
+                    degraded_queries += 1
                 result_uuids = [hit.record.uuid for hit in search_hits]
                 search_succeeded = True
                 break
@@ -501,6 +512,12 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
         100 * hits_at_10 / questions_done, p50, p95))
     for type_name, (asked, hit) in sorted(hits_by_type.items()):
         print("    %-28s @5=%.0f%% (%d/%d)" % (type_name, 100 * hit / asked, hit, asked))
+    if degraded_queries and not lexical_only:
+        # Nao e aviso cosmetico: cada consulta degradada foi respondida SEM o
+        # vetor, entao a run mede uma mistura de dois sistemas diferentes.
+        print("\n  WARNING: %d/%d queries ran DEGRADED (dense leg dropped)."
+              % (degraded_queries, questions_done))
+        print("  This run mixes hybrid and lexical-only answers — not a clean measurement.")
     if transient_failures:
         # Junior Tip [never publish a degraded run as a result]: these questions
         # scored zero because the request never completed, not because retrieval
@@ -522,7 +539,8 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
             for type_name, (asked, hit) in sorted(hits_by_type.items())
         },
         "transient_failures": transient_failures,
-        "usable": transient_failures == 0,
+        "degraded_queries": degraded_queries,
+        "usable": transient_failures == 0 and (lexical_only or degraded_queries == 0),
     }
     saved_to = save_results(result, per_question)
     if saved_to:
