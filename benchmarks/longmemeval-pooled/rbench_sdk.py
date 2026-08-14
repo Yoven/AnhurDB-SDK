@@ -407,7 +407,7 @@ async def wait_until_searchable(gold: Dict[str, Any], probe_count: int = 3) -> N
     )
 
 
-async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
+async def score_run(tag: str, lexical_only: bool, skip_cognitive: bool = False) -> Dict[str, Any]:
     """recall@k by session UUID over the pooled corpus, through the SDK.
 
     Junior Tip [what latency means here]: timings include the SDK itself
@@ -443,7 +443,9 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
                 # MESMA execucao — foi assim que duas rodadas identicas deram
                 # 81.0% e 77.0% de recall@5 sem explicacao aparente.
                 response = await memory.search_with_retrieval(
-                    gold_entry["question"], ["*"], limit=10, skip_query_embed=lexical_only,
+                    gold_entry["question"], ["*"], limit=10,
+                    skip_query_embed=lexical_only,
+                    skip_cognitive_rerank=skip_cognitive,
                 )
                 search_hits = response.results
                 retrieval = getattr(response, "retrieval", None)
@@ -505,7 +507,10 @@ async def score_run(tag: str, lexical_only: bool) -> Dict[str, Any]:
     latencies.sort()
     p50 = latencies[len(latencies) // 2] if latencies else 0.0
     p95 = latencies[int(len(latencies) * 0.95)] if latencies else 0.0
-    mode = "lexical-only" if lexical_only else "hybrid-server-embed"
+    if lexical_only:
+        mode = "lexical-pure" if skip_cognitive else "lexical-only"
+    else:
+        mode = "hybrid-server-embed"
     print("\n=== RECALL(sdk) [%s] n=%d mode=%s ===" % (tag, questions_done, mode))
     print("  recall@1=%.1f%%  recall@5=%.1f%%  recall@10=%.1f%%  | lat p50=%.2fs p95=%.2fs" % (
         100 * hits_at_1 / questions_done, 100 * hits_at_5 / questions_done,
@@ -555,5 +560,21 @@ if __name__ == "__main__":
         asyncio.run(ingest())
     elif cli_mode == "lexical":
         asyncio.run(score_run(run_tag, lexical_only=True))
+    elif cli_mode == "lexical-pure":
+        # Junior Tip [what "lexical" actually measured — 2026-08-13]: the
+        # `lexical` mode above only skips the query embedding, so the 4-signal
+        # cognitive rerank still reorders the result. It was therefore reporting
+        # lexical PLUS cognitive under the name "lexical". Measured on the pinned
+        # corpus with query "March 15th" — a term present only in content — the
+        # DuckDB leg ranks the right record FIRST and the cognitive rerank pushes
+        # it out of the top five entirely (570,590,584,520,591 with the rerank,
+        # 397,241,178,273,419 without).
+        #
+        # This mode isolates the lexical arm. It is deliberately a NEW mode
+        # rather than a change to `lexical`, because rbench.py is frozen and does
+        # not skip the rerank: changing `lexical` here would silently break the
+        # parity contract between the two harnesses. Compare `lexical` against
+        # rbench.py; use `lexical-pure` to reason about the arm itself.
+        asyncio.run(score_run(run_tag, lexical_only=True, skip_cognitive=True))
     else:
         asyncio.run(score_run(run_tag, lexical_only=False))
