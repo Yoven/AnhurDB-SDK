@@ -57,9 +57,9 @@ const DefaultCloudURL = "https://anhurdb.yoven.ai"
 // Memory is safe for concurrent use. The underlying http.Client handles
 // connection pooling and is goroutine-safe.
 type Memory struct {
-	conn            *HTTPConnection
-	containerTag    string
-	sessionUUID     string
+	conn         *HTTPConnection
+	containerTag string
+	sessionUUID  string
 	// sessionRegistered is true only after CreateSession/OpenSession succeeds.
 	// A local sessionUUID alone must not be sent on writes.
 	sessionRegistered bool
@@ -133,7 +133,6 @@ func randomHex(n int) string {
 }
 
 // utcTimestamp returns the current UTC time as "YYYYMMDD-HHMMSS".
-//
 func utcTimestamp() string {
 	return time.Now().UTC().Format("20060102-150405")
 }
@@ -143,7 +142,6 @@ func utcTimestamp() string {
 //	<container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 hex random>
 //
 // e.g. "mem-3f9a1b2c4d5e-20260703-143025-a1b2c3".
-//
 func deriveSessionUUID(containerTag string) string {
 	return containerTag + "-" + utcTimestamp() + "-" + randomHex(6)
 }
@@ -156,7 +154,6 @@ func deriveSessionUUID(containerTag string) string {
 // envelope `{"container_tag":"<tag>"}`. Used by every record-create code path
 // so the `metadata` column always holds a valid JSON object — not the raw
 // container_tag string.
-//
 func buildMetadataJSON(containerTag string) string {
 	if containerTag == "" {
 		return "{}"
@@ -173,7 +170,6 @@ func buildMetadataJSON(containerTag string) string {
 // buildMetadataJSONWith merges caller-supplied metadata keys on top of the
 // canonical {"container_tag": tag} envelope and returns the JSON string for the
 // `metadata` column.
-//
 func buildMetadataJSONWith(containerTag string, extra map[string]interface{}) string {
 	if len(extra) == 0 {
 		return buildMetadataJSON(containerTag)
@@ -211,7 +207,6 @@ func buildMetadataJSONWith(containerTag string, extra map[string]interface{}) st
 //	mem.Add(ctx, "plain text") // ingest
 //	mem.Add(ctx, "fact", client.WithMode("regular")) // records path
 //	mem.Add(ctx, "fact", client.WithScore(9), client.WithType("fact")) // records path
-//
 func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -263,7 +258,6 @@ func (m *Memory) Add(ctx context.Context, text string, opts ...AddOption) (*AddR
 // resolveWriteSessionID returns the session uuid for a write.
 // Explicit WithSessionID wins (server validates registration). Otherwise the
 // client session must already be registered via CreateSession/OpenSession.
-//
 func (m *Memory) resolveWriteSessionID(cfg *addConfig) (string, error) {
 	if cfg != nil {
 		explicitSessionID := strings.TrimSpace(cfg.sessionID)
@@ -336,7 +330,6 @@ func (m *Memory) CreateInSession(ctx context.Context, text string, sessionUUID s
 // record via PATCH /api/v1/records/append-main-ids. Server-side the operation
 // reads, deduplicates, and writes back — safe to call repeatedly with the
 // same payload (idempotent on the union of existing + supplied IDs).
-//
 func (m *Memory) AppendMainIDs(ctx context.Context, recordID int64, mainIDs []int64) error {
 	if m.conn == nil {
 		return ErrEmptyAPIKey
@@ -381,7 +374,6 @@ func (m *Memory) AppendMainLinks(ctx context.Context, ids []int64, mainIDsToAppe
 // record via PATCH /api/v1/records/append-related-ids. Server-side the operation
 // reads, deduplicates, and writes back — safe to call repeatedly with the same
 // payload (idempotent on the union of existing + supplied IDs).
-//
 func (m *Memory) AppendRelatedIDs(ctx context.Context, recordID int64, relatedIDs []int64) error {
 	if m.conn == nil {
 		return ErrEmptyAPIKey
@@ -403,7 +395,6 @@ func (m *Memory) AppendRelatedIDs(ctx context.Context, recordID int64, relatedID
 // LinkConsolidated sets the consolidate_id column on a batch of child
 // records via PATCH /api/v1/records/consolidate-ids so subsequent queries
 // can navigate child → parent in one column read.
-//
 func (m *Memory) LinkConsolidated(ctx context.Context, ids []int64, consolidateID int64) error {
 	if m.conn == nil {
 		return ErrEmptyAPIKey
@@ -827,7 +818,6 @@ func (m *Memory) Walk(ctx context.Context, startID int64, depth int, opts ...Rea
 // companion WithGoalVector / WithTargetTag) turns it into a goal-directed walk
 // whose nodes come back ordered by proximity to the target. WithMaxCost tunes
 // the cost budget.
-//
 func (m *Memory) WalkSemantic(ctx context.Context, startID int64, depth int, opts ...ReadOption) (*WalkResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -961,7 +951,6 @@ func (m *Memory) GetContext(ctx context.Context, recordID int64, opts ...ReadOpt
 // Records store a summary for search indexing, but the full content may
 // be much larger. This endpoint returns the complete decrypted file
 // bytes for file records, or the inline content for episodic records.
-//
 func (m *Memory) ReadContent(ctx context.Context, recordID int64, opts ...ReadOption) (string, error) {
 	if m.conn == nil {
 		return "", ErrEmptyAPIKey
@@ -981,7 +970,6 @@ func (m *Memory) ReadContent(ctx context.Context, recordID int64, opts ...ReadOp
 //
 // GET /api/v1/recent?limit=N hits the server's dedicated ListRecent endpoint,
 // which returns records ordered by creation time (newest first).
-//
 func (m *Memory) Recent(ctx context.Context, limit int, opts ...ReadOption) ([]models.Record, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -1052,7 +1040,6 @@ func firstJSONToken(raw []byte) byte {
 
 // truncateSummary returns text capped at 200 Unicode code points (runes) with an
 // ellipsis when truncated.
-//
 func truncateSummary(text string) string {
 	const maxSummaryRunes = 200
 	runes := []rune(text)
@@ -1107,14 +1094,48 @@ func (m *Memory) Get(ctx context.Context, recordID int64) (map[string]interface{
 // Update partially updates a record by ID.
 //
 // The updates map can contain any subset of record fields
-// (e.g. {"summary": "new summary", "score": 8}).
+// (e.g. {"summary": "new summary", "status": "archived"}).
+//
+// It REFUSES a "score" key. PATCH /api/v1/records/{id} has no score field, so
+// the server answers 200 and drops it — the same shape as an earlier defect
+// with "archived". Silently succeeding while writing nothing is worse than an
+// error, so this returns one and names SetScore. Measured 2026-08-15.
 func (m *Memory) Update(ctx context.Context, recordID int64, updates map[string]interface{}) error {
 	if m.conn == nil {
 		return ErrEmptyAPIKey
 	}
+	if _, hasScore := updates["score"]; hasScore {
+		return fmt.Errorf("Update: cannot change score — PATCH /api/v1/records/{id} has no score " +
+			"field and drops the key while answering 200; use SetScore(ctx, recordID, score)")
+	}
 
 	path := fmt.Sprintf("/api/v1/records/%d", recordID)
 	_, err := m.conn.Patch(ctx, path, updates)
+	return err
+}
+
+// SetScore sets a record's importance score (1-10) durably.
+//
+// Update cannot do this — see its comment. This posts to
+// /api/v1/records/set-score, which dispatches a replicated command and
+// invalidates the read cache.
+//
+// Junior Tip [a correção não aparece na hora]: o score alimenta o termo de
+// valor do peso cognitivo, e o peso escolhe a banda de fidelidade do embedding.
+// A mudança só chega ao ranking quando a varredura de manutenção reequilibrar o
+// registro — medir logo depois de escrever mostra o estado antigo.
+func (m *Memory) SetScore(ctx context.Context, recordID int64, score int) error {
+	if m.conn == nil {
+		return ErrEmptyAPIKey
+	}
+	if score < 1 || score > 10 {
+		return fmt.Errorf("SetScore: score must be between 1 and 10, got %d", score)
+	}
+	payload := map[string]interface{}{
+		"ids":   []int64{recordID},
+		"score": score,
+	}
+	_, err := m.conn.Post(ctx, "/api/v1/records/set-score", payload)
 	return err
 }
 
@@ -1304,7 +1325,6 @@ func (m *Memory) UploadStatus(ctx context.Context, uploadID int64, opts ...ReadO
 //	}
 //
 // limit is server-clamped to [1, 500]; offset is clamped to >= 0.
-//
 func (m *Memory) ListEntities(ctx context.Context, limit, offset int, opts ...ReadOption) (*EntitiesPage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -1578,7 +1598,6 @@ func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string, opt
 // Junior Tip [parity with Python/TS/MCP]: omit WithCreateSessionID → server
 // generates a new UUID (empty JSON body). To register a caller-chosen id:
 // NewSession() then CreateSession(ctx, WithCreateSessionID(m.SessionID())).
-//
 func (m *Memory) CreateSession(ctx context.Context, opts ...CreateSessionOption) (string, error) {
 	if m.conn == nil {
 		return "", ErrEmptyAPIKey
@@ -1624,7 +1643,6 @@ func (m *Memory) CreateSession(ctx context.Context, opts ...CreateSessionOption)
 
 // OpenSession generates a fresh local session id and registers it (Python open_session).
 // Equivalent to NewSession() then CreateSession(ctx, WithCreateSessionID(...)).
-//
 func (m *Memory) OpenSession(ctx context.Context, opts ...CreateSessionOption) (string, error) {
 	localSessionID := m.NewSession()
 	combinedOpts := append([]CreateSessionOption{WithCreateSessionID(localSessionID)}, opts...)
@@ -1635,7 +1653,6 @@ func (m *Memory) OpenSession(ctx context.Context, opts ...CreateSessionOption) (
 // This does NOT register the session on the server — call CreateSession before
 // Add on session-first deployments. Returns the new local id (parity with
 // Python new_session / TypeScript newSession).
-//
 func (m *Memory) NewSession() string {
 	m.sessionUUID = deriveSessionUUID(m.containerTag)
 	m.sessionRegistered = false

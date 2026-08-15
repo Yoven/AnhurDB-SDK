@@ -149,7 +149,8 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
 | `read_content(record_id)` | Full content payload of a record | GET /api/v1/records/{id}/content |
-| `update(record_id, ...)` | Modify record fields | PATCH /api/v1/records/{id} |
+| `update(record_id, ...)` | Modify record fields — **raises on `score`** (see below) | PATCH /api/v1/records/{id} |
+| `set_score(record_id, score)` | Set importance 1-10 durably | POST /api/v1/records/set-score |
 | `delete(record_id)` | **Soft-delete** — archives the record (`archived=1`, `status='deleted'`), hidden from reads, not erased | DELETE /api/v1/records/{id} |
 
 ### Batch Operations
@@ -263,7 +264,8 @@ async with Memory(api_key="anhur_xxx") as mem:
     print(mem.session_id, mem.container_tag)
 
     # Mutate
-    await mem.update(42, summary="Updated summary", score=8)
+    await mem.update(42, summary="Updated summary")
+    await mem.set_score(42, 8)  # score NAO passa pelo update — ver nota abaixo
     await mem.delete(42)
 
     # AST query (QueryBuilder)
@@ -481,6 +483,34 @@ AnhurDB accepts 13 record types (`server/schema/generated_schema.go`, generated 
 | `file` | Uploaded document root | (from file upload endpoint) |
 | `router` | Top of the aggregation pyramid | (auto-created) |
 
+### The two edge axes: `related_ids` and `main_ids`
+
+Records are linked on two axes, kept in separate columns so a query can ask for
+one without the other.
+
+`main_ids` is **vertical and points one layer up**:
+
+```
+satellite (fact/decision/…)  --main_ids-->  consolidated
+consolidated                 --main_ids-->  hub
+hub                          --main_ids-->  router
+```
+
+`related_ids` is **horizontal**: peers at the same level, plus — on an
+aggregation node — its membership roster. A hub lists its member consolidated
+records in `related_ids`; that is the one place a horizontal edge set names the
+layer below it.
+
+So an aggregation edge is written from **both ends, under different names**:
+the consolidated record names its hub in `main_ids` (so a reader holding a
+summary can climb), and the hub names its members in `related_ids` (so listing
+a theme is a field read, not a reverse scan).
+
+One relationship is deliberately *not* an edge: which records a summary
+covers. Conversational turns never receive the child backlink — the chat spine
+must not hang off a summary — so coverage is tracked as declared source ids in
+the consolidated record's metadata, not in either edge column.
+
 `file` and `router` are written by the platform (upload endpoint / cognitive agents).
 The MCP write tools (`create_memory`, `update_memory`) expose only the 11 remaining
 types; the MCP read tools (`search`, `list_records`) accept all 13 as a filter.
@@ -619,3 +649,19 @@ REST API kept its shape.
 - [ControlPlane](https://anhur.yoven.ai/app) — Create API keys, manage projects
 - [Open Beta Docs](https://anhur.yoven.ai) — Product docs and SDK guides
 - [GitHub](https://github.com/Yoven/AnhurDB-SDK) — Source code, issues, contributions
+
+### Score is not writable through `update`
+
+`PATCH /api/v1/records/{id}` has no `score` field. It answers **200 and drops
+the key** — so `update(id, score=8)` used to report success and change nothing.
+Measured 2026-08-15; the same shape as an earlier defect with `archived`.
+
+Use `set_score` / `SetScore` / `setScore`, which posts to
+`POST /api/v1/records/set-score` — a replicated command that also invalidates
+the read cache. `update` now **raises** if given `score` rather than dropping
+it, because a silent no-op is worse than an error.
+
+Note that `add`/`create` **can** pin a score at write time; only changing it
+afterwards needs the dedicated route. And a corrected score reaches ranking on
+the next maintenance pass, not instantly: it feeds the value term of the
+cognitive weight, which selects the record's embedding fidelity band.

@@ -181,8 +181,16 @@ self-hosted three-node cluster.
 
 | Mode | recall@1 | recall@5 | recall@10 | p50 | p95 |
 |---|---|---|---|---|---|
-| Hybrid (dense + lexical, fused + reranked) | 43.5% | 59.5% | 64.0% | 0.21 s | 0.61 s |
-| Lexical only | 37.5% | 51.5% | 63.5% | 0.20 s | 0.58 s |
+| Hybrid (dense + lexical, fused + cognitive rank) | 43.5% | 59.5% | 64.0% | 0.21 s | 0.61 s |
+| Lexical arm **plus the cognitive rank** | 37.5% | 51.5% | 63.5% | 0.20 s | 0.58 s |
+
+**The second row's old label was wrong.** It read "Lexical only", but the
+`lexical` mode suppresses the dense arm and leaves the cognitive rank running,
+so the row measured two things at once. Isolating the arm needs `lexical-pure`,
+a mode added 2026-08-14 that also passes `skip_cognitive_rerank`. On a later
+corpus the distinction was worth 39 points of recall@1, so the mislabel is not
+cosmetic. Re-run all three (`recall`, `lexical`, `lexical-pure`) before quoting
+any of them.
 
 Per category (hybrid, recall@5): temporal-reasoning **88%**,
 single-session-assistant 76%, multi-session 68%, knowledge-update 44%,
@@ -194,6 +202,14 @@ The dense leg's largest contribution is knowledge-update, which goes from 3% to
 These figures are a **dated measurement, not a current claim.** The engine has
 continued to change. Any later number must come from re-running this harness,
 never from extrapolating these.
+
+Two changes since this run move these numbers directly, which is why they are
+not refreshed in place here — a table that mixes engine versions is worse than
+a dated one. The fusion normaliser divided by a constant two legs, so any
+query answered by a single arm (every lexical row above) had its relevance term
+halved against the fixed priors it competes with; and the connectivity term of
+the cognitive weight counted one edge set, which under-weighted every
+summary-type record. Both were corrected 2026-08-15.
 
 <!-- TODO(dono): preencher antes de publicar o repo
      - versão/tag do engine correspondente ao run (o commit interno 0fbeaae

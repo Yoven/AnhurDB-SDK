@@ -590,10 +590,53 @@ class Memory:
             **fields:  Keyword arguments for fields to update
                        (e.g. ``summary="new"``, ``status="archived"``).
 
+        Raises:
+            ValueError: if ``score`` is among the fields — use
+                :meth:`set_score`, which reaches the endpoint that
+                actually persists it.
+
         Example::
 
-            await mem.update(42, summary="Updated summary", score=8)"""
+            await mem.update(42, summary="Updated summary")
+            await mem.set_score(42, 8)"""
+        if "score" in fields:
+            raise ValueError(
+                "update() cannot change score: PATCH /api/v1/records/{id} has no "
+                "score field and answers 200 while dropping the key. Use "
+                "set_score(record_id, score), which posts to "
+                "/api/v1/records/set-score (a replicated command). Measured "
+                "2026-08-15; this call used to succeed and write nothing."
+            )
         await self._connection.patch(f"/api/v1/records/{record_id}", fields)
+
+    async def set_score(self, record_id: int, score: int) -> None:
+        """Set a record's importance score (1-10) durably.
+
+        ``update(record_id, score=...)`` cannot do this: the PATCH handler has
+        no score field, so it returns success and changes nothing — the same
+        shape as an earlier defect with ``archived``. This method posts to
+        ``/api/v1/records/set-score``, which dispatches a replicated command
+        and invalidates the read cache.
+
+        The score feeds the value term of the cognitive weight, which in turn
+        selects the record's embedding fidelity band — so a correction here
+        propagates to ranking on the next maintenance pass, not instantly.
+
+        Args:
+            record_id: The record ID.
+            score:     Importance, 1-10.
+
+        Raises:
+            ValueError: if ``score`` is outside 1-10.
+
+        Example::
+
+            await mem.set_score(42, 8)"""
+        if score < 1 or score > 10:
+            raise ValueError("score must be between 1 and 10, got %r" % (score,))
+        await self._connection.post(
+            "/api/v1/records/set-score", {"ids": [record_id], "score": score}
+        )
 
     async def delete(self, record_id: int) -> None:
         """Delete a record by ID (hard delete).

@@ -57,6 +57,7 @@ API. This document is the public contract; deviations are bugs.
 | append_main_ids | `AppendMainIDs` / `append_main_ids` / `appendMainIds` | `PATCH /api/v1/records/append-main-ids` |
 | append_main_links | `AppendMainLinks` / `append_main_links` / `appendMainLinks` | `PATCH /api/v1/records/append-main-ids` (batch) |
 | append_related_ids | `AppendRelatedIDs` / `append_related_ids` / `appendRelatedIds` | `PATCH /api/v1/records/append-related-ids` |
+| set_score | `SetScore` / `set_score` / `setScore` | `POST /api/v1/records/set-score` (comando replicado). **Não** existe pelo `update`: o PATCH não tem campo `score` e o descarta respondendo 200 — medido 2026-08-15 |
 | create_session | `CreateSession` / `create_session` / `createSession` | `POST /api/v1/sessions` (required before writes). Omit id → server generates |
 | open_session | `OpenSession` / `open_session` / `openSession` | Local generate + register (`new_session` then `create_session`) |
 | new_session | `NewSession` / `new_session` / `newSession` | Client-side id rotation only — does **not** register; writes fail until create/open_session |

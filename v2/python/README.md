@@ -169,7 +169,8 @@ Memory(
 
 | Method | Description |
 |--------|-------------|
-| `update(record_id, **fields)` | Partial update |
+| `update(record_id, **fields)` | Partial update — **raises on `score`** (see below) |
+| `set_score(record_id, score)` | Set importance 1-10 durably (`POST /records/set-score`) |
 | `delete(record_id)` | **Soft delete** — archives the record (`archived=1`, `status='deleted'`); it disappears from reads but is not erased |
 
 ### Session Management
@@ -314,3 +315,19 @@ async with Memory(api_key="key") as mem:
 ## License
 
 MIT
+
+### Score is not writable through `update`
+
+`PATCH /api/v1/records/{id}` has no `score` field. It answers **200 and drops
+the key** — so `update(id, score=8)` used to report success and change nothing.
+Measured 2026-08-15; the same shape as an earlier defect with `archived`.
+
+Use `set_score` / `SetScore` / `setScore`, which posts to
+`POST /api/v1/records/set-score` — a replicated command that also invalidates
+the read cache. `update` now **raises** if given `score` rather than dropping
+it, because a silent no-op is worse than an error.
+
+Note that `add`/`create` **can** pin a score at write time; only changing it
+afterwards needs the dedicated route. And a corrected score reaches ranking on
+the next maintenance pass, not instantly: it feeds the value term of the
+cognitive weight, which selects the record's embedding fidelity band.

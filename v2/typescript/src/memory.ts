@@ -1222,6 +1222,15 @@ export class Memory {
       `/api/v1/records/${recordId}`);
   }
 
+  /**
+   * Partially update a record.
+   *
+   * `score` is NOT accepted here. `PATCH /api/v1/records/{id}` has no score
+   * field, so the server answers 200 and drops the key — the same shape as an
+   * earlier defect with `archived`. Succeeding silently while writing nothing
+   * is worse than throwing, so this throws and names `setScore`.
+   * Measured 2026-08-15.
+   */
   async update(
     recordId: number,
     fields: Partial<{
@@ -1229,9 +1238,37 @@ export class Memory {
       metadata: string;
       status: string;
       type: string;
-      score: number;
-    }>): Promise<void> {
+    }> & { score?: never }): Promise<void> {
+    if (fields && Object.prototype.hasOwnProperty.call(fields, "score")) {
+      throw new Error(
+        "update: cannot change score — PATCH /api/v1/records/{id} has no score " +
+        "field and drops the key while answering 200; use setScore(recordId, score)");
+    }
     await this.client.patch(`/api/v1/records/${recordId}`, fields);
+  }
+
+  /**
+   * Set a record's importance score (1-10) durably.
+   *
+   * `update` cannot do this — see its note. This posts to
+   * `/api/v1/records/set-score`, which dispatches a replicated command and
+   * invalidates the read cache.
+   *
+   * The score feeds the value term of the cognitive weight, and the weight
+   * selects the record's embedding fidelity band, so the correction reaches
+   * ranking on the next maintenance pass rather than immediately.
+   *
+   * @param recordId - The record ID.
+   * @param score - Importance, 1-10.
+   */
+  async setScore(recordId: number, score: number): Promise<void> {
+    if (recordId <= 0) {
+      throw new Error("setScore: recordId must be > 0");
+    }
+    if (!Number.isInteger(score) || score < 1 || score > 10) {
+      throw new Error(`setScore: score must be an integer between 1 and 10, got ${score}`);
+    }
+    await this.client.post("/api/v1/records/set-score", { ids: [recordId], score });
   }
 
   /**

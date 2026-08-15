@@ -201,7 +201,8 @@ const clusters = await mem.getSessionClusters("session-uuid");
 
 ```typescript
 // Update fields
-await mem.update(42, { summary: "Updated", score: 8, status: "archived" });
+await mem.update(42, { summary: "Updated", status: "archived" });
+await mem.setScore(42, 8); // score NAO passa pelo update — ver nota abaixo
 
 // Hard delete
 await mem.delete(42);
@@ -296,3 +297,19 @@ try {
 ## License
 
 MIT
+
+### Score is not writable through `update`
+
+`PATCH /api/v1/records/{id}` has no `score` field. It answers **200 and drops
+the key** — so `update(id, score=8)` used to report success and change nothing.
+Measured 2026-08-15; the same shape as an earlier defect with `archived`.
+
+Use `set_score` / `SetScore` / `setScore`, which posts to
+`POST /api/v1/records/set-score` — a replicated command that also invalidates
+the read cache. `update` now **raises** if given `score` rather than dropping
+it, because a silent no-op is worse than an error.
+
+Note that `add`/`create` **can** pin a score at write time; only changing it
+afterwards needs the dedicated route. And a corrected score reaches ranking on
+the next maintenance pass, not instantly: it feeds the value term of the
+cognitive weight, which selects the record's embedding fidelity band.
