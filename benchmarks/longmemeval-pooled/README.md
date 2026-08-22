@@ -37,17 +37,18 @@ not its ceiling.
 
 ---
 
-## Two harnesses, two purposes
+## One harness
 
-| File | Path | Use it when |
-|---|---|---|
-| `rbench.py` | raw REST | You want the **exact artifact** that produced the published table. **Frozen — do not edit.** |
-| `rbench_sdk.py` | official Python SDK | You want the **recommended** path: same protocol, exercised through the client surface a customer actually uses. |
+`rbench_sdk.py` is the only harness. It exercises AnhurDB through the official
+Python SDK — the same client surface a customer uses — always letting the
+**server** embed the query (the product path), and expressing the lexical-only
+leg as `skip_query_embed=True`.
 
-Both implement the same measurement contract — identical question sampling,
-identical session UUIDs (`sha256("longmemeval:<qid>:<sid>")`), identical chatty
-split, identical ingest payload, identical scoring. A divergence between them
-is a finding, not noise.
+There used to be a second, REST-speaking harness (`rbench.py`), and the two were
+held to each other by a parity test. It has been retired. What replaced it is
+stricter, not weaker: the measurement contract is now pinned against **committed
+golden values** generated from the exact build that produced the published
+numbers.
 
 That contract is **machine-checked**, offline, with no server or corpus:
 
@@ -55,24 +56,24 @@ That contract is **machine-checked**, offline, with no server or corpus:
 python3 test_parity.py
 ```
 
-It compares the two implementations across sampling, UUID derivation, turn
-chunking, record body, and the exact wire payload the SDK harness builds. Run
-it before trusting any SDK-produced number. The check was itself
-mutation-tested: deliberately breaking the sample size, the UUID salt, the
-summary cut-off, the turn separator, the type ordering, or the ingest weight
-and score each makes it fail.
+It checks question sampling, session UUIDs (`sha256("longmemeval:<qid>:<sid>")`),
+the chatty split, turn chunking, record body, scoring, and the exact wire
+payload the harness builds, against `contract_gold.json`. Run it before trusting
+any number this harness produces. The check was itself mutation-tested:
+deliberately breaking the sample size, the UUID salt, the summary cut-off, the
+turn separator, the type ordering, or the ingest weight and score each makes it
+fail.
 
-They differ in two deliberate ways. `rbench_sdk.py` always lets the **server**
-embed the query (the product path) and expresses the lexical-only leg as
-`skip_query_embed=True`; `rbench.py` additionally carries a lab-only
-client-side embedding mode. And `rbench_sdk.py` **aborts on any non-retryable
-error** rather than letting a failed request be scored as a miss — see below.
+**Regenerating the goldens is a deliberate act.** If this test fails, the
+harness no longer builds the corpus the published numbers came from, and new
+results must not be reported beside them.
 
-### Latency is not comparable between the two
+### What the latency numbers mean
 
-`rbench.py` times raw HTTP. `rbench_sdk.py` times the SDK round trip, including
-parsing, retries and connection pooling — the latency a client experiences.
-Report them separately. Never average them.
+`rbench_sdk.py` times the SDK round trip — parsing, retries and connection
+pooling included — which is the latency a client actually experiences, not raw
+HTTP. Figures measured through a different transport are not comparable to
+these and must never be averaged with them.
 
 ---
 
@@ -174,7 +175,7 @@ normal latency and no error surfaced. Both harnesses now fail loudly instead.
 
 ## Published results
 
-The table in the paper was produced by `rbench.py` on **2026-07-08**, with the
+An earlier table was produced by a since-retired REST harness on **2026-07-08**, with the
 reranker OFF (a measured A/B showed the cognitive rerank alone outperforming
 the cross-encoder stage on this corpus), no GPU on the search path, and a
 self-hosted three-node cluster.

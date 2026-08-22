@@ -1772,9 +1772,30 @@ class Memory:
         Args:
 
         Returns:
-            Dict mapping ``type → count`` across all (non-archived) records."""
+            Dict mapping ``type → count`` across all (non-archived) records.
+
+        Junior Tip [never trust the page size you asked for — 2026-08-20]:
+        this method used to request ``limit=1000``, advance ``offset`` by that
+        same 1000, and stop as soon as a page came back "short". Every one of
+        those three steps assumed the server honours the requested limit. It
+        does not: ``/api/v1/manifest`` clamps to 500 rows in the database layer
+        (``ListAllPaginated``), while the handler computes ``has_more`` as
+        ``len(records) == requested_limit`` — so a request for 1000 returns 500
+        rows AND ``has_more=false``. The first page therefore looked short and
+        final, and **every tenant holding more than 500 records was reported as
+        holding exactly 500**. It is a silent undercount: no error, no warning,
+        a plausible number. It was caught only because two unrelated benchmark
+        tenants both reported exactly 500 — one of which genuinely held 1,503.
+
+        The fix is to stop predicting the server's page size. We advance by the
+        rows we actually received and stop only on a genuinely empty page, so
+        the walk stays correct whatever cap the server applies. It costs one
+        extra round trip per call; an undercount costs a wrong answer. This
+        mirrors the same fix already applied server-side in
+        ``cluster/regression_worker.go`` (page-skip fix, 2026-07-04), where the
+        identical assumption was silently skipping half the graph each cycle."""
         counts: Dict[str, int] = {}
-        page_size = 1000  # server hard cap; minimises round-trips.
+        page_size = 500  # documented server cap; correctness no longer depends on it.
         offset = 0
         while True:
             data = await self._connection.get(
@@ -1787,12 +1808,10 @@ class Memory:
             for record_fields in records:
                 record_type = record_fields.get("type", "") if isinstance(record_fields, dict) else ""
                 counts[record_type] = counts.get(record_type, 0) + 1
-            # ``has_more`` can false-positive on an exactly-full last page, so we
-            # also stop when the page came back short — whichever fires first.
-            has_more = bool(data.get("has_more")) if isinstance(data, dict) else False
-            if not has_more or len(records) < page_size:
-                break
-            offset += page_size
+            # Advance by what the server ACTUALLY returned, never by what we
+            # asked for: the two differ whenever the server clamps, and the gap
+            # is exactly the set of records that would be skipped.
+            offset += len(records)
         return counts
 
     async def recent(

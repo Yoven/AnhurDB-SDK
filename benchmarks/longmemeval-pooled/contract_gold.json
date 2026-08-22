@@ -1,0 +1,206 @@
+{
+ "uuids": {
+  "q1|s1": "d8203508-3550-7866-2425-3545737bb0eb",
+  "q1|": "d6e842f8-2770-8e09-cb49-22aa12a330c0",
+  "q1|0": "8a44b525-47f8-f68f-3776-46a1e310a68c",
+  "abc-123|s1": "c3fd3ff9-b670-7d57-2fea-290463ac00f8",
+  "abc-123|": "61fc3f23-6844-4137-b4d7-8da1662eb2cd",
+  "abc-123|0": "b59da0a9-fab3-fc36-8565-dfb0b6098c68",
+  "unicode-ção|s1": "b254157a-19d1-cd95-f75e-131e37b57a0c",
+  "unicode-ção|": "24400458-a4b8-e754-c24f-5929959d3b07",
+  "unicode-ção|0": "28cad2e9-8d80-4ba2-1d2b-0c4d6b38affa"
+ },
+ "chatty": {
+  "0": false,
+  "1": false,
+  "2": true,
+  "3": false,
+  "4": false,
+  "5": false,
+  "6": false,
+  "7": false,
+  "8": false,
+  "9": false,
+  "10": false,
+  "11": false,
+  "12": false,
+  "13": false,
+  "14": false,
+  "15": false,
+  "16": false,
+  "17": false,
+  "18": false,
+  "19": false
+ },
+ "chunks": {
+  "0|1": [
+   []
+  ],
+  "0|3": [
+   []
+  ],
+  "1|1": [
+   [
+    {
+     "role": "user",
+     "content": "0"
+    }
+   ]
+  ],
+  "1|3": [
+   [
+    {
+     "role": "user",
+     "content": "0"
+    }
+   ]
+  ],
+  "5|1": [
+   [
+    {
+     "role": "user",
+     "content": "0"
+    },
+    {
+     "role": "user",
+     "content": "1"
+    },
+    {
+     "role": "user",
+     "content": "2"
+    },
+    {
+     "role": "user",
+     "content": "3"
+    },
+    {
+     "role": "user",
+     "content": "4"
+    }
+   ]
+  ],
+  "5|3": [
+   [
+    {
+     "role": "user",
+     "content": "0"
+    },
+    {
+     "role": "user",
+     "content": "1"
+    }
+   ],
+   [
+    {
+     "role": "user",
+     "content": "2"
+    },
+    {
+     "role": "user",
+     "content": "3"
+    }
+   ],
+   [
+    {
+     "role": "user",
+     "content": "4"
+    }
+   ]
+  ],
+  "7|1": [
+   [
+    {
+     "role": "user",
+     "content": "0"
+    },
+    {
+     "role": "user",
+     "content": "1"
+    },
+    {
+     "role": "user",
+     "content": "2"
+    },
+    {
+     "role": "user",
+     "content": "3"
+    },
+    {
+     "role": "user",
+     "content": "4"
+    },
+    {
+     "role": "user",
+     "content": "5"
+    },
+    {
+     "role": "user",
+     "content": "6"
+    }
+   ]
+  ],
+  "7|3": [
+   [
+    {
+     "role": "user",
+     "content": "0"
+    },
+    {
+     "role": "user",
+     "content": "1"
+    },
+    {
+     "role": "user",
+     "content": "2"
+    }
+   ],
+   [
+    {
+     "role": "user",
+     "content": "3"
+    },
+    {
+     "role": "user",
+     "content": "4"
+    },
+    {
+     "role": "user",
+     "content": "5"
+    }
+   ],
+   [
+    {
+     "role": "user",
+     "content": "6"
+    }
+   ]
+  ]
+ },
+ "content_2": "[USER]: texto 0 palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra \n\n[ASSISTANT]: texto 1 palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra ",
+ "summary_2": "texto 0 palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra ",
+ "pick_5": [
+  "q2",
+  "q5",
+  "q8",
+  "q11",
+  "q14",
+  "q1",
+  "q4",
+  "q7",
+  "q10",
+  "q13",
+  "q0",
+  "q3",
+  "q6",
+  "q9",
+  "q12"
+ ],
+ "create": {
+  "session_id": "S",
+  "type": "episodic",
+  "weight": 1.0,
+  "score": 0,
+  "summary": "texto 0 palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra ",
+  "content": "[USER]: texto 0 palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra \n\n[ASSISTANT]: texto 1 palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra palavra "
+ }
+}
