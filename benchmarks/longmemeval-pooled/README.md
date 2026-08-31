@@ -31,9 +31,14 @@ searches the entire corpus and competes with every other question's evidence.
 The official LongMemEval protocol isolates each question's haystack. Pooling is
 strictly harder and biases our numbers **downward**.
 
-Ingestion is episodic-only: consolidation, supersession, and decay are **not**
-exercised. The numbers are therefore a conservative floor for the full system,
-not its ceiling.
+Ingestion is episodic-only: the harness writes **nothing but** episodic records,
+and never creates a consolidated, hub or router node itself. That is a statement
+about the *harness*, not about the server — against a live deployment the
+maintenance pipeline keeps running over the pooled corpus, so the state actually
+measured contains derived records the harness did not write (the paper's 200q
+corpus settles at 612 records: 509 episodic, 77 consolidated, 26 hub). Pin and
+report the corpus state next to the number; two runs a day apart are two
+corpora even when the counts match.
 
 ---
 
@@ -109,10 +114,32 @@ export RB_TENANT=lme-pool               # a dedicated, empty tenant
 ## Run
 
 ```bash
+export RB_INGEST_SLEEP_MS=400           # pace between record creates (see below)
+export RB_INGEST_TAG=paper-200q         # names results/<tag>-ingest.json
 python3 rbench_sdk.py ingest            # ~356 sessions, idempotent (deterministic UUIDs)
 python3 rbench_sdk.py recall  run1      # hybrid: dense + lexical, fused and reranked
 python3 rbench_sdk.py lexical run1      # lexical leg alone, for the ablation
 ```
+
+### Build the corpus at a rate the pipeline can absorb
+
+Every record is written by one real `POST /api/v1/records` — the harness never
+batches. But a *serial* writer is still a *burst*: the API acknowledges a record
+once consensus commits it, while embedding, enrichment and the columnar copy are
+produced asynchronously by workers behind a message bus. Unpaced, the harness
+writes at whatever the round trip allows and hands those workers a queue
+thousands deep.
+
+`RB_INGEST_SLEEP_MS` (default `400`) paces the writer. Measured against a local
+stub, the knob is the difference between **14.4 rec/s** (`0`) and **2.3 rec/s**
+(`400`); the ingest manifest records which was used. Set it near the slowest
+downstream consumer — for a deployment that embeds at ~2.6 records/s, `400` is a
+steady state and `0` is a 4× overrun that leaves the corpus still settling when
+the scoring run starts.
+
+`ingest` now writes `results/<RB_INGEST_TAG>-ingest.json`: record counts, error
+count, wall time, achieved rate, pacing, endpoint, tenant and corpus checksum.
+A scored run pins the corpus *input*; this manifest pins how it was *built*.
 
 ### Always ingest into an empty tenant
 

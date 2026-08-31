@@ -32,6 +32,8 @@ Usage:
     export ANHUR_BASE=https://...       # default http://localhost:8000
     export RB_ORACLE=/path/oracle.json  # official LongMemEval release
     export RB_NPER=34                   # paper protocol (n=200)
+    export RB_INGEST_SLEEP_MS=400       # pace between record creates (0 = burst)
+    export RB_INGEST_TAG=paper-200q     # names the ingest manifest
     python3 rbench_sdk.py ingest
     python3 rbench_sdk.py recall  run1  # hybrid (server auto-embed)
     python3 rbench_sdk.py lexical run1  # FTS-only leg
@@ -161,6 +163,21 @@ def oracle_sha256() -> str:
     return digest.hexdigest()
 
 
+def recorded_tenant() -> str:
+    """The tenant to write into an artifact — what was SENT, not what was guessed.
+
+    Junior Tip [do not record a name the client never used]: TENANT_ID is only
+    put on the wire for master keys; a single-tenant key carries its tenant
+    cryptographically and the harness sends no tenant header at all. Recording
+    the unused default ("lme-pool") made every single-tenant run claim a tenant
+    that does not exist on the server, which is worse than recording nothing —
+    a reader cannot tell the run apart from one that really targeted that name.
+    """
+    if SEND_TENANT:
+        return TENANT_ID
+    return "(encoded in the API key; no tenant sent by the client)"
+
+
 def save_results(result: Dict[str, Any], per_question: List[Dict[str, Any]]) -> str:
     """Persist one scored run as JSON, with the context needed to interpret it.
 
@@ -183,7 +200,7 @@ def save_results(result: Dict[str, Any], per_question: List[Dict[str, Any]]) -> 
         "mode": result["mode"],
         "finished_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "endpoint": BASE_URL,
-        "tenant": TENANT_ID,
+        "tenant": recorded_tenant(),
         "corpus": {
             "oracle_file": os.path.basename(ORACLE_PATH),
             "oracle_sha256": oracle_sha256(),
@@ -202,6 +219,43 @@ def save_results(result: Dict[str, Any], per_question: List[Dict[str, Any]]) -> 
     with open(output_path, "w") as results_file:
         json.dump(payload, results_file, indent=2, sort_keys=True)
         results_file.write("\n")
+    return output_path
+
+
+def save_ingest_manifest(ingest_summary: Dict[str, Any]) -> str:
+    """Persist how the corpus was BUILT, next to the runs that measure it.
+
+    Junior Tip [why the ingest needs its own artifact]: a scored run records the
+    corpus checksum, which pins the INPUT — not the state the server ended up
+    in. Two ingests of the same oracle at different write rates hand the
+    maintenance pipeline different amounts of head start, and the paper's own
+    threat-to-validity section says record counts being equal does not make two
+    corpora equal. Writing the rate, the duration and the error count makes the
+    build reproducible instead of remembered, and it is the file to check first
+    when a recall number moves for no visible reason.
+    """
+    if not RESULTS_DIR:
+        return ""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    payload = {
+        "harness": "rbench_sdk",
+        "phase": "ingest",
+        "tag": os.environ.get("RB_INGEST_TAG", "ingest"),
+        "finished_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "endpoint": BASE_URL,
+        "tenant": recorded_tenant(),
+        "corpus": {
+            "oracle_file": os.path.basename(ORACLE_PATH),
+            "oracle_sha256": oracle_sha256(),
+            "n_per_type": int(os.environ.get("RB_NPER", "5")),
+        },
+        "ingest": ingest_summary,
+    }
+    output_path = os.path.join(RESULTS_DIR, "%s-ingest.json" % payload["tag"])
+    with open(output_path, "w") as manifest_file:
+        json.dump(payload, manifest_file, indent=2, sort_keys=True)
+        manifest_file.write("\n")
+    print("  ingest manifest -> %s" % output_path)
     return output_path
 
 
@@ -287,6 +341,20 @@ async def ingest() -> None:
     chatty_chunk_count = int(os.environ.get("RB_CHATTY_CHUNKS", "3") or "3")
     gold: Dict[str, Any] = {}
     records_ok = records_err = chatty_sessions = 0
+    # Junior Tip [why the corpus is written at a paced, client-like rate]: every
+    # create is one real HTTP round trip, but writing them back-to-back is still
+    # a burst — the API acknowledges a record once consensus commits it, while
+    # embedding, enrichment and the columnar copy are produced ASYNCHRONOUSLY by
+    # workers behind a message bus. An unpaced ingest therefore hands the
+    # pipeline a queue thousands deep in a few minutes, which is where the
+    # regulation loop starts cutting embedding slots and where the measured
+    # corpus stops being the corpus the protocol defines. Pacing the writer to
+    # roughly the rate the slowest downstream consumer sustains keeps the ingest
+    # a steady state instead of a spike. Set RB_INGEST_SLEEP_MS=0 to reproduce
+    # the old unpaced behaviour; the value used is recorded with the run.
+    ingest_sleep_s = float(os.environ.get("RB_INGEST_SLEEP_MS", "400") or "0") / 1000.0
+    progress_every = int(os.environ.get("RB_INGEST_PROGRESS_EVERY", "50") or "0")
+    ingest_started_at = time.time()
     memory = open_memory()
     await memory.connect()
     for question in questions:
@@ -316,11 +384,46 @@ async def ingest() -> None:
                     records_err += 1
                     if records_err <= 5:
                         print("  ERR", str(create_error)[:100])
+                attempted = records_ok + records_err
+                if progress_every > 0 and attempted % progress_every == 0:
+                    elapsed_s = time.time() - ingest_started_at
+                    print(
+                        "  ... %d records (%d ok, %d err) in %.0fs — %.2f rec/s"
+                        % (attempted, records_ok, records_err, elapsed_s, attempted / max(elapsed_s, 1e-9)),
+                        flush=True,
+                    )
+                if ingest_sleep_s > 0:
+                    await asyncio.sleep(ingest_sleep_s)
     await memory.close()
     json.dump(gold, open(GOLD_PATH, "w"))
+    ingest_elapsed_s = time.time() - ingest_started_at
     print(
-        "INGEST(sdk): %d questions, %d records ok, %d err, %d chatty_sessions (x%d) | base=%s tenant=%s"
-        % (len(questions), records_ok, records_err, chatty_sessions, chatty_chunk_count, BASE_URL, TENANT_ID)
+        "INGEST(sdk): %d questions, %d records ok, %d err, %d chatty_sessions (x%d) "
+        "in %.0fs (%.2f rec/s, pacing %dms) | base=%s tenant=%s"
+        % (
+            len(questions),
+            records_ok,
+            records_err,
+            chatty_sessions,
+            chatty_chunk_count,
+            ingest_elapsed_s,
+            (records_ok + records_err) / max(ingest_elapsed_s, 1e-9),
+            round(ingest_sleep_s * 1000),
+            BASE_URL,
+            TENANT_ID,
+        )
+    )
+    save_ingest_manifest(
+        {
+            "questions": len(questions),
+            "records_ok": records_ok,
+            "records_err": records_err,
+            "chatty_sessions": chatty_sessions,
+            "chatty_chunks": chatty_chunk_count,
+            "elapsed_s": round(ingest_elapsed_s, 1),
+            "records_per_s": round((records_ok + records_err) / max(ingest_elapsed_s, 1e-9), 3),
+            "ingest_sleep_ms": round(ingest_sleep_s * 1000),
+        }
     )
 
 
@@ -510,7 +613,7 @@ async def score_run(tag: str, lexical_only: bool, skip_cognitive: bool = False) 
     if lexical_only:
         mode = "lexical-pure" if skip_cognitive else "lexical-only"
     else:
-        mode = "hybrid-server-embed"
+        mode = "hybrid-pure" if skip_cognitive else "hybrid-server-embed"
     print("\n=== RECALL(sdk) [%s] n=%d mode=%s ===" % (tag, questions_done, mode))
     print("  recall@1=%.1f%%  recall@5=%.1f%%  recall@10=%.1f%%  | lat p50=%.2fs p95=%.2fs" % (
         100 * hits_at_1 / questions_done, 100 * hits_at_5 / questions_done,
@@ -576,5 +679,21 @@ if __name__ == "__main__":
         # parity contract between the two harnesses. Compare `lexical` against
         # rbench.py; use `lexical-pure` to reason about the arm itself.
         asyncio.run(score_run(run_tag, lexical_only=True, skip_cognitive=True))
+    elif cli_mode == "hybrid-pure":
+        # Junior Tip [the cell that was missing from the 2x2 — 2026-08-29]: the
+        # three modes above vary TWO things at once between the fused arm and the
+        # isolated one — whether a query vector is sent, and whether the cognitive
+        # rerank runs. `recall` is vector+rank, `lexical` is no-vector+rank,
+        # `lexical-pure` is no-vector+no-rank. The fourth cell, vector+no-rank,
+        # did not exist, so a fused run could only ever be compared against an
+        # arm that also differed in ranking.
+        #
+        # That gap is not academic: the published series neutralised the rank
+        # through TENANT CONFIGURATION, which needs a master key. On a tenant
+        # where the rank runs at its defaults, there was no way to reproduce the
+        # published configuration from the client side at all, and no way to tell
+        # a ranking difference from an engine difference. This mode closes it
+        # with the flag the SDK already exposes.
+        asyncio.run(score_run(run_tag, lexical_only=False, skip_cognitive=True))
     else:
         asyncio.run(score_run(run_tag, lexical_only=False))

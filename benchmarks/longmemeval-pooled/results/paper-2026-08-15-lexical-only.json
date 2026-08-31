@@ -2262,5 +2262,5 @@
     "usable": true
   },
   "tag": "paper-2026-08-15",
-  "tenant": "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_metrics-1"
+  "tenant": "(encoded in the API key; no tenant sent by the client)"
 }
