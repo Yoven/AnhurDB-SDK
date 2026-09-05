@@ -1,7 +1,6 @@
 package client
 
 import (
-	"fmt"
 	"net/url"
 	"strings"
 )
@@ -62,13 +61,21 @@ func SessionsAll() []string {
 // Failing gives them a message they can act on; guessing gives them results
 // they cannot audit. The error strings are byte-identical across the three
 // SDKs and the server so one support answer covers every client.
+// Junior Tip [why these return *APIError and not fmt.Errorf, 2026-09-05]: every
+// rejection below is a rule the SERVER also enforces, answering HTTP 400 with the
+// same INVALID_PARAM text. Returning a bare fmt.Errorf forced callers to match on
+// the message to tell "you sent something invalid" from "the network died", and
+// message-matching is exactly what the SDK error contract exists to stop. The
+// values are now *APIError (StatusCode 400, Kind() == KindInvalidRequest,
+// Retryable() == false), while Error() still renders the identical string — see
+// APIError.Error for why that byte-identity is load-bearing across the 3 SDKs.
 func normalizeSessionFilter(rawSessions []string) ([]string, error) {
 	if rawSessions == nil {
-		return nil, fmt.Errorf(
+		return nil, newValidationError(
 			"INVALID_PARAM: 'sessions' is required; use [%q] for every session in scope", SessionWildcard)
 	}
 	if len(rawSessions) == 0 {
-		return nil, fmt.Errorf(
+		return nil, newValidationError(
 			"INVALID_PARAM: 'sessions' cannot be empty; use [%q] for every session in scope", SessionWildcard)
 	}
 
@@ -77,7 +84,7 @@ func normalizeSessionFilter(rawSessions []string) ([]string, error) {
 	for _, rawSession := range rawSessions {
 		session := strings.TrimSpace(rawSession)
 		if session == "" {
-			return nil, fmt.Errorf("INVALID_PARAM: 'sessions' contains an empty entry")
+			return nil, newValidationError("INVALID_PARAM: 'sessions' contains an empty entry")
 		}
 		if session == SessionWildcard {
 			wildcardSeen = true
@@ -88,7 +95,7 @@ func normalizeSessionFilter(rawSessions []string) ([]string, error) {
 
 	if wildcardSeen {
 		if len(cleaned) > 0 {
-			return nil, fmt.Errorf(
+			return nil, newValidationError(
 				"INVALID_PARAM: 'sessions' mixes %q with %d explicit session(s); "+
 					"the wildcard must stand alone", SessionWildcard, len(cleaned))
 		}
@@ -108,7 +115,7 @@ func normalizeSessionFilter(rawSessions []string) ([]string, error) {
 	}
 
 	if len(deduplicated) > MaxSessionFilterUUIDs {
-		return nil, fmt.Errorf(
+		return nil, newValidationError(
 			"INVALID_PARAM: at most %d sessions per request (got %d); use [%q] for all",
 			MaxSessionFilterUUIDs, len(deduplicated), SessionWildcard)
 	}

@@ -31,6 +31,8 @@
 export { Memory } from "./memory.js";
 export { HttpClient } from "./client.js";
 export { QueryBuilder } from "./query.js";
+// Version of this SDK, as sent in the `User-Agent` header.
+export { SDK_VERSION, USER_AGENT } from "./version.js";
 // Session filter (ADR-0014) — every search takes a mandatory `sessions`.
 export {
   MAX_SESSION_FILTER_UUIDS,
@@ -56,10 +58,16 @@ export type {
   SearchHitSignals,
   RelatedNode,
   RetrievalMeta,
+  // ADR-0031 search controls and signals
+  SearchMode,
+  LegScoreSummary,
+  SearchWithRetrievalResult,
   ProfileResult,
   // Extended
   MemoryRecord,
   WalkResult,
+  WalkTarget,
+  WalkSemanticOptions,
   ContextResult,
   SessionStats,
   // AST query engine
@@ -95,10 +103,18 @@ export type {
   // Delete file (whole ingested document)
   DeleteFileOptions,
   DeleteFileResult,
+  // Failure classification carried by every AnhurError
+  AnhurErrorKind,
 } from "./types.js";
+// Query-string shape accepted by HttpClient's read verbs — needed by anyone
+// who types a wrapper around `HttpClient.get`/`delete`.
+export type { QueryParams } from "./client.js";
 export {
   AnhurError,
   AnhurAuthError,
   AnhurQueryError,
   AnhurConnectionError,
+  // Thrown by `waitForUpload`; it was unreachable, so callers could not
+  // `instanceof` the one error the upload wait can produce.
+  AnhurUploadWaitTimeout,
 } from "./types.js";

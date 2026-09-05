@@ -142,58 +142,47 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 // to send `uuid: ""`, which the server read as "no session filter" — a method
 // named SearchSession silently searching every session was the exact defect
 // ADR-0014 exists to kill. Widening is now spelled Search(..., SessionsAll()).
+// Junior Tip [why this delegates instead of building its own body, 2026-09-05]:
+// until this change SearchSession assembled its OWN payload and called
+// conn.PostRead directly, which put it OUTSIDE the ADR-0031 path entirely. It
+// compiled and looked correct because SearchOption is a type ALIAS of ReadOption
+// (search_options.go), so WithSearchMode / WithSemanticTimeoutMs /
+// WithDebugSignals were ACCEPTED by the signature and then discarded — three
+// knobs silently dropped, a NEGATIVE budget accepted that the very same SDK
+// refuses on Search, and the cross-version SERVER_TOO_OLD guard never running.
+// TypeScript searchSession and Python search_session both delegate to their
+// shared search implementation and therefore never had the defect.
+//
+// The rule this leaves behind: a second assembly site for the same request is
+// not a shortcut, it is a divergence with a delay fuse. Any new session-scoped
+// or scope-pinned read must end in runSearch, exactly like this one.
 func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, opts ...ReadOption) ([]SearchResult, error) {
-	if m.conn == nil {
-		return nil, ErrEmptyAPIKey
-	}
-	if query == "" {
-		return nil, ErrEmptyInput
-	}
-
 	targetSession := strings.TrimSpace(sessionUUID)
 	if targetSession == "" {
 		targetSession = strings.TrimSpace(m.sessionUUID)
 	}
-	resolvedSessions, sessionsErr := normalizeSessionFilter([]string{targetSession})
-	if sessionsErr != nil {
-		return nil, sessionsErr
-	}
 
-	cfg := applyReadOptions(opts)
-	limit := cfg.limit
-	if limit <= 0 {
-		// Match Search's historical default so the two methods behave alike when
-		// the caller does not pass WithLimit.
-		limit = 10
+	// Preserve the historical limit contract EXACTLY: this method has always
+	// coerced a non-positive limit to 10, which runSearch's own default does not
+	// do for an explicit WithLimit(0). Probing the caller's options first and
+	// re-asserting the default only when needed keeps the wire byte-identical
+	// for every caller that existed before this change.
+	sessionOptions := make([]SearchOption, 0, len(opts)+2)
+	sessionOptions = append(sessionOptions, opts...)
+	if probedConfig := applyReadOptions(opts); probedConfig.limit <= 0 {
+		sessionOptions = append(sessionOptions, WithLimit(10))
 	}
+	// Scope is PINNED and goes last so it wins over a caller-supplied WithScope —
+	// a method named SearchSession that searches a shared plane would be the same
+	// class of lie ADR-0014 exists to kill. TypeScript pins it the same way
+	// (`{...options, scope: "sessions"}`), as does Python (`scope="sessions"`).
+	sessionOptions = append(sessionOptions, WithScope(searchScopeSessions))
 
-	payload := map[string]interface{}{
-		"sessions": resolvedSessions,
-		"text":     query,
-		"limit":    limit,
-		"scope":    "sessions",
+	outcome, searchErr := m.runSearch(ctx, query, []string{targetSession}, sessionOptions...)
+	if searchErr != nil {
+		return nil, searchErr
 	}
-	if cfg.typeFilter != "" {
-		payload["type_filter"] = cfg.typeFilter
-	}
-
-	respBytes, postErr := m.conn.PostRead(ctx, "/api/v1/search", payload)
-	if postErr != nil {
-		return nil, postErr
-	}
-
-	var resp searchResponse
-	if decodeErr := json.Unmarshal(respBytes, &resp); decodeErr != nil {
-		return nil, fmt.Errorf("parsing session search response: %w", decodeErr)
-	}
-
-	// The nested {record, similarity} envelope IS the public SearchResult shape,
-	// identical to Search/SearchByType — decode straight in so the full record
-	// survives. Preserve the non-nil empty-slice contract.
-	if resp.Results == nil {
-		return []SearchResult{}, nil
-	}
-	return resp.Results, nil
+	return outcome.Results, nil
 }
 
 // --------------------------------------------------------------------------

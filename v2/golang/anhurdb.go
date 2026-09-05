@@ -100,3 +100,39 @@ const SessionWildcard = client.SessionWildcard
 
 // MaxSessionFilterUUIDs is the cap on explicitly named sessions per request.
 const MaxSessionFilterUUIDs = client.MaxSessionFilterUUIDs
+
+// --------------------------------------------------------------------------
+// ADR-0031 search controls (2026-09-05) — re-exported so a caller of the
+// facade can shape a search without also importing client/.
+// --------------------------------------------------------------------------
+
+// WithSearchMode selects the retrieval budget of ONE search: SearchModeFast,
+// SearchModeBalanced or SearchModeSemantic.
+//
+// Junior Tip [do not confuse it with WithMode above]: WithMode picks the WRITE
+// path for Add ("ingest" / "regular"). Two unrelated concepts that would both
+// have been called "mode" — hence the longer name here.
+var WithSearchMode = client.WithSearchMode
+
+// WithSemanticTimeoutMs caps the Embed+HNSW wait of one search, in ms.
+// 0 (the default) lets the server apply its own 700ms budget.
+var WithSemanticTimeoutMs = client.WithSemanticTimeoutMs
+
+// WithDebugSignals asks the server for per-hit signals and per-leg score
+// distributions, readable via Memory.SearchWithSignals.
+var WithDebugSignals = client.WithDebugSignals
+
+// The three legal search budgets, mirroring the server's handler.SearchMode*.
+const (
+	// SearchModeFast answers from the NOW legs only — never waits on the embedder.
+	SearchModeFast = client.SearchModeFast
+	// SearchModeBalanced embeds under a budget and degrades instead of failing.
+	SearchModeBalanced = client.SearchModeBalanced
+	// SearchModeSemantic promises strict semantics: 503/504 rather than a
+	// quietly lexical answer. The SDK fails loud if the server ignored it.
+	SearchModeSemantic = client.SearchModeSemantic
+)
+
+// Version is this SDK's semantic version — the same string its User-Agent
+// reports on every request.
+const Version = client.Version

@@ -34,10 +34,43 @@ var (
 type APIError struct {
 	StatusCode int
 	Body       string
+	// clientSide marks an error the SDK raised BEFORE any request left the
+	// process, for a rule the server would also have enforced. See
+	// newValidationError for why it exists and what it changes.
+	clientSide bool
 }
 
 func (e *APIError) Error() string {
+	// Junior Tip [why a client-side rejection prints its body verbatim,
+	// 2026-09-05]: the "INVALID_PARAM: ..." strings this SDK raises for a bad
+	// session filter or an unknown search mode are a PINNED cross-SDK invariant —
+	// Python (AnhurError) and TypeScript (AnhurError) raise the byte-identical
+	// message, and tests in all three repositories compare it exactly. Rendering
+	// it as "AnhurDB API error (HTTP 400): INVALID_PARAM: ..." would keep Go
+	// compiling and silently break that three-way agreement, which is exactly
+	// the kind of drift nobody notices until an agent parses the message.
+	// So the STRING stays what it always was; what is new is that the error is
+	// now a *APIError, so errors.As gives callers StatusCode/Kind()/Retryable()
+	// where before they got a bare fmt.Errorf and had to match on text.
+	if e.clientSide {
+		return e.Body
+	}
 	return fmt.Sprintf("AnhurDB API error (HTTP %d): %s", e.StatusCode, e.Body)
+}
+
+// newValidationError builds the typed error for a rule the SDK enforces locally.
+//
+// StatusCode is 400 on purpose: it is the status this very request WOULD have
+// come back with had it been allowed to leave (the server answers 400 for the
+// same INVALID_PARAM conditions). That makes Kind() report KindInvalidRequest
+// and Retryable() report false — both correct, and both unreachable before,
+// because these errors used to be bare fmt.Errorf values with no status at all.
+func newValidationError(format string, args ...interface{}) *APIError {
+	return &APIError{
+		StatusCode: 400,
+		Body:       fmt.Sprintf(format, args...),
+		clientSide: true,
+	}
 }
 
 // ── Error classification (parity with the Python/TypeScript SDKs) ───────────

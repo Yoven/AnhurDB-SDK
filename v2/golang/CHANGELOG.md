@@ -1,5 +1,114 @@
 # Go SDK Changelog
 
+## 2.1.0 — ADR-0031 search controls, one version constant, three parity fixes (2026-09-05)
+
+First release where the Go, TypeScript and Python SDKs carry the SAME version.
+All three previously claimed `2.1` in their User-Agent while their manifests said
+`2.0.0` and their published tags were `2.0.17` / `2.0.18` / `2.0.20` — four
+mutually inconsistent truths. `2.1.0` sits above every shipped tag and makes the
+wire-visible claim true.
+
+> **Install pins are NOT bumped in this release.** `README.md` still points at a
+> published tag, because `2.1.0` is not published yet and a doc that pins an
+> unpublished version is worse than a stale one.
+
+### Added — the three ADR-0031 search controls
+
+| Option | Wire field | Meaning |
+|---|---|---|
+| `WithSearchMode(mode)` | `mode` | `fast` / `balanced` / `semantic`; unset = server default (balanced) |
+| `WithSemanticTimeoutMs(ms)` | `semantic_timeout_ms` | caps the Embed+HNSW wait; `0` = server default (700ms) |
+| `WithDebugSignals()` | `debug_signals` | attaches per-hit signals and per-leg score distributions |
+
+`WithSearchMode` is a distinct name from the pre-existing `WithMode`, which picks
+the WRITE path for `Add` (`ingest` / `regular`). Two unrelated concepts.
+
+An unrecognised mode is refused **client-side** with
+`INVALID_PARAM: 'mode' "x" is not supported; use "fast", "balanced" or "semantic"`.
+The server would silently normalise it to `balanced` and answer 200 — right for a
+server (two ports, one behaviour), wrong for an SDK (a caller's typo must be
+audible).
+
+### Added — the richer response
+
+- `SearchHitSignals` now carries all **13** server fields. The seven new ones —
+  `hnsw_rank`, `bsq_rank`, `parquet_rank`, `fts5_rank`, `astar_rank`,
+  `entity_jaccard_rank`, `active_leg_weight_sum` — are the un-folded view of the
+  two already-fused ranks, plus the RRF denominator.
+- `LegScoreSummary` and `SearchOutcome` are new. `leg_scores` is read from the
+  **top level** of the response, where the server puts it on both ports — it is
+  deliberately NOT a field of `RetrievalMeta`.
+- `Memory.SearchWithSignals(ctx, query, sessions, opts...) (*SearchOutcome, error)`
+  returns results + retrieval + leg scores in one struct. `Search` and
+  `SearchWithRetrieval` keep their signatures and are now projections of it.
+
+### Added — cross-VERSION safety (ADR-0031 amendment, 2026-09-05)
+
+An additive proto field is compatible for the **parser**, not for the **promise**.
+A server predating ADR-0031 drops `mode` into `unknownFields` and answers 200 with
+balanced, possibly purely lexical, results — while the caller believes it asked
+for strict semantics and that a 503 would have come otherwise.
+
+The SDK now checks the **response**, which is the honest detector: a current
+server always resolves `retrieval.mode`.
+
+- `mode=semantic` + a server that did not echo `semantic` ⇒ the call **fails**
+  with `SERVER_TOO_OLD: ...`, naming the server as the cause.
+- `semantic_timeout_ms` / `debug_signals` / `mode=fast` ignored ⇒ a warning on the
+  standard logger. They degrade without misrepresenting which records matched.
+- **Exception, measured in the server:** for `scope=shared_all` the REST handler
+  builds its `RetrievalMeta` by hand and leaves `mode` empty on purpose (two legs,
+  no single honest mode). A current server is therefore indistinguishable from an
+  old one there, so that one case warns instead of failing — a blanket fail-loud
+  would have rejected every `shared_all` query against a healthy server.
+
+No new environment variable and no new configuration knob: the detection is
+derived from the response the server already sends.
+
+### Added — `client.Version`
+
+The SDK had no version symbol at all; the only runtime-observable version was a
+string literal inside `setAuthHeaders`. `client.Version` (`2.1.0`) is now the
+single source, and `client.UserAgent` is derived from it. A release bumps one line.
+
+### Fixed
+
+- **`Walk` / `WalkSemantic` sent `depth: 0`** when the caller passed a
+  non-positive depth, while TypeScript sent `depth ?? 3` and Python defaulted to
+  `3`. The same call in three languages produced three different requests, and the
+  Go one came back looking like an empty graph. Now falls back to `3`.
+- **Session-filter rejections are typed.** `normalizeSessionFilter` returned bare
+  `fmt.Errorf` values, so callers had to match on text to tell "you sent something
+  invalid" from "the network died". They are now `*APIError` with
+  `StatusCode: 400`, `Kind() == KindInvalidRequest`, `Retryable() == false`. The
+  message strings are **byte-identical** — they are pinned against the Python and
+  TypeScript SDKs, so `APIError.Error()` renders a client-side rejection verbatim
+  instead of wrapping it in `AnhurDB API error (HTTP 400): ...`.
+- **Query builder parity.** `SelectFields`, `WhereEquals`, `Build` and `Execute`
+  were missing next to the TypeScript and Python builders; `types.go` carried a
+  doc comment naming the gap. (`SelectFields`, not `Select`: Go forbids a method
+  and a field sharing a name, and renaming the exported `Select` field would break
+  every literal.)
+- **`go.mod` and `.tool-versions` no longer look contradictory.** `go 1.24` is the
+  language floor imposed on consumers; `toolchain go1.26.0` is what the
+  maintainers build with, matching `.tool-versions`. Both are now written down.
+
+### House-law splits (~300 lines, by DOMAIN)
+
+`client.go` (1679 lines) and `types.go` (1042) were far past the cut and could not
+be grown, so the touched domains moved out first:
+
+- `client/search.go` — the search endpoints
+- `client/search_types.go` — the search response types
+- `client/search_options.go` — `ReadOption`/`SearchOption` and every `With*`
+- `client/search_mode.go` — the mode enum, its validation, the cross-version guard
+- `client/graph_walk.go` — `Walk` / `WalkSemantic`
+- `client/query_builder.go` — the fluent AST builder
+- `client/version.go` — `Version` / `UserAgent`
+
+`client.go` is down to 1359 lines and `types.go` to 696; both remain scheduled
+refactors, and neither grew in this change.
+
 ## Unreleased — server behaviour change on `POST /api/v1/query` (2026-07-29)
 
 **No SDK code changed. No REST route, request shape or response shape changed.**
@@ -139,9 +248,11 @@ These remain accept-and-ignore, and this release does **not** turn them into err
 - A `semantic_search` block inside `filters` is still accepted and skipped
   server-side. It has never contributed to the result and still does not.
 
-## Unreleased (2.0.2)
+## 2.0.2
 
 _Generated at 2026-07-15T01:21:22Z from `v2/golang/v2.0.1` → `HEAD`_
+_(heading corrected 2026-09-05: this shipped long ago — 2.0.13+ is tagged — and
+"Unreleased" was reading as a live section eleven patch releases later.)_
 
 - fix(sdk): searchEntities sends q=; docs use organization not org (be79a07)
 - docs: document Query Builder in Python, Go, and TypeScript SDKs (1ae72c8)

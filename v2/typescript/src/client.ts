@@ -20,6 +20,7 @@ import {
   AnhurError,
   AnhurQueryError,
 } from "./types.js";
+import { buildRequestHeaders } from "./clientHeaders.js";
 
 /** HTTP methods the client supports. */
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -81,24 +82,6 @@ const REQUEST_TIMEOUT_MS = (() => {
  * episodic record.
  */
 
-/** Regex for safe HTTP header values (printable ASCII only). */
-const HEADER_SAFE = /^[\x20-\x7e]*$/;
-
-/**
- * Validate a string is safe for use as an HTTP header value.
- *
- * Rejects CR, LF, null bytes, and other control characters that could
- * enable HTTP header injection (response splitting).
- */
-function validateHeaderValue(value: string, name: string): void {
-  if (value && !HEADER_SAFE.test(value)) {
-    throw new Error(
-      `${name} contains invalid characters for HTTP header. ` +
-        "Only printable ASCII (0x20-0x7E) is allowed.",
-    );
-  }
-}
-
 /**
  * Lightweight HTTP wrapper around `fetch`.
  *
@@ -113,20 +96,11 @@ export class HttpClient {
   private readonly headers: Record<string, string>;
 
   constructor(baseUrl: string, apiKey: string, tenantId?: string) {
-    // Validate inputs against header injection.
-    validateHeaderValue(apiKey, "apiKey");
-    if (tenantId) validateHeaderValue(tenantId, "tenantId");
-
     this.baseUrl = baseUrl.replace(/\/+$/, "");
-    // shared headers map — FormData uploads need the runtime to set
-    // multipart/form-data with a boundary. JSON requests set it per-call.
-    this.headers = {
-      "X-API-Key": apiKey,
-      "User-Agent": "AnhurSDK-TypeScript/2.1",
-    };
-    if (tenantId) {
-      this.headers["X-Tenant-ID"] = tenantId;
-    }
+    // Header construction AND its injection guard live in clientHeaders.ts —
+    // see that file's Junior Tips for why the rule sits beside the map it
+    // protects, and why this file could not simply grow another three lines.
+    this.headers = buildRequestHeaders(apiKey, tenantId);
   }
 
   // ── Public helpers ───────────────────────────────────────────

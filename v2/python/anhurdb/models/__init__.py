@@ -14,6 +14,9 @@ from .record import (
     EntityEdge,
     EntityModel,
     Record,
+)
+from .search import (
+    LegScoreSummary,
     RelatedNode,
     RetrievalMeta,
     SearchHitSignals,
@@ -29,6 +32,7 @@ __all__ = [
     "SearchResult",
     "SearchResponse",
     "SearchHitSignals",
+    "LegScoreSummary",
     "RelatedNode",
     "RetrievalMeta",
     "CreateRequest",

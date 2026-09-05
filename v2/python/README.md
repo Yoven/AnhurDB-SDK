@@ -11,11 +11,13 @@ Official async Python client for [AnhurDB](https://anhur.yoven.ai) — cognitive
 - Type-safe models (Pydantic v2)
 - Fluent Query Builder (AST-based DSL for advanced filtering)
 - Entity knowledge graph (search, upsert, relationships, timeline)
-- Batch operations (read/update up to 100 records at once)
+- Batch operations (the server caps a batch at 1000 ids)
 - File upload with async ingestion (PDF, images, DOCX, etc.)
 - Temporal versioning (supersede old facts)
 - REST direct transport (the supported path — see [Transport Modes](#transport-modes))
 - Session management with auto-generated container tags
+- PEP 561 typed: ships `py.typed`, so the annotations are visible to your own mypy/pyright
+- `anhurdb.__version__` reports the installed version — the same string the `User-Agent` sends
 
 ## Install
 
@@ -23,8 +25,14 @@ Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) 
 
 ```bash
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.12/anhurdb-2.0.12-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.20/anhurdb-2.0.20-py3-none-any.whl
 ```
+
+> The pin above is the newest wheel actually **published**. The source in this
+> repository is already at `2.1.0` (`anhurdb.__version__`); the pin moves when the
+> 2.1.0 release is cut, not before — a doc that pins a version nobody can download
+> is worse than a stale one. (It was stale at `v2.0.12` — eight releases behind —
+> until 2026-09-05.)
 
 ## Quick Start — Memory (Simple API)
 
@@ -100,15 +108,21 @@ Memory(
     user_id="user-123",        # Optional explicit container tag
     tenant_id="tenant-a",      # Optional multi-tenant header
     mode="rest",               # "rest" (default) or "mcp" (tunnel)
+    timeout=30.0,              # Per-request budget in SECONDS (default 30.0)
 )
 ```
+
+`timeout` is the whole wall clock a call gets — uploads included — because this
+SDK performs **no client-side retry**. It is a constructor parameter and
+deliberately not an environment variable: the right budget belongs to the
+caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 
 ### Core Methods
 
 | Method | Description | Returns |
 |--------|-------------|---------|
 | `add(text, *, mode="ingest", session_id="", score=None, type=None, metadata=None)` | Store a memory. Keyword-only after `text`. Pinning `score` / `type` / `metadata` switches from `/ingest` to `/records` | `dict` with session_id, records, mode |
-| `search(query, sessions, *, limit=10, type_filter=None, scope="sessions")` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG). `sessions` is **required** and positional: `sessions_all()` or up to 1000 uuids. Absent/empty/`["*", "uuid"]` → HTTP 400 | `list[SearchResult]` |
+| `search(query, sessions, *, limit=10, type_filter=None, scope="sessions", mode=None, semantic_timeout_ms=None, debug_signals=False)` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG). `sessions` is **required** and positional: `sessions_all()` or up to 1000 uuids. Absent/empty/`["*", "uuid"]` → HTTP 400. See [Search controls](#search-controls-adr-0031) for the three retrieval knobs | `list[SearchResult]` |
 | `profile()` | Get user/agent memory profile | `dict` with static, dynamic, stats |
 
 ### Search & Discovery
@@ -116,7 +130,7 @@ Memory(
 | Method | Description |
 |--------|-------------|
 | `search_by_type(type, sessions, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
-| `smart_search(query, sessions, limit=10, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text) |
+| `smart_search(query, sessions, *, limit=10, memory_type=None, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text). `memory_type` is sent as `?type=`. Returns the RAW response dict, not `list[SearchResult]` |
 | `recall(query, sessions, limit=10)` | Same engine as `search`, MCP naming |
 | `recent(limit=20)` | Most recent records |
 
@@ -148,7 +162,7 @@ Memory(
 
 | Method | Description |
 |--------|-------------|
-| `batch_read_content(ids)` | Fetch content for up to 100 records |
+| `batch_read_content(ids)` | Fetch content for many records in one call. The SDK does not cap the list; the **server** rejects more than **1000** ids with HTTP 400 `batch size exceeds maximum` (`server/handler/record_batch.go`, `maxBatchSize = 1000`, matched by gRPC `batch_service.go`) |
 | `batch_update_status(ids)` | Mark records as consolidated (was `mark_consolidated`, now a deprecated alias) |
 | `link_consolidated(ids, consolidate_id)` | Link children to a consolidated star (was `link_to_consolidated`/`update_consolidate_ids`, now deprecated aliases) |
 
@@ -283,21 +297,66 @@ except AnhurQueryError as e:
     print(f"Bad request: {e}")
 ```
 
+## Search controls (ADR-0031)
+
+Three opt-in knobs on `search()` and `search_with_retrieval()`. All three are
+omitted from the request entirely when you do not set them, so the server's own
+defaults apply exactly as before they existed.
+
+| Knob | Values | Meaning |
+|------|--------|---------|
+| `mode` | `"fast"` \| `"balanced"` \| `"semantic"` | Retrieval budget. `None` (default) = the server's default, `balanced`. An unknown value is refused by the SDK **before** the request — the server normalises unknown modes to `balanced` on purpose, so it can never report your typo back to you |
+| `semantic_timeout_ms` | `int >= 0` | Caps the Embed+HNSW wait. `None`/`0` = the server default (700 ms). Negative is refused |
+| `debug_signals` | `bool` | Attaches the per-hit `SearchHitSignals` block (13 fields) and, on `search_with_retrieval()`, the `leg_scores` array |
+
+```python
+response = await mem.search_with_retrieval(
+    "quarterly revenue risk",
+    sessions_all(),
+    mode="semantic",
+    semantic_timeout_ms=1500,
+    debug_signals=True,
+)
+print(response.retrieval.mode)          # what the server actually ran
+print(response.leg_scores)              # per-leg score distributions
+print(response.results[0].signals.hnsw_rank)
+```
+
+### `mode="semantic"` against an older server
+
+`mode` is an additive wire field: a server that predates ADR-0031 does not know it,
+drops it, runs `balanced`, and answers **HTTP 200 with lexical results** — while you
+believe you asked for strict semantic retrieval. The SDK detects this from the
+**response** (a current server always fills `retrieval.mode`) and **raises**
+`AnhurError` with a `SERVER_TOO_OLD:` message rather than handing you results that
+quietly are not what you asked for.
+
+`semantic_timeout_ms` and `debug_signals` only cost you a budget or some debug
+detail, so those raise a `RuntimeWarning` instead.
+
+One blind spot, stated plainly: with `scope="shared_all"` a **current** server also
+returns an empty `retrieval.mode` (a two-plane fan-out has no single honest mode to
+report), so the check cannot run there. `mode="semantic"` + `scope="shared_all"`
+warns that it could not be verified.
+
 ## Transport Modes
 
 - **REST direct** (default): Calls AnhurDB REST endpoints directly. **Use this.**
 - **MCP tunnel** (`mode="mcp"`): legacy/alternative transport. It rewrites exactly two
   paths — `POST /api/v1/records` → MCP tool `create_memory`, and `POST /api/v1/query`
-  → MCP tool `execute_ast` — and posts them to `/api/v1/mcp/direct`. Every other call
+  → MCP tool `query` — and posts them to `/api/v1/mcp/direct`. Every other call
   falls through to plain REST.
 
-> ⚠️ **`mode="mcp"` is broken for `query()` as of 2026-07-28.** The MCP surface was cut
-> from 47 tools to 22 and `execute_ast` no longer exists — it was absorbed into
-> `query(ast=)`. `/api/v1/mcp/direct` dispatches by tool name against the registered
-> set, so the tunnel gets **HTTP 404 / `Tool not found`**. The tunnel's `create_memory`
-> mapping still names a live tool, but the 22-tool schemas are strict
-> (`additionalProperties: false`, `api_key` declared as a required argument), so a REST
-> record body forwarded verbatim may still be rejected as an undeclared argument.
+> ⚠️ **`mode="mcp"` is unusable against a normal deployment.** Corrected 2026-09-05:
+> an earlier version of this note blamed the retired `execute_ast` tool. That cause was
+> false — the SDK maps `/api/v1/query` to the live `query` tool
+> (`client/connection.py`, `_MCP_TOOL_MAP`), and `tests/test_mcp_tunnel.py` pins it.
+> The real blocker is the ENDPOINT: `/api/v1/mcp/direct` is registered only on the MCP
+> server's metrics listener (`ANHUR_MCP_METRICS_PORT`, default 9092), never on the
+> data-plane port that this SDK's `url` points at, so the tunnel 404s unless a
+> deployment proxies it. Second, smaller trap: the 22-tool schemas are strict
+> (`additionalProperties: false`), so any argument the tool does not declare is
+> rejected server-side.
 >
 > `/api/v1/mcp/direct` is also served only on the MCP server's metrics listener
 > (`ANHUR_MCP_METRICS_PORT`, default 9092), not on the data-plane port the SDK's `url`

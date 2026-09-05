@@ -11,8 +11,15 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.11
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.18
 ```
+
+> The **source** in this tree is `2.1.0` (`client.Version`), converged with the
+> TypeScript and Python SDKs. The pin above deliberately names the newest
+> **published** tag: pinning a version that is not released yet would break
+> `go get` for everyone who follows this README. It moves to `v2.1.0` when the
+> tag is pushed. (It was stale at `v2.0.11` — seven releases behind — until
+> 2026-09-05.)
 
 ## Quick Start
 
@@ -80,9 +87,41 @@ sessionID, err := mem.CreateSession(ctx)               // Required before writes
 result, err := mem.Add(ctx, "text",
     anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
 hits, err := mem.Search(ctx, "query", anhurdb.SessionsAll())          // Plane search (query=FTS text; prefer SmartSearch for conceptual RAG)
-hits, err := mem.Search(ctx, "query", []string{sessionID}, WithLimit(20)) // One chat, with options
+hits, err := mem.Search(ctx, "query", []string{sessionID}, anhurdb.WithLimit(20)) // One chat, with options
 profile, err := mem.Profile(ctx)                       // User profile (?tag=)
 ```
+
+### Search controls (ADR-0031)
+
+```go
+// Retrieval budget for ONE query. Not the same as WithMode, which picks the
+// WRITE path for Add.
+hits, err := mem.Search(ctx, "query", anhurdb.SessionsAll(),
+    anhurdb.WithSearchMode(anhurdb.SearchModeSemantic))  // fast | balanced | semantic
+
+// Cap the Embed+HNSW wait for this query (0 = the server's own 700ms budget).
+hits, err = mem.Search(ctx, "query", anhurdb.SessionsAll(),
+    anhurdb.WithSemanticTimeoutMs(250))
+
+// Ask for per-hit signals + per-leg score distributions, and read all three
+// parts of the outcome in one struct.
+outcome, err := mem.SearchWithSignals(ctx, "query", anhurdb.SessionsAll(),
+    anhurdb.WithDebugSignals())
+_ = outcome.Results       // []client.SearchResult
+_ = outcome.Retrieval     // *client.RetrievalMeta — which arms ran, degraded?
+_ = outcome.LegScores     // []client.LegScoreSummary — pre-fusion, per leg
+```
+
+`mode=semantic` is a **promise**: the server answers 503/504 rather than quietly
+returning lexical results. A server older than ADR-0031 ignores the field
+entirely and answers 200 with balanced results, so the SDK verifies the promise
+against the response and returns a `SERVER_TOO_OLD: ...` error when it was not
+kept. The other two controls only log a warning when ignored. On
+`scope=shared_all` the server cannot echo a single honest mode (two legs), so
+that one case warns instead of failing.
+
+An unknown mode is refused before the request leaves:
+`INVALID_PARAM: 'mode' "x" is not supported; use "fast", "balanced" or "semantic"`.
 
 ### Search & Discovery
 
@@ -130,7 +169,9 @@ entities, err := mem.GetRecordEntities(ctx, 42)
 ### Batch Operations
 
 ```go
-// Fetch content for multiple records (max 100)
+// Fetch content for multiple records.
+// Nothing caps the slice client-side — the server decides. Batch it yourself if
+// you are sending thousands; an empty slice is a 400 from the server.
 contents, err := mem.BatchReadContent(ctx, []int64{1, 2, 3})
 
 // Bulk status update

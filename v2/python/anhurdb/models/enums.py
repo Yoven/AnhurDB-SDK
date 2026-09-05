@@ -7,8 +7,11 @@ class MemoryType(str, Enum):
     # Canonical AnhurDB taxonomy (13 types).
     #
     # Junior Tip [taxonomy SSOT]: the authority is AnhurCore's core.yaml, mirrored
-    # by the server's schema.MemoryTypes and the MCP list_types tool — not this
-    # file. list_types() below derives straight from this enum, so a missing
+    # by the server's schema.MemoryTypes — not this file. (Corrected 2026-09-05:
+    # this used to cite an "MCP list_types tool"; that tool was retired in the
+    # 47→22 cut of ADR-0013 Fase 4 and is now `list_sessions(include=["totals"])`
+    # — see AnhurDB/docs/MCP_TOOLS.md.) Memory.list_types() derives straight from
+    # this enum, so a missing
     # member silently shortens the public taxonomy. Keep Go, Python, TypeScript
     # and core.yaml in step, in the same change.
     EPISODIC = "episodic"

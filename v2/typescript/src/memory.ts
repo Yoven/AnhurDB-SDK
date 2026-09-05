@@ -9,6 +9,7 @@
  */
 
 import { HttpClient } from "./client.js";
+import { MemorySearchApi } from "./search.js";
 import { AnhurError, AnhurUploadWaitTimeout } from "./types.js";
 import {
   appendSessionsQueryParam,
@@ -40,14 +41,8 @@ import type {
   ProfileResult,
   QueryResult,
   RecordPayload,
-  RelatedNode,
-  RetrievalMeta,
-  SearchHitSignals,
-  SearchOptions,
-  SearchPayload,
   SearchResult,
   SearchScope,
-  SearchSessionPayload,
   SessionStats,
   UploadResult,
   UploadStatusResult,
@@ -168,9 +163,9 @@ function buildMetadataJson(
  * between cloud (`/api/v1/ingest`) and OSS (`/api/v1/records`)
  * automatically.
  */
-export class Memory {
+export class Memory extends MemorySearchApi {
   private readonly client: HttpClient;
-  private readonly containerTag: string;
+  private readonly derivedContainerTag: string;
   private sessionUuid: string;
   /** True only after a successful createSession/openSession (server ledger). */
   private sessionRegistered = false;
@@ -195,6 +190,7 @@ export class Memory {
    * ```
    */
   constructor(options: MemoryOptions) {
+    super();
     if (!options.apiKey) {
       throw new Error("apiKey is required");
     }
@@ -204,20 +200,20 @@ export class Memory {
 
     // Container tag: explicit userId or derived from apiKey.
     if (options.userId) {
-      this.containerTag = options.userId;
-      this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
+      this.derivedContainerTag = options.userId;
+      this.sessionUuid = `${this.derivedContainerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
       this.tagReady = Promise.resolve();
     } else {
       // Temporary tag — replaced once the async hash resolves.
-      this.containerTag = "mem-init";
+      this.derivedContainerTag = "mem-init";
       this.sessionUuid = "";
       this.tagReady = deriveTag(options.apiKey).then((hash) => {
-        Object.defineProperty(this, "containerTag", {
+        Object.defineProperty(this, "derivedContainerTag", {
           value: `mem-${hash}`,
           writable: false,
           configurable: false,
         });
-        this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
+        this.sessionUuid = `${this.derivedContainerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
       });
     }
   }
@@ -238,6 +234,52 @@ export class Memory {
   /** Async-safe session ID getter (waits for tag derivation). */
   async getSessionId(): Promise<string> {
     await this.tagReady;
+    return this.sessionUuid;
+  }
+
+  /**
+   * Container tag: the key every memory of this user/agent is grouped under.
+   *
+   * It is `userId` when one was passed, otherwise `mem-` plus the first 12 hex
+   * digits of SHA-256(apiKey). Parity with Go `Memory.ContainerTag()` and
+   * Python `Memory.container_tag` — the TypeScript SDK simply never exposed
+   * it, so a caller could not tell which tag their writes were landing under,
+   * nor reproduce the `metadata.container_tag` the server stores.
+   *
+   * Same caveat as {@link sessionId}: with no `userId` this reads
+   * `"mem-init"` until the async derivation lands. Use
+   * {@link getContainerTag} when the real value matters.
+   */
+  get containerTag(): string {
+    return this.derivedContainerTag;
+  }
+
+  /** Async-safe container tag getter (waits for tag derivation). */
+  async getContainerTag(): Promise<string> {
+    await this.tagReady;
+    return this.derivedContainerTag;
+  }
+
+  // ── Bridge to the search domain (see search.ts) ──────────────
+  //
+  // Junior Tip [why these are getters and not shared fields]: `MemorySearchApi`
+  // holds NO state — it borrows the transport, the readiness promise and the
+  // current session through these three accessors. Keeping them read-only and
+  // explicit is what stops the search file from quietly acquiring ownership of
+  // a connection it did not build.
+
+  /** @internal */
+  protected get searchTransport(): HttpClient {
+    return this.client;
+  }
+
+  /** @internal */
+  protected get searchTagReady(): Promise<void> {
+    return this.tagReady;
+  }
+
+  /** @internal */
+  protected get searchCurrentSession(): string {
     return this.sessionUuid;
   }
 
@@ -323,242 +365,6 @@ export class Memory {
     });
   }
 
-  // ── search() — find relevant memories ───────────────────────
-
-  /**
-   * Hybrid plane search via `POST /api/v1/search`.
-   *
-   * Default scope `sessions` (tenant chat; excludes shared-library uuids).
-   *
-   * `sessions` is MANDATORY (ADR-0014): pass {@link sessionsAll} for every
-   * session inside the scope, or the explicit uuids to confine the query to
-   * those chats. An empty array is an error, never "all".
-   *
-   * Junior Tip [scope vs sessions]: the two are orthogonal. `scope` picks the
-   * BOUNDARY (which store/plane is reachable at all); `sessions` picks the
-   * SUBSET inside that boundary. `["*"]` means "everything in this boundary" —
-   * it is not a way to cross into a shared plane.
-   *
-   * Agent UX — text is not semantic: `query` is sent as body `text` (FTS5
-   * exact-word matching), not an embedding. For conceptual RAG without a
-   * vector, prefer {@link smartSearch} (or MCP `recall`).
-   *
-   * @param query    - Query string sent as FTS `text`.
-   * @param sessions - Session filter (required): `sessionsAll()` or uuids.
-   * @param options  - Optional limit, type filter, and scope plane.
-   * @returns Array of search results sorted by relevance.
-   * @throws {AnhurError} `INVALID_PARAM: ...` when the session filter is
-   *   absent, empty, contradictory, or above the cap.
-   *
-   * @example
-   * ```ts
-   * const results = await mem.search(
-   *   "what does this user do?", sessionsAll(), { limit: 5 });
-   * results.forEach(r => console.log(r.record.summary, r.similarity));
-   * ```
-   */
-  async search(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<SearchResult[]> {
-    const { results } = await this.runSearch(query, sessions, options);
-    return results;
-  }
-
-  /**
-   * Same request/ranking as {@link search}, but also returns the ADR-0012
-   * `retrieval` diagnostics block (which arms ran, degradation reason,
-   * RESOLVED astar/entity-jaccard weights after any per-request override).
-   *
-   * Junior Tip [why a separate method instead of changing `search()`'s
-   * return type]: `search()` already ships as `Promise<SearchResult[]>` and
-   * existing callers iterate/destructure that array directly — widening it to
-   * `{results, retrieval}` would be a breaking change for every current
-   * caller. This method is opt-in additive surface for callers that want the
-   * diagnostics, e.g. an ablation harness confirming its
-   * {@link SearchOptions.astarWeight} override actually took effect
-   * server-side. Named `searchWithRetrieval` (not `searchWithMeta`) to match
-   * Go `SearchWithRetrieval` / Python `search_with_retrieval` — same concept,
-   * TS camelCase (2026-08-10, cross-SDK name alignment).
-   *
-   * @returns `results` (same shape as {@link search}) plus `retrieval` —
-   *   `undefined` only if the server response omitted the block entirely
-   *   (older server version).
-   */
-  async searchWithRetrieval(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<{ results: SearchResult[]; retrieval?: RetrievalMeta }> {
-    return this.runSearch(query, sessions, options);
-  }
-
-  /**
-   * Shared implementation behind {@link search} and
-   * {@link searchWithRetrieval} — builds the wire payload, posts
-   * `/api/v1/search`, and nests the response. Kept private so the two public
-   * methods cannot drift on payload construction (the exact bug class
-   * ADR-0014's session-filter Junior Tips warn about: two assembly sites for
-   * the same request silently diverging).
-   */
-  private async runSearch(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<{ results: SearchResult[]; retrieval?: RetrievalMeta }> {
-    if (!query) {
-      throw new Error("query cannot be empty");
-    }
-    const resolvedSessions = normalizeSessions(sessions);
-    await this.tagReady;
-
-    const payload: SearchPayload = {
-      text: query,
-      limit: options?.limit ?? 10,
-      scope: options?.scope ?? "sessions",
-      sessions: resolvedSessions,
-    };
-    if (options?.typeFilter) {
-      payload.type_filter = options.typeFilter;
-    }
-    // Knobs de ablação (paridade REST/MCP/Go/Py, 2026-08-07): omitidos quando
-    // falsos para preservar o wire default do servidor.
-    if (options?.skipQueryEmbed) {
-      payload.skip_query_embed = true;
-    }
-    if (options?.skipCognitiveRerank) {
-      payload.skip_cognitive_rerank = true;
-    }
-    // astar_weight / entity_jaccard_weight: nil-vs-zero contract (server
-    // `*float64`) — `undefined` means "not asked", `0` means "asked for
-    // zero". Checking `!== undefined` (not truthiness) is load-bearing: a
-    // caller passing `astarWeight: 0` to disable the leg for one query must
-    // reach the server as JSON `0`, not be dropped like `skip_query_embed`'s
-    // falsy-omit above.
-    if (options?.astarWeight !== undefined) {
-      payload.astar_weight = options.astarWeight;
-    }
-    if (options?.entityJaccardWeight !== undefined) {
-      payload.entity_jaccard_weight = options.entityJaccardWeight;
-    }
-    // expand_related (ADR-0021): same falsy-omit discipline as
-    // skip_query_embed/skip_cognitive_rerank above — bool, default false,
-    // omitted (not sent as `false`) when not requested, so the wire body is
-    // byte-identical to today for every caller who never opts in.
-    if (options?.expandRelated) {
-      payload.expand_related = true;
-    }
-
-    // Search is a read-shaped POST endpoint.
-    const data = await this.client.postRead<{
-      results?: Array<{
-        record?: Record<string, unknown>;
-        similarity?: number;
-        provenance?: string;
-        scope?: string;
-        signals?: SearchHitSignals;
-        related_nodes?: RelatedNode[];
-      }>;
-      retrieval?: RetrievalMeta;
-    }>("/api/v1/search", payload);
-
-    return { results: this.nestSearchResults(data.results), retrieval: data.retrieval };
-  }
-
-  /**
-   * Search chat sessions only (`scope=sessions`).
-   * `sessions` is mandatory — see {@link search}.
-   */
-  async searchSessions(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, sessions, { ...options, scope: "sessions" });
-  }
-
-  /**
-   * Search tenant-shared library docs (`scope=tenant_shared`).
-   * `sessions` is mandatory and selects inside the shared boundary.
-   */
-  async searchTenantShared(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, sessions, { ...options, scope: "tenant_shared" });
-  }
-
-  /**
-   * Search client-wide shared library (`scope=client_shared`).
-   * `sessions` is mandatory and selects inside the shared boundary.
-   */
-  async searchClientShared(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, sessions, { ...options, scope: "client_shared" });
-  }
-
-  /**
-   * Search both shared planes (`scope=shared_all`).
-   * `sessions` is mandatory and selects inside both shared boundaries.
-   */
-  async searchShared(
-    query: string,
-    sessions: string[],
-    options?: SearchOptions): Promise<SearchResult[]> {
-    return this.search(query, sessions, { ...options, scope: "shared_all" });
-  }
-
-  // ── searchSession() — session-scoped hybrid search ──────────
-
-  /**
-   * Search for relevant memories WITHIN a single chat/session.
-   *
-   * Sugar over `search(query, [sessionUuid])` — the one-chat case expressed in
-   * the ADR-0014 grammar.
-   *
-   * Junior Tip [why the empty uuid stopped meaning "everything"]: this method
-   * used to send `uuid: ""` when there was no current session, and the server
-   * read that as "no session filter". A method named `searchSession` silently
-   * searching every session is the exact defect ADR-0014 exists to kill.
-   * Widening is now spelled `search(query, sessionsAll())`.
-   *
-   * @param query       - Natural language query (sent as `text`).
-   * @param sessionUuid - Session UUID to scope to. Empty/omitted = current session.
-   * @param options     - Optional limit and type filter.
-   * @throws {AnhurError} `INVALID_PARAM: ...` when neither an explicit session
-   *   nor a current session is available.
-   */
-  async searchSession(
-    query: string,
-    sessionUuid?: string,
-    options?: SearchOptions): Promise<SearchResult[]> {
-    if (!query) {
-      throw new Error("query cannot be empty");
-    }
-    const targetSession = (sessionUuid ?? this.sessionUuid) || "";
-    const resolvedSessions = normalizeSessions([targetSession]);
-    await this.tagReady;
-
-    const payload: SearchSessionPayload = {
-      sessions: resolvedSessions,
-      text: query,
-      limit: options?.limit ?? 10,
-      scope: "sessions",
-    };
-    if (options?.typeFilter) {
-      payload.type_filter = options.typeFilter;
-    }
-
-    // Search is a read-shaped POST endpoint.
-    const data = await this.client.postRead<{
-      results?: Array<{
-        record?: Record<string, unknown>;
-        similarity?: number;
-      }>;
-    }>("/api/v1/search", payload);
-
-    return this.nestSearchResults(data.results);
-  }
-
   // ── profile() — get user/agent profile ──────────────────────
 
   /**
@@ -580,7 +386,7 @@ export class Memory {
     try {
       const data = await this.client.get<ProfileResult>(
         "/api/v1/profile",
-        { tag: this.containerTag });
+        { tag: this.derivedContainerTag });
       return {
         static: data.static ?? {},
         dynamic: data.dynamic ?? {},
@@ -593,7 +399,7 @@ export class Memory {
           static: {},
           dynamic: {},
           stats: {},
-          tag: this.containerTag,
+          tag: this.derivedContainerTag,
           status: "not_available",
         };
       }
@@ -696,31 +502,6 @@ export class Memory {
     return this.client.get(
       "/api/v1/search/smart",
       params);
-  }
-
-  /**
-   * Recall memories via plane-aware search.
-   *
-   * Explicit alias for `search()` (default `scope=sessions`).
-   * Named to match the MCP `recall` tool.
-   *
-   * `sessions` is MANDATORY (ADR-0014) — see {@link search}.
-   *
-   * @param query    - Natural language query.
-   * @param sessions - Session filter (required): `sessionsAll()` or uuids.
-   * @param limit    - Maximum results (default 10).
-   * @param options  - Optional scope (and other search options except limit).
-   */
-  async recall(
-    query: string,
-    sessions: string[],
-    limit?: number,
-    options?: Omit<SearchOptions, "limit">): Promise<SearchResult[]> {
-    return this.search(query, sessions, {
-      limit: limit ?? 10,
-      scope: options?.scope ?? "sessions",
-      typeFilter: options?.typeFilter,
-    });
   }
 
   /**
@@ -1138,7 +919,7 @@ export class Memory {
     // session_uuid — `<container_tag>-<YYYYMMDD-HHMMSS UTC>-<6 random hex>`. The random
     // suffix (randomHexSuffix) stops two rotations in the same UTC second from colliding
     // onto one session, byte-for-byte with Python new_session and Go NewSession.
-    this.sessionUuid = `${this.containerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
+    this.sessionUuid = `${this.derivedContainerTag}-${utcTimestamp()}-${randomHexSuffix()}`;
     this.sessionRegistered = false;
     return this.sessionUuid;
   }
@@ -1694,7 +1475,7 @@ export class Memory {
       related_ids: [],
       main_ids: [],
       consolidate_id: 0,
-      metadata: buildMetadataJson(this.containerTag),
+      metadata: buildMetadataJson(this.derivedContainerTag),
       summary,
       content: text,
       consolidated: false,
@@ -1962,7 +1743,7 @@ export class Memory {
     // the /records path instead (see add() forceRecordsPath).
     const payload: IngestPayload = {
       content: text,
-      container_tag: this.containerTag,
+      container_tag: this.derivedContainerTag,
       session_id: resolvedSessionId,
     };
 
@@ -2036,7 +1817,7 @@ export class Memory {
       related_ids: extra?.relatedIds ?? [],
       main_ids: [],
       consolidate_id: 0,
-      metadata: buildMetadataJson(this.containerTag, metadata),
+      metadata: buildMetadataJson(this.derivedContainerTag, metadata),
       summary,
       content: text,
       consolidated: false,
@@ -2098,53 +1879,8 @@ export class Memory {
     return params;
   }
 
-  /**
-   * Map the server's nested search envelope into typed {@link SearchResult}s.
-   *
-   * The server emits `{ results: [{ record: {...}, similarity: N }] }` and the
-   * SDK surface preserves that exact shape — the full record NESTED under
-   * `record`, with the score as a SIBLING `similarity`.
-   *
-   * `{id,type,summary,score,metadata,content}`, silently DROPPING every other
-   * record field (uuid/weight/related_ids/main_ids/status/valid_from/...) — a
-   * data-loss bug. We now keep the whole record: cast the raw JSON object to the
-   * typed {@link MemoryRecord} (the server serialises exactly those keys) and
-   * default a missing `similarity` to 0. Matches Python `SearchResult(record,
-   * similarity)` (the reference) and Go `SearchResult{Record, Similarity}`. NOTE
-   * the score key is `similarity`, NOT `score`.
-   *
-   * Junior Tip [second data-loss bug, same shape, found 2026-08-10]: this method
-   * used to copy ONLY `record`/`similarity` off the raw hit even though the
-   * server has sent `provenance`/`scope`/`signals` per hit since ADR-0012 — a
-   * caller on `scope=shared_all` had no way to tell which plane
-   * (`tenant_shared` vs `client_shared`) actually produced a given hit. Copy
-   * every field the server sends, not just the two the SDK happened to model
-   * first; `signals` stays `undefined` unless the caller separately asked the
-   * server for `debug_signals` (see {@link SearchResult.signals}); likewise
-   * `related_nodes` (ADR-0021) stays `undefined` unless the request set
-   * {@link SearchOptions.expandRelated} (see {@link SearchResult.related_nodes}).
-   */
-  private nestSearchResults(
-    results?: Array<{
-      record?: Record<string, unknown>;
-      similarity?: number;
-      provenance?: string;
-      scope?: string;
-      signals?: SearchHitSignals;
-      related_nodes?: RelatedNode[];
-    }>): SearchResult[] {
-    return (results ?? []).map((item) => ({
-      record: (item.record ?? {}) as unknown as MemoryRecord,
-      similarity: item.similarity ?? 0,
-      ...(item.provenance !== undefined ? { provenance: item.provenance } : {}),
-      ...(item.scope !== undefined ? { scope: item.scope } : {}),
-      ...(item.signals !== undefined ? { signals: item.signals } : {}),
-      ...(item.related_nodes !== undefined ? { related_nodes: item.related_nodes } : {}),
-    }));
-  }
-
   /** String representation for logging / debugging. */
   toString(): string {
-    return `Memory(containerTag=${this.containerTag}, session=${this.sessionUuid})`;
+    return `Memory(containerTag=${this.derivedContainerTag}, session=${this.sessionUuid})`;
   }
 }

@@ -1,6 +1,116 @@
 # Python SDK Changelog
 
-## Unreleased — server behaviour change on `POST /api/v1/query` (2026-07-29)
+## 2.1.0 — ADR-0031 search controls, one version number, PEP 561 (2026-09-05)
+
+All three SDKs (Go, TypeScript, Python) converge on **2.1.0** in this change, per
+`feedback_sdk_sync_invariant` (three SDKs in parity, same PR).
+
+### The version is now ONE number
+
+Before this release the package made four inconsistent claims: `pyproject.toml`
+said `2.0.0`, the `User-Agent` said `2.1`, the README pinned a `2.0.12` wheel and
+the newest changelog heading said `2.0.2`. `2.1.0` is above every shipped tag
+(py 2.0.20 / go 2.0.18 / ts 2.0.17) and makes the number the wire already claimed
+true.
+
+- New `anhurdb/version.py` is the single source of truth; `USER_AGENT` is derived
+  from it, never retyped. The header is now `AnhurSDK-Python/2.1.0`.
+- `anhurdb.__version__` is exported (PEP 396) — previously the installed version
+  could not be introspected at all.
+- `tests/test_version.py` locks `pyproject.toml` to `anhurdb/version.py` and
+  asserts the header on the SERVER side of a mock request. The release workflow
+  rewrites the manifest with `sed`, so without that lock a release could ship a
+  wheel whose metadata and whose `User-Agent` disagreed, silently.
+- The published install pin in the README is deliberately still `2.0.12`: the
+  2.1.0 wheel does not exist yet, and a doc pinning an unpublished version is
+  worse than a stale one.
+
+### ADR-0031 search controls (parity with the server shipped 2026-09-05)
+
+`search()` and `search_with_retrieval()` gained three opt-in, keyword-only knobs.
+Each is omitted from the request when unset, so an existing caller sends the exact
+payload it sent before.
+
+- `mode`: `"fast"` | `"balanced"` | `"semantic"`. Validated client-side — an
+  unknown value raises `AnhurError: INVALID_PARAM: 'mode' must be one of: fast,
+  balanced, semantic` **before** the round trip. The server normalises unknown
+  modes to `balanced` on purpose (so gRPC and REST can never disagree about a
+  typo), which means the server can never report the typo back.
+- `semantic_timeout_ms`: caps the Embed+HNSW wait. `None`/`0` = server default
+  (700 ms). Negative is refused.
+- `debug_signals`: attaches the per-hit signals block and `leg_scores`.
+
+**Cross-version guard (the reason this is not just three new fields).** An
+additive proto3/JSON field is compatible on the wire, not in the semantics: a
+server that predates ADR-0031 ignores `mode`, runs balanced, and answers HTTP 200
+with lexical results while the caller believes it asked for strict semantic
+retrieval. The SDK now detects that from the RESPONSE — a current server always
+fills `retrieval.mode` — and **raises** `AnhurError: SERVER_TOO_OLD: ...` for
+`mode="semantic"`. `semantic_timeout_ms` and `debug_signals` degrade without
+misrepresenting the result set, so those emit a `RuntimeWarning` instead. No new
+environment variable and no new configuration knob: the detection is derived from
+data the server already sends.
+
+Known blind spot, stated rather than hidden: with `scope="shared_all"` a CURRENT
+server also returns an empty `retrieval.mode` (a two-plane fan-out has no single
+honest mode to report), so the check cannot run there and warns instead of
+raising. Raising would reject a healthy server.
+
+### Richer search response
+
+- `SearchHitSignals` went from 6 to the full **13** fields: `hnsw_rank`,
+  `bsq_rank`, `parquet_rank`, `fts5_rank`, `astar_rank`, `entity_jaccard_rank`,
+  `active_leg_weight_sum`. Because every model is `extra="ignore"`, these were
+  arriving and being dropped SILENTLY before.
+- New `LegScoreSummary` model and `SearchResponse.leg_scores`. `None` (key absent)
+  and `[]` (key present, no legs) are kept apart.
+
+### Other
+
+- `Memory(..., timeout=30.0)`: the request budget is finally reachable from the
+  constructor and forwarded to `HTTPConnection`. It was hardcoded at 30 s with no
+  way to change it. A constructor parameter, never an environment variable.
+- Exported from the package root what was already part of the return/raise
+  contract but unreachable: `AnhurUploadWaitTimeout`, `SearchResponse`,
+  `SearchHitSignals`, `RelatedNode`, `RetrievalMeta`, plus the new
+  `LegScoreSummary` and the `SEARCH_MODE_*` constants. A type you can receive but
+  cannot name is not a public API.
+- `py.typed` marker added and declared in `pyproject.toml`. Without PEP 561 every
+  annotation across the package was invisible to the consumer's type checker.
+- `pyproject.toml` fix: `readme` and `packages` were sitting under
+  `[tool.pytest.ini_options]`, so Poetry never saw them. TOML tables are
+  positional; both are back under `[tool.poetry]`.
+
+### House law: files split by domain
+
+`anhurdb/client/__init__.py` was 2483 lines (8x the ~300-line cut) and
+`anhurdb/models/record.py` was 322. Both were split BEFORE anything was added:
+
+- `anhurdb/client/search.py` — the `POST /api/v1/search` port (`HybridSearchMixin`).
+- `anhurdb/client/search_scopes.py` — plane shortcuts and `/search/type`,
+  `/search/smart` (`SearchScopeMixin`).
+- `anhurdb/client/search_parse.py` — response envelope → typed objects.
+- `anhurdb/client/search_mode.py` — the mode vocabulary and the cross-version check.
+- `anhurdb/models/search.py` — every search wire model.
+
+`Memory` keeps its complete surface (the mixins are mixed into it) and
+`from anhurdb.client import _parse_search_results` still resolves, so the split is
+invisible to every existing importer.
+
+### Docs corrected against the code
+
+- `batch_read_content` was documented as "up to 100 records". No SDK enforces
+  that, and the number is wrong: the SERVER caps a batch at **1000**
+  (`server/handler/record_batch.go`, `maxBatchSize = 1000`) and answers HTTP 400
+  `batch size exceeds maximum`.
+- The `mode="mcp"` warning blamed the retired `execute_ast` tool. False: the SDK
+  maps `/api/v1/query` to the live `query` tool. The real blocker is that
+  `/api/v1/mcp/direct` is served only on the MCP server's metrics listener
+  (default port 9092), not on the data plane the SDK's `url` points at.
+- `smart_search` also takes `memory_type` (sent as `?type=`) and returns the raw
+  response dict, not `list[SearchResult]`.
+
+## Server-side behaviour change on `POST /api/v1/query` (2026-07-29, no SDK code changed)
 
 **No SDK code changed. No REST route, request shape or response shape changed.**
 What changed is on the server, and it can turn code that worked yesterday into an
@@ -104,7 +214,7 @@ These remain accept-and-ignore, and this release does **not** turn them into err
   that the server still accepts and skips. It has never contributed to the result
   and still does not — it is **not** one of the new 400s.
 
-## Unreleased (2.0.2)
+## 2.0.2
 
 _Generated at 2026-07-15T01:21:22Z from `v2/python/v2.0.1` → `HEAD`_
 

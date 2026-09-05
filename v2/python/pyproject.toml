@@ -1,14 +1,25 @@
 [tool.poetry]
 name = "anhurdb"
-version = "2.0.0"
+version = "2.1.0"
 description = "Official Python SDK V2 for AnhurDB - The Cognitive Database"
 authors = ["Paulo Junior <paulo.junior@yoven.io>"]
+readme = "README.md"
+packages = [{include = "anhurdb"}]
+# PEP 561: without this marker inside the wheel, every type annotation in this
+# SDK is invisible to the consumer's mypy/pyright. Listed explicitly because a
+# zero-byte non-.py file is exactly the kind of thing a build backend drops.
+#
+# Junior Tip [2026-09-05 — why these three keys moved]: `readme`, `packages`
+# and (before this) nothing else were sitting UNDER `[tool.pytest.ini_options]`,
+# so Poetry never saw them: the long description came out empty and the package
+# was only found by accident, because the directory happens to be named
+# `anhurdb`. TOML tables are positional — a key belongs to the last table
+# header above it, not to the one it was meant for.
+include = [{path = "anhurdb/py.typed", format = ["sdist", "wheel"]}]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/test_integration.py"
-readme = "README.md"
-packages = [{include = "anhurdb"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"

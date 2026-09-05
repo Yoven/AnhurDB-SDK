@@ -28,17 +28,31 @@ Packages ship on **[GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releas
 ```bash
 # Python — wheel from the Python SDK release assets
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.12/anhurdb-2.0.12-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.20/anhurdb-2.0.20-py3-none-any.whl
 
 # TypeScript — tarball from the TypeScript SDK release assets
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.10/anhurdb-2.0.10.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.17/anhurdb-2.0.17.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.11
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.18
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
+>
+> The three pins above are the **latest published tag of each SDK** as of 2026-09-05
+> (`v2/python/v2.0.20`, `v2/typescript/v2.0.17`, `v2/golang/v2.0.18`) — verified with
+> `git tag -l 'v2/*'`, not copied from another doc. They deliberately do **not** match each
+> other: the tags are per-language and were cut on different days. They also do not match the
+> in-repo source version (2.1.0), because 2.1.0 has not been released — pinning an unpublished
+> version would hand every reader a 404 instead of a stale-but-working install.
+>
+> These pins are the floor for the features documented below: `delete_file`/`deleteFile`/
+> `DeleteFile`, `expand_related` and `search_with_retrieval`/`searchWithRetrieval`/
+> `SearchWithRetrieval` first appear in `v2/python/v2.0.18`, `v2/typescript/v2.0.15` and
+> `v2/golang/v2.0.16`. Installing below those tags fails at the caller's desk with an
+> `AttributeError`/`TypeError`, not with a diagnosable 404 — the URLs of the old releases
+> still resolve.
 
 ---
 
@@ -100,7 +114,7 @@ All 3 SDKs share the same methods. Names follow each language's convention.
 | `create_session()` | Register a write session (required before ingest/create) | POST /api/v1/sessions |
 | `add(text, mode="ingest")` | **Default raw write:** episodic + async extraction (LLM+embed billed). Requires session. Pins → create path | POST /api/v1/ingest |
 | `create(...)` | **Typed atom only:** one record, no extraction (embed only) | POST /api/v1/records |
-| `search(query, sessions, scope=sessions)` | Hybrid plane search — query is FTS `text` (prefer `smart_search` for conceptual RAG) | POST /api/v1/search |
+| `search(query, sessions, scope=sessions)` | **Hybrid plane search — the default for conceptual RAG.** Vector + lexical + SimHash, RRF-fused and cognitively reranked | POST /api/v1/search |
 | `profile()` | Get structured user profile | GET /api/v1/profile |
 
 ### Search & Discovery
@@ -114,7 +128,7 @@ Every method in this table takes `sessions` as a **required** argument.
 | `search_client_shared(query, sessions)` | Client-wide Shared Data library | POST /api/v1/search |
 | `search_shared(query, sessions)` | Both shared planes (`scope=shared_all`) | POST /api/v1/search |
 | `search_by_type(type, sessions)` | Type filter in tenant store only — **not** a Shared Data plane switch | GET /api/v1/search/type |
-| `smart_search(query, sessions, scope=sessions)` | Lexical + cognitive weight (prefer for conceptual text; same `scope` planes) | GET /api/v1/search/smart |
+| `smart_search(query, sessions, scope=sessions)` | **Purely lexical** — BM25 over Parquet + FTS5 over the summary, fused by RRF. **No vector enters this path.** Use it for keyword/identifier lookups, not for conceptual RAG | GET /api/v1/search/smart |
 | `recall(query, sessions, scope=sessions)` | Delegates to `search` (no server-side recall endpoint); the 4-way fan-out lives in the MCP server | POST /api/v1/search |
 | `search_session(query, session_uuid)` | Sugar for `search(query, [session_uuid])` | POST /api/v1/search |
 | `recent(limit)` | Most recent memories — not a search endpoint, no `sessions` | GET /api/v1/recent |
@@ -131,10 +145,18 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
 | `walk(seed_id, depth)` | BFS graph traversal | POST /api/v1/walk |
-| `walk_semantic(seed_id, …)` | **Advanced:** goal-directed walk from a seed — not day-to-day RAG (prefer `smart_search` / `recall`) | POST /api/v1/walk/semantic |
+| `walk_semantic(seed_id, …)` | **Advanced:** goal-directed walk from a seed — not day-to-day RAG (prefer `search` / `recall`) | POST /api/v1/walk/semantic |
 | `get_context(record_id)` | Get record + 1-hop neighbors | GET /api/v1/records/{id}/topology |
 
-**Power tools (not default RAG):** SDK `query()` / `QueryBuilder` (MCP `query(ast=)` or `query(instructions=)`) and `walk_semantic` (MCP `walk_graph(mode=cost)`) are for exact filters and seed-directed graph walks. For “what do we know about X?” use `smart_search` / `recall` / `search` with `scope`.
+**Power tools (not default RAG):** SDK `query()` / `QueryBuilder` (MCP `query(ast=)` or `query(instructions=)`) and `walk_semantic` (MCP `walk_graph(mode=cost)`) are for exact filters and seed-directed graph walks. For “what do we know about X?” use `search` (hybrid) or `recall` with `scope`.
+
+> **`smart_search` is not the conceptual-RAG entry point** — a previous version of this table
+> said it was. `GET /api/v1/search/smart` is BM25 + FTS5 fused by RRF and no vector enters it
+> (`handler/search_scope_smart.go`, `handler/search_fusion.go`). A query whose wording does not
+> overlap the stored text returns nothing, quietly. The ControlPlane Cognitive Map proxy moved
+> off `search/smart` onto `POST /api/v1/search` on 2026-08-18 for exactly this reason
+> (`AnhurControlPlane/AnhurDBControlServer/main.go:2245-2246`). Reach for `smart_search` when
+> you want a literal term match — an identifier, an error string, a name.
 
 > **`POST /api/v1/query` got stricter on 2026-07-28.** An unknown operator, a bare
 > value where an operator object was expected, an empty operator object `{}`, and an
@@ -611,16 +633,19 @@ There is no retry limit anywhere in this path. An outage delays memory; it never
 | **Protocol** | HTTP REST | MCP over HTTP/SSE |
 | **Auth** | `X-API-Key` header | API key in tool arguments |
 | **Best for** | Production applications | Claude, Cursor, and similar tools |
-| **Surface** | `Memory` client over REST | **22 tools** (ADR-0013 Fase 4) |
+| **Surface** | `Memory` client over REST | **23 tools** (ADR-0013 Fase 4, plus `delete_file`) |
 | **Backend hop** | REST → smart-router → data plane | MCP server → data plane over **gRPC** |
 
 Use the **SDK** for application code. Use **MCP** for IDE plugin integrations.
 
 The **MCP tool surface** was cut from 47 tools to **22** on 2026-07-28 (ADR-0013
-Fase 4). MCP *tool names* that no longer exist include `execute_ast`, `sdk_query`,
+Fase 4), and is **23** today — `delete_file` was published 2026-08-08 under the ADR-0013 §3
+admission rule (a verb with `destructiveHint` gets its own tool). Ground truth for the count
+is `AnhurDB/mcp-server/internal/tools/surface22_test.go` (`const surfaceToolCount = 23`); the
+file name is the contract-test name, not a running count. MCP *tool names* that no longer exist include `execute_ast`, `sdk_query`,
 `semantic_walk`, `semantic_search`, `smart_search`, `get_record`, `read_content`,
 `batch_read_content`, `search_shared`, `list_entities`, `get_entity_graph` and
-`entity_timeline` — each was absorbed into one of the 22 (e.g. `execute_ast` →
+`entity_timeline` — each was absorbed into one of the surviving tools (e.g. `execute_ast` →
 `query(ast=)`, `smart_search` → `search(strategy=lexical)`, `read_content` →
 `get_records(include=["content"])`). The canonical list and the complete 47→22
 migration map live in `AnhurDB/docs/MCP_TOOLS.md`; the registration code is the final

@@ -92,7 +92,7 @@ func NewConnection(baseURL, apiKey string, timeout time.Duration) *HTTPConnectio
 // JSON callers use setHeaders; multipart callers set Content-Type themselves.
 func (c *HTTPConnection) setAuthHeaders(req *http.Request) {
 	req.Header.Set("X-API-Key", c.APIKey)
-	req.Header.Set("User-Agent", "AnhurSDK-Golang/2.1")
+	req.Header.Set("User-Agent", UserAgent)
 	if c.TenantID != "" {
 		if err := validateHeaderValue(c.TenantID, "TenantID"); err == nil {
 			req.Header.Set("X-Tenant-ID", c.TenantID)

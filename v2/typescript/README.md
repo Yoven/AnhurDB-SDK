@@ -28,8 +28,14 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.10/anhurdb-2.0.10.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.17/anhurdb-2.0.17.tgz
 ```
+
+> The **source** in this tree is `2.1.0` (`SDK_VERSION`), converged with the Go
+> and Python SDKs. The pin above deliberately names the newest **published**
+> tarball: pinning a version that is not released yet would 404 for everyone who
+> follows this README. It moves to `v2.1.0` when the tag is pushed. (It was stale
+> at `v2.0.10` — seven releases behind — until 2026-09-05.)
 
 ## Usage
 
@@ -93,6 +99,39 @@ const broad = await mem.recall("engineering", sessionsAll(), 20);
 // Most recent records
 const latest = await mem.recent(5);
 ```
+
+#### Ranking effort — `mode`, `semanticTimeoutMs`, `debugSignals` (2.1.0)
+
+```typescript
+// "fast" never embeds the query; "balanced" (the default) degrades to the
+// lexical legs when the embedder is down; "semantic" refuses to answer
+// without semantics.
+const strict = await mem.search("quarterly risk", sessionsAll(), {
+  mode: "semantic",
+  semanticTimeoutMs: 1500,   // per-query budget; 0/unset = server default (700 ms)
+});
+
+// Research instrumentation: per-hit signals + pre-fusion per-leg scores.
+const { results, retrieval, legScores } = await mem.searchWithRetrieval(
+  "quarterly risk", sessionsAll(), { debugSignals: true });
+console.log(retrieval?.mode, results[0]?.signals?.hnsw_rank, legScores);
+```
+
+`mode: "semantic"` is a promise the SERVER has to keep. An AnhurDB older than
+ADR-0031 ignores the field, runs balanced and answers **HTTP 200 with lexical
+results**. The SDK detects that from the response (`retrieval.mode`, which a
+current server always fills) and **throws** rather than hand you degraded
+results dressed as semantic ones. `semanticTimeoutMs` and `debugSignals`
+degrade honestly, so those only log one warning.
+
+An unknown `mode` is rejected before the request leaves the process — the
+server folds anything it does not recognise into `balanced`, so a typo would
+otherwise be invisible.
+
+One exception: on `scope: "shared_all"` the check can only warn. A current
+server deliberately leaves `retrieval.mode` empty when it merges two planes,
+so there is nothing to compare against. Use a single scope when you need the
+strict-semantic guarantee verified.
 
 ### Graph Traversal
 
@@ -250,8 +289,9 @@ Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
 
 | Category | Methods |
 |----------|---------|
-| **Core** | `add`, `search`, `profile` |
-| **Search** | `searchByType`, `smartSearch`, `recall`, `recent`, `query` |
+| **Core** | `add`, `search`, `searchWithRetrieval`, `profile` |
+| **Search** | `searchSessions`, `searchTenantShared`, `searchClientShared`, `searchShared`, `searchSession`, `searchByType`, `smartSearch`, `recall`, `recent`, `query` |
+| **Identity** | `sessionId`, `getSessionId`, `containerTag`, `getContainerTag` |
 | **Graph** | `walk`, `walkSemantic`, `getContext`, `readContent` |
 | **Entity** | `searchEntities`, `upsertEntity`, `entityGraph`, `entityTimeline`, `upsertEntityEdge`, `linkRecordEntity`, `getRecordEntities` |
 | **Batch** | `batchReadContent`, `batchUpdateStatus` |
@@ -272,6 +312,9 @@ import type {
   EntityRecord, EntityEdge, EntityGraphResult, EntityTimelineResult,
   UpsertEntityOptions, UpsertEntityEdgeOptions,
   UploadResult, UploadStatusResult, BatchUpdateResult,
+  SearchMode, RetrievalMeta, SearchHitSignals, LegScoreSummary,
+  SearchWithRetrievalResult, WalkTarget, WalkSemanticOptions,
+  AnhurErrorKind, QueryParams,
 } from "anhurdb";
 ```
 

@@ -11,16 +11,16 @@ import os
 import secrets
 import warnings
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
 from .exceptions import AnhurError, AnhurQueryError, AnhurUploadWaitTimeout
-from .session_filter import (
-    MAX_SESSION_FILTER_UUIDS,
-    SESSION_WILDCARD,
-    normalize_sessions,
-    sessions_all,
+from .search_parse import (
+    _parse_search_response,
+    _parse_search_results,
+    _parse_typed_records,
 )
+from .search_scopes import SearchScopeMixin
 from ..models import (
     CreateRequest,
     DeleteFileResult,
@@ -28,12 +28,27 @@ from ..models import (
     EntityModel,
     MemoryType,
     Record,
-    RetrievalMeta,
-    SearchResponse,
     SearchResult,
     SessionStats,
 )
-from ..query import QueryBuilder, SemanticMode
+from ..query import QueryBuilder
+from ..version import USER_AGENT
+
+# Junior Tip [why these three are imported but not called here]: the search
+# family moved to ``search.py``/``search_scopes.py``/``search_parse.py`` when
+# this file was split by domain, but ``from anhurdb.client import
+# _parse_search_results`` was already an import path in use (this repo's own
+# ``tests/test_search_expand_related.py`` uses it). Re-exporting keeps the
+# split invisible to every existing importer — a file split must never become
+# a breaking change.
+__all__ = [
+    "Memory",
+    "AnhurClient",
+    "DEFAULT_CLOUD_URL",
+    "_parse_search_results",
+    "_parse_search_response",
+    "_parse_typed_records",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +86,7 @@ async def _impersonate_tenant(
     headers = {
         "X-API-Key": client_key,
         "Content-Type": "application/json",
-        "User-Agent": "AnhurSDK-Python/2.1",
+        "User-Agent": USER_AGENT,
     }
     payload = {"tenant_id": tenant_id, "expires_in": expires_in}
     timeout = aiohttp.ClientTimeout(total=30)
@@ -132,76 +147,11 @@ def _utc_timestamp() -> str:
     return now.strftime("%Y%m%d-%H%M%S")
 
 
-def _parse_search_results(data: Any) -> List[SearchResult]:
-    """Parse a raw search-endpoint envelope into typed ``SearchResult`` objects.
-
-    Returns an empty list when the payload is not the expected envelope object.
-
-    Junior Tip [2026-08-10 — stop discarding fields the server already sends]:
-    before this fix, this function hand-picked only ``record``/``similarity``
-    off each hit, so ``provenance``/``scope``/``signals`` (present on the wire
-    since before this SDK existed — see ``server/model/record.go``
-    ``SearchResult``) were read off the network and then thrown away before
-    ever reaching a ``SearchResult`` instance. That is silent data loss of the
-    exact kind CLAUDE.md calls the project's worst failure mode: a caller
-    using ``shared_all`` scope had no SDK-visible way to tell which plane
-    (``sessions``/``tenant_shared``/``client_shared``) answered a given hit.
-    Passing the WHOLE hit dict through ``SearchResult(**hit_fields)`` (with
-    only ``record`` pre-built, since it needs its own nested parse) means any
-    field the server adds next also survives without another manual edit
-    here — ``extra="ignore"`` on ``SearchResult`` still protects against
-    truly unknown keys, it just no longer discards KNOWN ones by omission.
-    """
-    if not isinstance(data, dict):
-        return []
-    parsed: List[SearchResult] = []
-    for hit in data.get("results", []):
-        hit_fields: Dict[str, Any] = dict(hit)
-        # Required, same as the original hit["record"] — a hit with no
-        # "record" key is a malformed server response (record has no
-        # omitempty on the Go side), not a value to paper over with an
-        # empty placeholder. Fail loud (KeyError), never fabricate.
-        hit_fields["record"] = Record(**hit_fields["record"])
-        parsed.append(SearchResult(**hit_fields))
-    return parsed
-
-
-def _parse_search_response(data: Any) -> SearchResponse:
-    """Parse a raw search-endpoint envelope into a full ``SearchResponse``
-    (typed hits + the optional ADR-0012 ``retrieval`` block).
-
-    Reuses ``_parse_search_results`` for the ``results`` array so the two
-    parse paths can never disagree about how a hit is built. ``retrieval`` is
-    ``None`` when the server omits the key entirely (``bundle.go``:
-    ``if retrieval != nil { payload["retrieval"] = retrieval }``) — a server
-    that predates ADR-0012, or a response shape that never attaches it."""
-    if not isinstance(data, dict):
-        return SearchResponse()
-    retrieval_data = data.get("retrieval")
-    return SearchResponse(
-        results=_parse_search_results(data),
-        retrieval=RetrievalMeta(**retrieval_data) if retrieval_data else None,
-    )
-
-
-def _parse_typed_records(data: Any) -> List[SearchResult]:
-    """Parse a BARE-record envelope (``{"records": [{...}, ...], "count": N}``) into
-    typed ``SearchResult`` objects.
-
-    Returns an empty list when the payload is not the expected envelope object."""
-    if not isinstance(data, dict):
-        return []
-    return [
-        SearchResult(record=Record(**record), similarity=0.0)
-        for record in data.get("records", [])
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Memory — the single canonical client (simple ergonomics + full surface)
 # ---------------------------------------------------------------------------
 
-class Memory:
+class Memory(SearchScopeMixin):
     """The one AnhurDB client. Dead-simple to start with, complete underneath.
 
     Handles session management, container tagging, and cloud/OSS fallback
@@ -226,7 +176,11 @@ class Memory:
         user_id:   Explicit container tag. When omitted, derived from
                    API key hash.
         tenant_id: Optional ``X-Tenant-ID`` header for multi-tenant.
-        mode:      Transport — ``"rest"`` (default) or ``"mcp"``."""
+        mode:      Transport — ``"rest"`` (default) or ``"mcp"``.
+        timeout:   Per-request budget in seconds (default 30.0), applied to
+                   every call this client makes, uploads included. There is no
+                   client-side retry, so this is the whole wall clock a call
+                   gets before ``AnhurConnectionError``."""
 
     def __init__(
         self,
@@ -235,7 +189,17 @@ class Memory:
         user_id: Optional[str] = None,
         tenant_id: str = "",
         mode: str = "rest",
+        timeout: float = 30.0,
     ):
+        # Junior Tip [why a constructor parameter and never an env var]: the
+        # right request budget is a property of the CALLER (a chat turn can
+        # wait 5s; a 200 MB upload cannot), not of the machine the process
+        # happens to run on. An env var would apply one number to every
+        # Memory in the process and would be invisible at the call site — and
+        # this project's rule is that a new knob is a debt: the value belongs
+        # where the caller can see it. 30.0 is the exact default
+        # ``HTTPConnection`` already hardcoded, so nothing changes for anyone
+        # who does not pass it.
         key = api_key or os.environ.get("ANHUR_API_KEY", "")
         if not key:
             raise ValueError(
@@ -248,6 +212,7 @@ class Memory:
             base_url=url,
             api_key=key,
             tenant_id=tenant_id,
+            timeout=timeout,
             mode=mode,
         )
 
@@ -288,6 +253,7 @@ class Memory:
         url: str = DEFAULT_CLOUD_URL,
         user_id: Optional[str] = None,
         mode: str = "rest",
+        timeout: float = 30.0,
     ) -> "Memory":
         """Build a Memory by minting a short-lived tenant token from a client key.
 
@@ -310,6 +276,7 @@ class Memory:
             url=url,
             user_id=user_id,
             mode=mode,
+            timeout=timeout,
         )
         memory._client_key = client_key
         memory._impersonate_tenant_id = tenant_id
@@ -333,6 +300,7 @@ class Memory:
         user_id: Optional[str] = None,
         tenant_id: str = "",
         mode: str = "rest",
+        timeout: float = 30.0,
     ) -> "Memory":
         """Explicit factory for tenant (or already-minted impersonation) keys."""
         return cls(
@@ -341,6 +309,7 @@ class Memory:
             user_id=user_id,
             tenant_id=tenant_id,
             mode=mode,
+            timeout=timeout,
         )
 
     async def _ensure_impersonation_fresh(self) -> None:
@@ -790,389 +759,6 @@ class Memory:
             params={"max_depth": str(max_depth)},
                     )
 
-    # ── Search ─────────────────────────────────────────────────────
-
-    def _build_search_payload(
-        self,
-        query: str,
-        sessions: Sequence[str],
-        *,
-        limit: int,
-        type_filter: Optional[str],
-        scope: str,
-        skip_query_embed: bool,
-        skip_cognitive_rerank: bool,
-        expand_related: bool,
-        astar_weight: Optional[float],
-        entity_jaccard_weight: Optional[float],
-    ) -> Dict[str, Any]:
-        """Build the ``POST /api/v1/search`` body shared by ``search()`` and
-        ``search_with_retrieval()`` — one place so the two request paths
-        cannot silently diverge on which knobs get sent.
-
-        Every optional knob is OMITTED from the payload rather than sent at
-        its "off" value, matching the server's own ``omitempty`` wire
-        contract (``server/model/record.go`` ``SearchRequest``) and the
-        ``skip_query_embed`` precedent (commit ``ff7f803``): a caller who
-        never touched a knob gets the exact payload shape that existed
-        before the knob was added, so the server's own default (not the
-        SDK's) decides the behaviour."""
-        resolved_sessions = normalize_sessions(sessions)
-        payload: Dict[str, Any] = {
-            "text": query,
-            "limit": limit,
-            "scope": scope,
-            "sessions": resolved_sessions,
-        }
-        if type_filter:
-            payload["type_filter"] = type_filter
-        # Knobs de ablação (paridade REST/MCP/Go/TS, 2026-08-07): omitidos
-        # quando False para preservar o wire default do servidor.
-        if skip_query_embed:
-            payload["skip_query_embed"] = True
-        if skip_cognitive_rerank:
-            payload["skip_cognitive_rerank"] = True
-        # ADR-0021 (2026-08-10): expand_related is bool/opt-in, same
-        # omit-when-false discipline as the ablation knobs above.
-        if expand_related:
-            payload["expand_related"] = True
-        # astar_weight / entity_jaccard_weight: None means "caller never set
-        # this", NOT "set it to 0.0". The server distinguishes the two with
-        # a *float64 (nil vs 0.0) for exactly this reason — see
-        # server/model/record.go SearchRequest.AstarWeight's Junior Tip. A
-        # plain float default of 0.0 here would make "explicitly asked for
-        # 0.0" and "never asked" indistinguishable on the wire, silently
-        # forcing every unset caller into an explicit-zero override.
-        if astar_weight is not None:
-            payload["astar_weight"] = astar_weight
-        if entity_jaccard_weight is not None:
-            payload["entity_jaccard_weight"] = entity_jaccard_weight
-        return payload
-
-    async def search(
-        self,
-        query: str,
-        sessions: Sequence[str],
-        *,
-        limit: int = 10,
-        type_filter: Optional[str] = None,
-        scope: str = "sessions",
-        skip_query_embed: bool = False,
-        skip_cognitive_rerank: bool = False,
-        expand_related: bool = False,
-        astar_weight: Optional[float] = None,
-        entity_jaccard_weight: Optional[float] = None,
-    ) -> List[SearchResult]:
-        """Hybrid plane search via ``POST /api/v1/search``.
-
-        Default ``scope`` is ``sessions`` (all chat sessions for the tenant,
-        excluding shared-library uuids). Use the scope helpers or pass
-        ``tenant_shared``, ``client_shared``, or ``shared_all`` explicitly.
-
-        ``sessions`` is MANDATORY (ADR-0014): pass ``sessions_all()`` for every
-        session inside the scope, or the explicit uuids to confine the query to
-        those chats. ``None`` and ``[]`` are errors, never "all".
-
-        Junior Tip [scope vs sessions]: the two are orthogonal. ``scope`` picks
-        the BOUNDARY (which store/plane is reachable at all); ``sessions`` picks
-        the SUBSET inside that boundary. ``["*"]`` means "everything in this
-        boundary" — it is not a way to cross into a shared plane.
-
-        Agent UX — text is not semantic: ``query`` is sent as body ``text``
-        (FTS5 exact-word matching), not an embedding. For conceptual RAG
-        without a vector, prefer ``smart_search`` (or MCP ``recall``).
-
-        Each hit's ``.provenance`` / ``.scope`` / ``.signals`` are populated
-        straight from the server response (fixed 2026-08-10 — previously
-        silently discarded by the SDK parser). ``.related_nodes`` is
-        populated when ``expand_related=True`` and the walk found neighbours
-        within budget; ``None`` means either the flag was off or nothing was
-        found — see ``docs/decisions/ADR-0021-search-expand-related.md``
-        (implemented on REST/gRPC/MCP/all 3 SDKs as of 2026-08-11). Session/
-        plane admission is enforced server-side for every neighbour, the
-        same guarantee the rest of a hit's own visibility already has.
-
-        Args:
-            query:                 Query string sent as FTS ``text`` (required).
-            sessions:               Session filter (required) — ``sessions_all()`` or uuids.
-            limit:                  Maximum results (default 10).
-            type_filter:            Optional memory type filter.
-            scope:                  Search plane (default ``sessions``).
-            expand_related:         ADR-0021 opt-in — ask the server to attach a
-                                    bounded ``related_nodes`` summary to each
-                                    surviving top-K hit. Default ``False``,
-                                    omitted from the wire when unset.
-            astar_weight:           Per-request override of
-                                    ``ANHUR_SEARCH_ASTAR_WEIGHT`` for this query
-                                    only. ``None`` (default) = use the server's
-                                    configured weight; omitted from the wire.
-                                    Pass ``0.0`` explicitly to disable the A*
-                                    arm's contribution for just this query —
-                                    that is NOT the same as leaving this unset.
-            entity_jaccard_weight:  Per-request override of
-                                    ``ANHUR_ENTITY_JACCARD_WEIGHT`` for this
-                                    query only. Same ``None``-vs-``0.0`` contract
-                                    as ``astar_weight``.
-
-        Returns:
-            List of typed ``SearchResult`` objects (nested ``.record`` +
-            ``.similarity`` + ``.provenance``/``.scope``/``.signals``/
-            ``.related_nodes``).
-
-        Raises:
-            AnhurError: ``INVALID_PARAM: ...`` when the session filter is
-                absent, empty, contradictory, or above the cap.
-
-        Example::
-
-            hits = await mem.search(
-                "what does this user do?", sessions_all(), limit=5
-            )"""
-        payload = self._build_search_payload(
-            query,
-            sessions,
-            limit=limit,
-            type_filter=type_filter,
-            scope=scope,
-            skip_query_embed=skip_query_embed,
-            skip_cognitive_rerank=skip_cognitive_rerank,
-            expand_related=expand_related,
-            astar_weight=astar_weight,
-            entity_jaccard_weight=entity_jaccard_weight,
-        )
-        data = await self._connection.post("/api/v1/search", payload)
-        return _parse_search_results(data)
-
-    async def search_with_retrieval(
-        self,
-        query: str,
-        sessions: Sequence[str],
-        *,
-        limit: int = 10,
-        type_filter: Optional[str] = None,
-        scope: str = "sessions",
-        skip_query_embed: bool = False,
-        skip_cognitive_rerank: bool = False,
-        expand_related: bool = False,
-        astar_weight: Optional[float] = None,
-        entity_jaccard_weight: Optional[float] = None,
-    ) -> SearchResponse:
-        """Identical request to ``search()``, but returns the full envelope
-        including the ADR-0012 ``retrieval`` block (which search arms ran,
-        whether semantic degraded, the RESOLVED astar/entity-jaccard
-        weights actually used).
-
-        Added instead of changing ``search()``'s return type so existing
-        callers of ``search()`` (which every SDK caller today is) keep
-        their ``List[SearchResult]`` unchanged. Use this method only when
-        you specifically need ``.retrieval``; otherwise prefer ``search()``.
-
-        Args:
-            (identical to ``search()`` — see its docstring for each.)
-
-        Returns:
-            ``SearchResponse`` with ``.results`` (same as ``search()``'s
-            return value) and ``.retrieval`` (``None`` if the server did not
-            attach the block)."""
-        payload = self._build_search_payload(
-            query,
-            sessions,
-            limit=limit,
-            type_filter=type_filter,
-            scope=scope,
-            skip_query_embed=skip_query_embed,
-            skip_cognitive_rerank=skip_cognitive_rerank,
-            expand_related=expand_related,
-            astar_weight=astar_weight,
-            entity_jaccard_weight=entity_jaccard_weight,
-        )
-        data = await self._connection.post("/api/v1/search", payload)
-        return _parse_search_response(data)
-
-    async def search_sessions(
-        self, query: str, sessions: Sequence[str], **kwargs: Any
-    ) -> List[SearchResult]:
-        """Search chat sessions only (``scope=sessions``).
-
-        ``sessions`` is mandatory — see ``search``."""
-        return await self.search(query, sessions, scope="sessions", **kwargs)
-
-    async def search_tenant_shared(
-        self, query: str, sessions: Sequence[str], **kwargs: Any
-    ) -> List[SearchResult]:
-        """Search tenant-shared library docs (``scope=tenant_shared``).
-
-        ``sessions`` is mandatory and selects inside the shared boundary."""
-        return await self.search(query, sessions, scope="tenant_shared", **kwargs)
-
-    async def search_client_shared(
-        self, query: str, sessions: Sequence[str], **kwargs: Any
-    ) -> List[SearchResult]:
-        """Search client-wide shared library (``scope=client_shared``).
-
-        ``sessions`` is mandatory and selects inside the shared boundary."""
-        return await self.search(query, sessions, scope="client_shared", **kwargs)
-
-    async def search_shared(
-        self, query: str, sessions: Sequence[str], **kwargs: Any
-    ) -> List[SearchResult]:
-        """Search both shared planes (``scope=shared_all``).
-
-        ``sessions`` is mandatory and selects inside both shared boundaries."""
-        return await self.search(query, sessions, scope="shared_all", **kwargs)
-
-    async def search_by_type(
-        self,
-        memory_type: str,
-        sessions: Sequence[str],
-        limit: int = 20,
-        query: Optional[str] = None,
-    ) -> List[SearchResult]:
-        """List/filter records by cognitive type in the tenant store.
-
-        Faster than plane search when you know the exact type.
-
-        Agent UX — not a plane switch: no ``scope`` parameter. Does **not**
-        search Shared Data. For specialty docs use ``search_tenant_shared`` /
-        ``search_client_shared`` / ``search_shared`` (or ``search(..., scope=...)``).
-
-        ``sessions`` is MANDATORY (ADR-0014), exactly as in ``search``: this
-        endpoint had no session argument at all before, so "give me the facts of
-        this chat" quietly returned the facts of every chat.
-
-        Args:
-            memory_type: Type to filter (e.g. ``"fact"``, ``"risk"``).
-            sessions:    Session filter (required) — ``sessions_all()`` or uuids.
-            limit:       Maximum results (default 20).
-            query:       Optional keyword search within the type.
-
-        Returns:
-            List of typed ``SearchResult`` objects (nested ``.record`` +
-            ``.similarity``)."""
-        resolved_sessions = normalize_sessions(sessions)
-        params: List[Tuple[str, str]] = [
-            ("type", memory_type),
-            ("limit", str(limit)),
-        ]
-        params.extend(("sessions", session) for session in resolved_sessions)
-        if query:
-            params.append(("q", query))
-        data = await self._connection.get(
-            "/api/v1/search/type", params=params
-        )
-        return _parse_typed_records(data)
-
-    async def search_session(
-        self,
-        query: str = "",
-        *,
-        session_uuid: Optional[str] = None,
-        limit: int = 10,
-        type_filter: Optional[str] = None,
-    ) -> List[SearchResult]:
-        """Search within a single session (all record types, including recent).
-
-        Sugar over ``search(query, [session_uuid])`` — the one-chat case
-        expressed in the ADR-0014 grammar.
-
-        Junior Tip [why the empty uuid stopped meaning "everything"]: this
-        method used to send ``uuid: ""`` when there was no current session, and
-        the server read that as "no session filter". A method named
-        ``search_session`` silently searching every session is the exact defect
-        ADR-0014 exists to kill. Widening is now spelled
-        ``search(query, sessions_all())``.
-
-        Args:
-            query:        Natural language query.
-            session_uuid: Session to search; ``None`` = current session.
-            limit:        Maximum results (default 10).
-            type_filter:  Optional memory type filter.
-
-        Returns:
-            List of typed ``SearchResult`` objects (nested ``.record`` +
-            ``.similarity``).
-
-        Raises:
-            AnhurError: ``INVALID_PARAM: ...`` when neither an explicit session
-                nor a current session is available."""
-        target_uuid = session_uuid if session_uuid is not None else self._session_uuid
-        return await self.search(
-            query,
-            [target_uuid if target_uuid is not None else ""],
-            limit=limit,
-            type_filter=type_filter,
-            scope="sessions",
-        )
-
-    async def smart_search(
-        self,
-        query: str,
-        sessions: Sequence[str],
-        *,
-        limit: int = 10,
-        memory_type: Optional[str] = None,
-        scope: str = "sessions",
-    ) -> Any:
-        """Full-text search with cognitive weight boosting.
-
-        Prefer this over ``search()`` for conceptual text queries (no
-        embedding required). Ranks by text relevance × cognitive weight.
-        Same memory-plane ``scope`` as ``search()`` (default ``sessions``).
-
-        ``sessions`` is MANDATORY (ADR-0014), exactly as in ``search``.
-        ``smart_search`` is one of the two paths that had no session argument at
-        all before — it accepted the scope, dropped the chat filter, and
-        answered from every conversation.
-
-        Args:
-            query:       Search query.
-            sessions:    Session filter (required) — ``sessions_all()`` or uuids.
-            limit:       Maximum results (default 10).
-            memory_type: Optional type filter.
-            scope:       Search plane (default ``sessions``).
-
-        Returns:
-            Search results ranked by cognitive relevance."""
-        resolved_sessions = normalize_sessions(sessions)
-        params: List[Tuple[str, str]] = [
-            ("q", query),
-            ("limit", str(limit)),
-            ("scope", scope),
-        ]
-        params.extend(("sessions", session) for session in resolved_sessions)
-        if memory_type:
-            params.append(("type", memory_type))
-        return await self._connection.get(
-            "/api/v1/search/smart", params=params
-        )
-
-    async def recall(
-        self,
-        query: str,
-        sessions: Sequence[str],
-        limit: int = 10,
-        *,
-        scope: str = "sessions",
-    ) -> List[SearchResult]:
-        """Recall memories via plane-aware search.
-
-        Delegates directly to ``search()`` (``POST /api/v1/search``,
-        default ``scope=sessions``). There is no server-side recall endpoint
-        or fan-out — the name mirrors the MCP ``recall`` tool convention
-        (whose 4-way fan-out + RRF lives in the MCP server, not the data
-        plane). Identical across the three SDKs.
-
-        ``sessions`` is MANDATORY (ADR-0014) — see ``search``.
-
-        Args:
-            query:     Natural language query.
-            sessions:  Session filter (required) — ``sessions_all()`` or uuids.
-            limit:     Maximum results (default 10).
-            scope:     Search plane (default ``sessions``).
-
-        Returns:
-            List of typed ``SearchResult`` objects (inherited from ``search``)."""
-        return await self.search(query, sessions, limit=limit, scope=scope)
 
     async def query(
         self,
@@ -2465,6 +2051,7 @@ class AnhurClient(Memory):
         api_key: Optional[str] = None,
         tenant_id: str = "",
         mode: str = "rest",
+        timeout: float = 30.0,
     ):
         # (not an error) so the thousands of existing AnhurClient(...) call sites
         # verbatim from Memory; we only re-order kwargs to match the OLD
@@ -2480,4 +2067,5 @@ class AnhurClient(Memory):
             url=url,
             tenant_id=tenant_id,
             mode=mode,
+            timeout=timeout,
         )

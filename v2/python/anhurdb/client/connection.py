@@ -1,5 +1,8 @@
 """HTTP connection layer for the AnhurDB Python SDK.
 
+Domain, in one sentence: hold an open session to AnhurDB and expose the four
+REST verbs over it.
+
 Provides two transport modes:
   1. **REST Direct** (default) — calls AnhurDB REST endpoints directly,
      matching the TypeScript and Go SDKs. This is the recommended mode.
@@ -18,39 +21,46 @@ Security hardening:
     multipart paths (e.g. max_session_records exceeded).
   - HTTP 415 (Unsupported Media Type) raises ``AnhurQueryError`` in both
     REST and multipart paths.
-  - HTTP 429 (Rate Limited) raises ``AnhurError`` so callers can retry."""
+  - HTTP 429 (Rate Limited) raises ``AnhurError`` so callers can retry.
 
-import asyncio
+Junior Tip [where the rest of the transport went, 2026-09-05]: this file was
+593 lines — nearly double this project's ~300-line cut — and the ADR-0031
+parity pass grew it again. It was split by DOMAIN, not by line count, into four
+neighbours, each named by the one responsibility it owns:
+
+  - ``connection_guards.py``      what the transport REFUSES (header injection,
+                                  oversized bodies).
+  - ``connection_request.py``     ONE round trip, and which exception a status
+                                  code becomes.
+  - ``connection_multipart.py``   file upload, the only non-JSON request shape.
+  - ``connection_mcp_tunnel.py``  the second transport mode, ``mode="mcp"``.
+
+What is LEFT here is the connection itself: its configuration, its lifetime
+(``connect``/``close``/``async with``) and the four public verbs. The three
+behavioural pieces come back in as mixins because each one needs the live
+session, the headers and the timeouts this class owns — a free function would
+have to be handed all of them on every call. ``QueryParams`` is re-exported
+below so that ``from .connection import QueryParams`` keeps working for anyone
+who already wrote it.
+"""
+
 import aiohttp
-import json
-import re
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
-from urllib.parse import urlencode
+from typing import Any, Dict, Optional
 
-from .exceptions import (
-    AnhurError,
-    AnhurConnectionError,
-    AnhurQueryError,
-    AnhurAuthError,
+from ..version import USER_AGENT
+from .connection_guards import (
+    MAX_RESPONSE_SIZE,
+    QueryParams,
+    validate_header_value,
 )
+from .connection_mcp_tunnel import McpTunnelMixin
+from .connection_multipart import MultipartUploadMixin
+from .connection_request import RequestExecutionMixin
 
-# Query-string arguments accepted by the read verbs.
-#
-# Junior Tip [why a pair sequence is allowed alongside the mapping]: the
-# ADR-0014 ``sessions`` filter is multi-valued and MUST reach the server as a
-# repeated key (``?sessions=a&sessions=b``). A ``Dict[str, str]`` cannot express
-# a repeated key, and joining the uuids with a separator would break the day a
-# session id contains that character. ``urlencode`` accepts either shape as-is,
-# so widening the type costs nothing and every existing dict call site keeps
-# working untouched.
-QueryParams = Union[Dict[str, str], Sequence[Tuple[str, str]]]
-
-# Maximum response body size: 100 MB.
-# Prevents memory exhaustion from malicious or misconfigured servers.
-_MAX_RESPONSE_SIZE = 100 * 1024 * 1024
-
-# Regex for validating header values — rejects CRLF injection attempts.
-_HEADER_SAFE = re.compile(r"^[\x20-\x7E]+$")
+# Re-exported for import compatibility: ``QueryParams`` has always been
+# reachable as ``anhurdb.client.connection.QueryParams`` and callers wrote that
+# path. Moving a name is not a reason to break an import that already exists.
+__all__ = ["HTTPConnection", "QueryParams"]
 
 # The transport issues exactly ONE HTTP request per call and surfaces the
 # outcome verbatim — no client-side retry loop.
@@ -60,28 +70,8 @@ _HEADER_SAFE = re.compile(r"^[\x20-\x7E]+$")
 # correct type via the ``json=`` kwarg on ``session.request``.
 
 
-def _validate_header_value(value: str, name: str) -> None:
-    """Validate a string is safe to use as an HTTP header value.
 
-    Rejects any string containing control characters (CR, LF, null)
-    that could enable HTTP header injection (response splitting).
-
-    Args:
-        value: The header value to validate.
-        name:  Human-readable field name for error messages.
-
-    Raises:
-        ValueError: If the value contains unsafe characters."""
-    if not value:
-        return
-    if not _HEADER_SAFE.match(value):
-        raise ValueError(
-            f"{name} contains invalid characters for HTTP header. "
-            f"Only printable ASCII (0x20-0x7E) is allowed."
-        )
-
-
-class HTTPConnection:
+class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin):
     """Asynchronous HTTP transport for AnhurDB.
 
     Attributes:
@@ -90,44 +80,6 @@ class HTTPConnection:
         tenant_id: Optional tenant ID for multi-tenant deployments.
         mode:      ``"rest"`` (direct REST) or ``"mcp"`` (MCP tunnel)."""
 
-    # -- MCP tool name mapping (used only in ``mode="mcp"``) ----------------
-    # Junior Tip [os nomes seguem a superficie MCP, que foi cortada de 47 para 22
-    # em 2026-07-28]: `execute_ast` deixou de existir — foi absorvida por `query`,
-    # que aceita o mesmo AST no argumento `ast`. Um mapa apontando para tool morta
-    # nao falha no import nem nos testes: quebra em runtime, so no modo mcp, e so
-    # para quem usa AST. Se a superficie mudar de novo, este mapa tem de mudar
-    # junto — a referencia canonica e AnhurDB/docs/MCP_TOOLS.md.
-    _MCP_TOOL_MAP: Dict[str, str] = {
-        "/api/v1/records":    "create_memory",
-        "/api/v1/query":      "query",
-        "/v2/records":        "create_memory",
-        "/v2/search/ast":     "query",
-    }
-
-    # Fields DECLARED by each MCP tool schema (mcp-server register22_*.go plus
-    # the ambient api_key/tenant_id added by declareAmbientArguments).
-    #
-    # Junior Tip [why the tunnel must filter — ADR-0013 D1 strict params]: the
-    # MCP server closes every tool schema (additionalProperties:false) and
-    # answers any undeclared argument with INVALID_PARAM. The REST payload for
-    # ``POST /api/v1/records`` is a full ``CreateRequest.model_dump()`` and
-    # therefore carries REST-only fields (prefix / main_ids / consolidated /
-    # consolidate_id) that ``create_memory`` does not declare — sent as-is the
-    # tunnel fails 100% of the time. The tunnel sends ONLY declared fields.
-    # Dropping an EMPTY default loses nothing; a NON-EMPTY undeclared value is
-    # information the MCP surface cannot carry, so we raise instead of
-    # swallowing it (silent loss is this project's number-one failure mode).
-    # Tools without an entry here (``query``) pass their args through
-    # unchanged. If the MCP surface changes, this table must change with it —
-    # canonical reference: AnhurDB/docs/MCP_TOOLS.md.
-    _MCP_TOOL_DECLARED_ARGS: Dict[str, frozenset] = {
-        "create_memory": frozenset({
-            "session_id", "uuid", "metadata", "type", "summary", "content",
-            "score", "weight", "status", "vector", "dimension", "related_ids",
-            "valid_from", "valid_until", "api_key", "tenant_id",
-        }),
-    }
-
     def __init__(
         self,
         base_url: str,
@@ -135,7 +87,7 @@ class HTTPConnection:
         tenant_id: str = "",
         mode: str = "rest",
         timeout: float = 30.0,
-        max_response_size: int = _MAX_RESPONSE_SIZE,
+        max_response_size: int = MAX_RESPONSE_SIZE,
     ):
         """Initialise the connection.
 
@@ -150,8 +102,8 @@ class HTTPConnection:
         Raises:
             ValueError: If tenant_id contains header-injection characters."""
         # Validate inputs against injection.
-        _validate_header_value(api_key, "api_key")
-        _validate_header_value(tenant_id, "tenant_id")
+        validate_header_value(api_key, "api_key")
+        validate_header_value(tenant_id, "tenant_id")
 
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -166,7 +118,7 @@ class HTTPConnection:
         # the boundary (session-level application/json breaks ParseMultipartForm).
         self.headers: Dict[str, str] = {
             "X-API-Key": self.api_key,
-            "User-Agent": "AnhurSDK-Python/2.1",
+            "User-Agent": USER_AGENT,
         }
         if self.tenant_id:
             self.headers["X-Tenant-ID"] = self.tenant_id
@@ -180,7 +132,7 @@ class HTTPConnection:
 
         Junior Tip: also updates the live ClientSession headers when connected.
         """
-        _validate_header_value(api_key, "api_key")
+        validate_header_value(api_key, "api_key")
         self.api_key = api_key
         self.headers["X-API-Key"] = api_key
         if self._session is not None:
@@ -210,32 +162,6 @@ class HTTPConnection:
         await self.close()
 
     # -- Public HTTP verbs --------------------------------------------------
-
-    async def _read_capped_body(self, response: Any) -> bytes:
-        """Read the ENTIRE response body, enforcing the size cap.
-
-        Junior Tip [o read(n) do aiohttp NAO le o corpo inteiro — incidente
-        2026-07-30]: StreamReader.read(n) com n > 0 espera apenas o buffer
-        interno ficar nao-vazio e devolve O QUE JA CHEGOU — nao o corpo
-        completo. Em respostas que atravessam mais de um chunk TCP/TLS, o JSON
-        vinha truncado em offset aleatorio, o parse falhava, e a busca devolvia
-        [] SEM ERRO — perda silenciosa intermitente (5-7 de 20 execucoes no e2e
-        scope-planes; o servidor respondia count:3 valido, provado por curl).
-        Go e TS nunca tiveram o bug (leem ate EOF), por isso este fix e so do
-        Python — a paridade aqui e de COMPORTAMENTO, nao de diff. Ler em loop
-        ate EOF preserva o cap de seguranca sem depender do tamanho do primeiro
-        chunk: read() devolve b"" somente no fim do stream.
-        """
-        received_body = bytearray()
-        while True:
-            body_chunk = await response.content.read(65536)
-            if not body_chunk:
-                return bytes(received_body)
-            received_body.extend(body_chunk)
-            if len(received_body) > self._max_response_size:
-                raise AnhurError(
-                    f"Response exceeds maximum size ({self._max_response_size // (1024*1024)} MB)"
-                )
 
     async def get(
         self,
@@ -310,283 +236,3 @@ class HTTPConnection:
         Returns:
             Parsed JSON response body (empty dict when the server sends none)."""
         return await self._request("DELETE", path, params=params)
-
-    async def post_multipart(
-        self,
-        path: str,
-        file_field: str,
-        file_data: bytes,
-        filename: str,
-        extra_fields: Optional[Dict[str, str]] = None,
-    ) -> Any:
-        """Send a POST request with multipart/form-data (file upload).
-
-        Args:
-            path:         API path.
-            file_field:   Form field name for the file.
-            file_data:    Raw file bytes.
-            filename:     Original filename (used for MIME detection).
-            extra_fields: Additional string form fields.
-
-        Returns:
-            Parsed JSON response body."""
-        session = self._session
-        if session is None:
-            raise AnhurConnectionError(
-                "Connection not established. Use 'async with' or call connect() first."
-            )
-
-        form = aiohttp.FormData()
-        form.add_field(file_field, file_data, filename=filename)
-        if extra_fields:
-            for key, value in extra_fields.items():
-                form.add_field(key, value)
-
-        # Auth only — FormData sets multipart/form-data + boundary.
-        # Session must NOT carry a default Content-Type (see __init__).
-        headers: Dict[str, str] = {
-            "X-API-Key": self.api_key,
-            "User-Agent": "AnhurSDK-Python/2.1",
-        }
-        if self.tenant_id:
-            headers["X-Tenant-ID"] = self.tenant_id
-
-        url = f"{self.base_url}{path}"
-        try:
-            async with session.post(
-                url,
-                data=form,
-                headers=headers,
-                allow_redirects=False,
-            ) as response:
-                raw = await self._read_capped_body(response)
-                body_text = raw.decode("utf-8", errors="replace")
-
-                if response.status in (401, 403):
-                    raise AnhurAuthError(f"Authentication failed (HTTP {response.status})")
-                elif response.status in (400, 422):
-                    raise AnhurQueryError(f"Invalid request (HTTP {response.status}): {body_text[:500]}")
-                elif response.status == 404:
-                    raise AnhurQueryError(f"Resource not found (HTTP 404): {path}")
-                elif response.status == 409:
-                    raise AnhurQueryError(f"Conflict (HTTP 409): {body_text[:500]}", status_code=409)
-                elif response.status == 415:
-                    raise AnhurQueryError(f"Unsupported media type (HTTP 415): {body_text[:500]}", status_code=415)
-                elif response.status == 429:
-                    raise AnhurError(f"Rate limited (HTTP 429): {body_text[:200]}", status_code=429)
-                elif response.status in (301, 302, 303, 307, 308):
-                    raise AnhurError(
-                        f"Server returned redirect (HTTP {response.status}). "
-                        f"Redirects are disabled to prevent credential leakage.",
-                        status_code=response.status,
-                    )
-                elif response.status >= 500:
-                    raise AnhurError(f"Server error (HTTP {response.status}): {body_text[:500]}", status_code=response.status)
-
-                if not body_text:
-                    return {}
-                try:
-                    return json.loads(body_text)
-                except json.JSONDecodeError:
-                    return {"message": body_text[:1000]}
-
-        except aiohttp.ClientError as exc:
-            raise AnhurConnectionError(
-                f"Failed to connect to AnhurDB: {type(exc).__name__}"
-            ) from exc
-
-    # -- Internal request engine --------------------------------------------
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        body: Any = None,
-        params: Optional[QueryParams] = None,
-        raw_text: bool = False,
-    ) -> Any:
-        """Execute a single HTTP request and return parsed JSON.
-
-        Issues exactly one request and surfaces the result — success, typed HTTP
-        error, or connection failure — with no client-side retry.
-
-        Security:
-          - Response body capped at ``max_response_size`` to prevent OOM.
-          - Error messages never include the API key.
-          - Redirects are disabled (header leak protection).
-
-        Args:
-            raw_text:  When True, a non-JSON 2xx body is returned as the decoded
-                       string rather than wrapped in ``{"message": ...}``.
-
-        Raises:
-            AnhurAuthError: On 401/403.
-            AnhurQueryError: On 400/404/409/415/422.
-            AnhurError: On 429, redirect (3xx), or 5xx.
-            AnhurConnectionError: On network failure or timeout."""
-        session = self._session
-        if session is None:
-            raise AnhurConnectionError(
-                "Connection not established. Use 'async with AnhurClient(...)' "
-                "or call 'await client.connect()' first."
-            )
-        if self._before_request is not None:
-            await self._before_request()
-            session = self._session
-            if session is None:
-                raise AnhurConnectionError("Connection closed during token refresh")
-
-        # Build URL with optional query string.
-        url = f"{self.base_url}{path}"
-        if params:
-            url += "?" + urlencode(params)
-
-        try:
-            async with session.request(
-                method,
-                url,
-                json=body,
-                allow_redirects=False,
-            ) as response:
-                # SECURITY: cap preservado DENTRO de _read_capped_body — que lê
-                # até EOF em loop (o read(n) único truncava; ver a Junior Tip
-                # do helper e o incidente de busca vazia de 2026-07-30).
-                raw = await self._read_capped_body(response)
-                body_text = raw.decode("utf-8", errors="replace")
-
-                # Map HTTP status codes to typed exceptions.
-                # SECURITY: Error messages include status + server body but
-                # never the API key or full URL (which could leak in logs).
-                if response.status in (401, 403):
-                    raise AnhurAuthError(
-                        f"Authentication failed (HTTP {response.status})",
-                        status_code=response.status,
-                    )
-                elif response.status in (400, 422):
-                    raise AnhurQueryError(
-                        f"Invalid request (HTTP {response.status}): {body_text[:500]}",
-                        status_code=response.status,
-                    )
-                elif response.status == 404:
-                    raise AnhurQueryError(
-                        f"Resource not found (HTTP 404): {path}",
-                        status_code=404,
-                    )
-                elif response.status == 409:
-                    raise AnhurQueryError(
-                        f"Conflict (HTTP 409): {body_text[:500]}",
-                        status_code=409,
-                    )
-                elif response.status == 415:
-                    raise AnhurQueryError(
-                        f"Unsupported media type (HTTP 415): {body_text[:500]}",
-                        status_code=415,
-                    )
-                elif response.status == 429:
-                    raise AnhurError(
-                        f"Rate limited (HTTP 429): {body_text[:200]}",
-                        status_code=429,
-                    )
-                elif response.status in (301, 302, 303, 307, 308):
-                    # Redirects are disabled for security. Log the attempt.
-                    raise AnhurError(
-                        f"Server returned redirect (HTTP {response.status}). "
-                        f"Redirects are disabled to prevent credential leakage."
-                    )
-                elif response.status >= 500:
-                    raise AnhurError(
-                        f"Server error (HTTP {response.status}): "
-                        f"{body_text[:500]}",
-                        status_code=response.status,
-                    )
-
-                if not body_text:
-                    return {}
-
-                try:
-                    return json.loads(body_text)
-                except json.JSONDecodeError:
-                    # Plain-text body. ``read_content`` wants it verbatim;
-                    # everyone else gets the legacy ``{"message": ...}``
-                    # envelope for backward compatibility.
-                    if raw_text:
-                        return body_text
-                    return {"message": body_text[:1000]}
-
-        except asyncio.TimeoutError as exc:
-            # Junior Tip [MUST come before ClientError, 2026-08-13]:
-            # asyncio.TimeoutError is NOT a subclass of aiohttp.ClientError, so
-            # aiohttp's total-timeout escaped this handler entirely and reached
-            # callers raw — with str(exc) == '' and no status. A benchmark run
-            # aborted on exactly that empty error. On a write, a timeout means
-            # the server may or may not have committed; the SDK never retries
-            # writes for you.
-            raise AnhurConnectionError(
-                "request timed out (the server may still have processed it)",
-                kind=AnhurError.KIND_TIMEOUT,
-            ) from exc
-        except aiohttp.ClientError as exc:
-            # SECURITY: Do not include the full URL in error messages
-            # as it could be logged and contains the server address.
-            raise AnhurConnectionError(
-                f"Failed to connect to AnhurDB: {type(exc).__name__}",
-                kind=AnhurError.KIND_TRANSPORT,
-            ) from exc
-
-    # -- MCP tunnel (legacy/alternative transport) --------------------------
-
-    async def _mcp_tunnel(self, endpoint: str, json_data: Dict[str, Any]) -> Any:
-        """Route a request through the MCP gateway at ``/api/v1/mcp/direct``.
-
-        The server unwraps the MCP tool call, executes it, and returns the
-        result in MCP format: ``{"content": [{"text": "{...JSON...}"}]}``."""
-        tool_name = self._MCP_TOOL_MAP.get(endpoint)
-        if not tool_name:
-            raise AnhurQueryError(
-                f"No MCP tool mapping for endpoint: {endpoint}"
-            )
-
-        # Strict-schema projection: send ONLY fields the tool declares (see the
-        # _MCP_TOOL_DECLARED_ARGS Junior Tip). Empty defaults are dropped;
-        # a non-empty undeclared value fails LOUD before the round trip.
-        declared_fields = self._MCP_TOOL_DECLARED_ARGS.get(tool_name)
-        if declared_fields is not None:
-            undeclared_non_empty = sorted(
-                field_name
-                for field_name, field_value in json_data.items()
-                if field_name not in declared_fields and field_value
-            )
-            if undeclared_non_empty:
-                raise AnhurQueryError(
-                    f"MCP tool '{tool_name}' does not declare field(s) "
-                    f"{', '.join(undeclared_non_empty)} — the MCP tunnel cannot "
-                    f"carry them. Use mode='rest' to send these fields."
-                )
-            json_data = {
-                field_name: field_value
-                for field_name, field_value in json_data.items()
-                if field_name in declared_fields
-            }
-
-        # Auth stays on the X-API-Key header only — never duplicate the key in
-        # the JSON body (avoids accidental logging/proxy capture of credentials).
-        # The MCP gateway translates the header into args["api_key"] server-side
-        # (handleMCPDirect), satisfying wrapTool's tool-level auth contract.
-        payload = {"tool": tool_name, "args": json_data}
-
-        result = await self._request("POST", "/api/v1/mcp/direct", body=payload)
-
-        if isinstance(result, dict):
-            if result.get("isError"):
-                raise AnhurQueryError(
-                    f"MCP tool error: {str(result.get('error', 'unknown'))[:500]}"
-                )
-            content = result.get("content", [])
-            if content and isinstance(content, list):
-                text = content[0].get("text", "{}")
-                try:
-                    return json.loads(text)
-                except json.JSONDecodeError:
-                    return {"message": text[:1000]}
-
-        return result
