@@ -19,11 +19,23 @@ package client
 //
 // Junior Tip [why every wrapper takes and forwards opts]: a caller must be able
 // to write SearchShared(ctx, q, sessions, WithSearchMode(SearchModeSemantic)).
-// The wrapper PREPENDS its scope so a caller-supplied WithScope still wins if
-// they pass one — options are applied in order, last write wins. Forwarding
-// opts is not decoration; a wrapper with a fixed parameter list is a wrapper
-// that goes stale the next time a knob is added, which is the divergence the
-// Python SDK carried in recall/search_session until 2026-09-05.
+// Forwarding opts is not decoration; a wrapper with a fixed parameter list is a
+// wrapper that goes stale the next time a knob is added, which is the
+// divergence the Python SDK carried in recall/search_session until 2026-09-05.
+//
+// Junior Tip [why the plane PIN wins over a caller-supplied WithScope,
+// 2026-09-06]: this wrapper used to PREPEND its scope, so a caller who also
+// passed WithScope("client_shared") to SearchTenantShared got client_shared
+// results back from a method whose NAME promises the tenant plane. A method
+// named for a plane that answers from a different plane is a cross-plane
+// footgun and it is invisible at the call site — the same class of silent lie
+// ADR-0014 exists to kill, and exactly the rule already applied to
+// SearchSession (parity.go) in all three SDKs. The pin now goes LAST, so it
+// wins; a caller-supplied scope is silently overridden, never an error,
+// because the wrapper already knows the answer and refusing would make Go the
+// odd one out (TypeScript spreads options first, Python pops the key).
+// Widening to another plane is spelled Search(ctx, query, sessions,
+// WithScope(...)) — the method that does not promise a plane in its name.
 
 import (
 	"context"
@@ -35,28 +47,42 @@ import (
 	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
 )
 
+// pinPlaneScope returns the caller's options with the wrapper's plane appended
+// LAST, so the plane the method NAME promises always wins.
+//
+// Junior Tip [why it copies instead of appending onto opts]: append(opts, ...)
+// may write into the CALLER's backing array when it has spare capacity, which
+// would silently mutate a []SearchOption the caller built once and reuses for
+// several planes. The copy costs one allocation per search and removes a whole
+// class of aliasing bug that only shows up under reuse.
+func pinPlaneScope(callerOptions []SearchOption, plane string) []SearchOption {
+	pinnedOptions := make([]SearchOption, 0, len(callerOptions)+1)
+	pinnedOptions = append(pinnedOptions, callerOptions...)
+	return append(pinnedOptions, WithScope(plane))
+}
+
 // SearchSessions searches chat sessions only (scope=sessions).
 // sessions is mandatory — see Search.
 func (m *Memory) SearchSessions(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope(searchScopeSessions)}, opts...)...)
+	return m.Search(ctx, query, sessions, pinPlaneScope(opts, searchScopeSessions)...)
 }
 
 // SearchTenantShared searches tenant-shared library docs (scope=tenant_shared).
 // sessions is mandatory and selects inside the shared boundary — see Search.
 func (m *Memory) SearchTenantShared(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope("tenant_shared")}, opts...)...)
+	return m.Search(ctx, query, sessions, pinPlaneScope(opts, "tenant_shared")...)
 }
 
 // SearchClientShared searches the client-wide shared library (scope=client_shared).
 // sessions is mandatory and selects inside the shared boundary — see Search.
 func (m *Memory) SearchClientShared(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope("client_shared")}, opts...)...)
+	return m.Search(ctx, query, sessions, pinPlaneScope(opts, "client_shared")...)
 }
 
 // SearchShared searches both shared planes (scope=shared_all).
 // sessions is mandatory and selects inside both shared boundaries — see Search.
 func (m *Memory) SearchShared(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
-	return m.Search(ctx, query, sessions, append([]SearchOption{WithScope(searchScopeSharedAll)}, opts...)...)
+	return m.Search(ctx, query, sessions, pinPlaneScope(opts, searchScopeSharedAll)...)
 }
 
 // SearchByType retrieves records filtered by memory type in the tenant store.

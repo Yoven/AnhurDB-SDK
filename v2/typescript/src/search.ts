@@ -160,6 +160,18 @@ export abstract class MemorySearchApi {
     };
   }
 
+  // Junior Tip [why the plane PIN wins over a caller-supplied `scope`,
+  // 2026-09-06]: the four wrappers below spread `...options` FIRST and pin the
+  // plane after it, so a caller who also passes `{ scope: "client_shared" }`
+  // to `searchTenantShared` is silently overridden rather than served from a
+  // plane the method name does not promise. A method named for a plane that
+  // answers from another plane is a cross-plane footgun invisible at the call
+  // site — the same class of silent lie ADR-0014 exists to kill, and the rule
+  // `searchSession` already applies. Do NOT reorder the spread: putting
+  // `...options` last would hand the pin to the caller and re-open the exact
+  // divergence Go carried until 2026-09-06 and Python raised a bare
+  // `TypeError` for. Widening is spelled `search(query, sessions, { scope })`.
+
   /**
    * Search chat sessions only (`scope=sessions`).
    * `sessions` is mandatory — see {@link search}.

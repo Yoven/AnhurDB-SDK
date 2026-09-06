@@ -54,12 +54,26 @@ class SearchScopeMixin(HybridSearchMixin):
     # documented.
     _session_uuid: str
 
+    # Junior Tip [why the plane PIN wins and a caller ``scope`` is POPPED,
+    # 2026-09-06]: each wrapper below is NAMED for a plane, so answering from a
+    # different plane would be a cross-plane lie invisible at the call site —
+    # the same class of defect ADR-0014 exists to kill, and exactly the rule
+    # ``search_session`` already applies. Without the pop, ``scope`` arrives
+    # twice (once pinned, once in ``**kwargs``) and Python raises a bare
+    # ``TypeError: search() got multiple values for keyword argument 'scope'``
+    # — an error with no ``.kind`` and no ``.retryable``, so it escapes the
+    # ``AnhurError`` contract every caller writes their handling against, while
+    # Go and TypeScript quietly override. Overriding beats raising because the
+    # wrapper already knows the answer. Widening is spelled
+    # ``search(query, sessions, scope=...)``.
+
     async def search_sessions(
         self, query: str, sessions: Sequence[str], **kwargs: Any
     ) -> List[SearchResult]:
         """Search chat sessions only (``scope=sessions``).
 
         ``sessions`` is mandatory — see ``search``."""
+        kwargs.pop("scope", None)
         return await self.search(query, sessions, scope="sessions", **kwargs)
 
     async def search_tenant_shared(
@@ -68,6 +82,7 @@ class SearchScopeMixin(HybridSearchMixin):
         """Search tenant-shared library docs (``scope=tenant_shared``).
 
         ``sessions`` is mandatory and selects inside the shared boundary."""
+        kwargs.pop("scope", None)
         return await self.search(query, sessions, scope="tenant_shared", **kwargs)
 
     async def search_client_shared(
@@ -76,6 +91,7 @@ class SearchScopeMixin(HybridSearchMixin):
         """Search client-wide shared library (``scope=client_shared``).
 
         ``sessions`` is mandatory and selects inside the shared boundary."""
+        kwargs.pop("scope", None)
         return await self.search(query, sessions, scope="client_shared", **kwargs)
 
     async def search_shared(
@@ -84,6 +100,7 @@ class SearchScopeMixin(HybridSearchMixin):
         """Search both shared planes (``scope=shared_all``).
 
         ``sessions`` is mandatory and selects inside both shared boundaries."""
+        kwargs.pop("scope", None)
         return await self.search(query, sessions, scope="shared_all", **kwargs)
 
     async def search_by_type(
