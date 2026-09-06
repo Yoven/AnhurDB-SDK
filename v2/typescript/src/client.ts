@@ -14,13 +14,17 @@
  *   - Error messages never include the full API key.
  */
 
-import {
-  AnhurAuthError,
-  AnhurConnectionError,
-  AnhurError,
-  AnhurQueryError,
-} from "./types.js";
+import { AnhurConnectionError } from "./types.js";
 import { buildRequestHeaders } from "./clientHeaders.js";
+// Response → typed result / typed error lives in clientResponse.ts. Both the
+// JSON path and the multipart path call the SAME mapper: when the two verbs
+// each owned a private copy, one of them dropped the HTTP status and turned
+// every 404 into a "retryable transport failure". See that file's Junior Tips.
+import {
+  readCappedText,
+  readErrorBodyExcerpt,
+  typedErrorForResponse,
+} from "./clientResponse.js";
 
 /** HTTP methods the client supports. */
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -55,9 +59,6 @@ interface RequestOptions {
    */
   rawText?: boolean;
 }
-
-/** Maximum response body size: 100 MB. */
-const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
 
 /**
  * Per-request timeout in milliseconds.
@@ -180,35 +181,15 @@ export class HttpClient {
     }
 
     if (!response.ok) {
-      const bodyText = await response
-        .text()
-        .then((textBody) => textBody.slice(0, 500))
-        .catch(() => "");
-      if (response.status === 401 || response.status === 403) {
-        throw new AnhurAuthError(
-          `Authentication failed (HTTP ${response.status})`,
-          response.status,
-        );
-      }
-      if (response.status === 400 || response.status === 422) {
-        throw new AnhurQueryError(
-          `Invalid request (HTTP ${response.status}): ${bodyText}`,
-          response.status,
-        );
-      }
-      if (response.status === 404) {
-        throw new AnhurQueryError(
-          `Resource not found (HTTP 404): ${path}`,
-          404,
-        );
-      }
-      throw new AnhurError(
-        `Server error (HTTP ${response.status}): ${bodyText}`,
+      throw typedErrorForResponse(
         response.status,
+        path,
+        await readErrorBodyExcerpt(response),
       );
     }
 
-    const text = await response.text();
+    // SECURITY: the 100 MB cap applies to uploads too — see readCappedText.
+    const text = await readCappedText(response);
     if (!text) return {} as T;
     try {
       return JSON.parse(text) as T;
@@ -319,43 +300,16 @@ export class HttpClient {
     // Map HTTP error codes to typed exceptions.
     // SECURITY: Error messages include status but not API key.
     if (!response.ok) {
-      const bodyText = await response
-        .text()
-        .then((t) => t.slice(0, 500))
-        .catch(() => "");
-
-      let typedError: AnhurError;
-      if (response.status === 401 || response.status === 403) {
-        typedError = new AnhurAuthError(
-          `Authentication failed (HTTP ${response.status})`,
-          response.status,
-        );
-      } else if (response.status === 400 || response.status === 422) {
-        typedError = new AnhurQueryError(
-          `Invalid request (HTTP ${response.status}): ${bodyText}`,
-          response.status,
-        );
-      } else if (response.status === 404) {
-        typedError = new AnhurQueryError(
-          `Resource not found (HTTP 404): ${opts.path}`,
-        );
-      } else {
-        typedError = new AnhurError(
-          `Server error (HTTP ${response.status}): ${bodyText}`,
-        );
-      }
-
       // straight to the caller — no transient-detection and no retry wrapper.
-      throw typedError;
+      throw typedErrorForResponse(
+        response.status,
+        opts.path,
+        await readErrorBodyExcerpt(response),
+      );
     }
 
     // SECURITY: Cap response size to prevent memory exhaustion.
-    const text = await response.text();
-    if (text.length > MAX_RESPONSE_SIZE) {
-      throw new AnhurError(
-        `Response exceeds maximum size (${MAX_RESPONSE_SIZE / (1024 * 1024)} MB)`,
-      );
-    }
+    const text = await readCappedText(response);
 
     // Raw-text mode: return the verbatim body (e.g. record content is
     // text/plain). Must come BEFORE the empty-body and JSON.parse branches so

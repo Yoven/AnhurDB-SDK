@@ -10,7 +10,9 @@
 
 import { HttpClient } from "./client.js";
 import { MemorySearchApi } from "./search.js";
-import { AnhurError, AnhurUploadWaitTimeout } from "./types.js";
+import { AnhurError } from "./types.js";
+import { pollUploadUntilTerminal } from "./uploadWait.js";
+import type { UploadWaitOptions } from "./uploadWait.js";
 import {
   appendSessionsQueryParam,
   normalizeSessions,
@@ -41,7 +43,8 @@ import type {
   ProfileResult,
   QueryResult,
   RecordPayload,
-  SearchResult,
+  SmartSearchResponse,
+  TypeListingResult,
   SearchScope,
   SessionStats,
   UploadResult,
@@ -394,7 +397,13 @@ export class Memory extends MemorySearchApi {
       };
     } catch (err: unknown) {
       // If the endpoint doesn't exist (OSS), return empty profile.
-      if (err instanceof Error && err.message.includes("404")) {
+      // Junior Tip [branch on the STATUS, never on the message text]: this read
+      // `err.message.includes("404")`, and a 500 whose echoed body merely
+      // mentioned 404 (a proxy page, a record id `404`, a stack line) was
+      // accepted as "OSS has no profile endpoint" — a real server failure
+      // returned as an empty profile with `status: "not_available"`. The status
+      // is the contract; the message is decoration.
+      if (err instanceof AnhurError && err.statusCode === 404) {
         return {
           static: {},
           dynamic: {},
@@ -433,7 +442,7 @@ export class Memory extends MemorySearchApi {
     type: MemoryType,
     sessions: string[],
     limit?: number,
-    query?: string): Promise<SearchResult[]> {
+    query?: string): Promise<TypeListingResult[]> {
     const resolvedSessions = normalizeSessions(sessions);
     const params: Array<[string, string]> = [["type", type]];
     if (limit !== undefined) params.push(["limit", String(limit)]);
@@ -443,17 +452,23 @@ export class Memory extends MemorySearchApi {
     // the `{results:[{record,similarity}]}` envelope of search/recall/searchSession.
     // BARE record array under `records`: `{records:[<Record>],count:N}`. Reading
     // `data.results` therefore matched nothing and returned `[]` for EVERY call —
-    // the cross-SDK "searchByType returns empty" bug. We read `records` and wrap each
-    // full record into the canonical {@link SearchResult} so the shape stays identical
-    // to the other search methods. A type filter has no semantic distance, so
-    // `similarity` is 0 — the ranking lives in the record's own weight/score, kept
-    // verbatim. Mirrors Go SearchByType and Python search_by_type (same key/shape).
+    // the cross-SDK "searchByType returns empty" bug. We read `records` and nest each
+    // full record so no field is dropped. Mirrors Go SearchByType and Python
+    // search_by_type (same key, same records).
+    //
+    // Junior Tip [why no `similarity` here — and why that is the fix]: a type
+    // filter computes no distance. This used to fabricate `similarity: 0` to
+    // satisfy {@link SearchResult}, and `0` is not "unknown": it is the WORST
+    // comparable score, so merging these hits with `search()` hits and sorting
+    // buried every one of them, silently and forever. The return type is now
+    // {@link TypeListingResult}, which has no `similarity` at all, so that merge
+    // stops compiling instead of quietly mis-ranking. The ranking signal that
+    // DOES exist travels untouched inside the record (`weight`, `score`).
     const data = await this.client.get<{
       records?: Array<Record<string, unknown>>;
     }>("/api/v1/search/type", params);
     return (data.records ?? []).map((rawRecord) => ({
       record: rawRecord as unknown as MemoryRecord,
-      similarity: 0,
     }));
   }
 
@@ -489,7 +504,7 @@ export class Memory extends MemorySearchApi {
     sessions: string[],
     limit?: number,
     type?: MemoryType,
-    scope?: SearchScope): Promise<unknown> {
+    scope?: SearchScope): Promise<SmartSearchResponse> {
     const resolvedSessions = normalizeSessions(sessions);
     const params: Array<[string, string]> = [
       ["q", query],
@@ -499,7 +514,7 @@ export class Memory extends MemorySearchApi {
     appendSessionsQueryParam(params, resolvedSessions);
     if (type) params.push(["type", type]);
 
-    return this.client.get(
+    return this.client.get<SmartSearchResponse>(
       "/api/v1/search/smart",
       params);
   }
@@ -1278,46 +1293,17 @@ export class Memory extends MemorySearchApi {
    */
   async waitForUpload(
     uploadId: number,
-    options?: {
-      timeoutMs?: number;
-      intervalMs?: number;
-      notFoundGraceMs?: number;
-    },
+    options?: UploadWaitOptions,
   ): Promise<UploadStatusResult> {
-    const timeoutMs = options?.timeoutMs ?? 120_000;
-    const intervalMs = options?.intervalMs ?? 5_000;
-    const notFoundGraceMs = options?.notFoundGraceMs ?? 30_000;
-
-    const startedAt = Date.now();
-    let lastStatus = "never-seen";
-    for (;;) {
-      try {
-        const statusPayload = await this.uploadStatus(uploadId);
-        const statusText = String(statusPayload?.status ?? "").toLowerCase();
-        if (
-          statusPayload?.completed === true ||
-          Boolean(statusPayload?.error) ||
-          ["completed", "saved", "done", "failed"].includes(statusText)
-        ) {
-          return statusPayload;
-        }
-        if (statusText) lastStatus = statusText;
-      } catch (thrown) {
-        const isTransientNotFound =
-          thrown instanceof AnhurError &&
-          thrown.statusCode === 404 &&
-          Date.now() - startedAt < notFoundGraceMs;
-        if (!isTransientNotFound) throw thrown;
-        lastStatus = "not-found-yet";
-      }
-
-      if (Date.now() - startedAt + intervalMs > timeoutMs) {
-        throw new AnhurUploadWaitTimeout(
-          `upload ${uploadId} not terminal after ${timeoutMs}ms (last=${lastStatus})`,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
+    // The state machine lives in uploadWait.ts (house cut). It is handed a
+    // CLOSURE over `this.uploadStatus` rather than the client, so the polling
+    // logic depends on one behaviour only — that a missing upload arrives as an
+    // AnhurError with statusCode 404 — and on nothing else about transport.
+    return pollUploadUntilTerminal(
+      () => this.uploadStatus(uploadId),
+      uploadId,
+      options,
+    );
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1773,7 +1759,12 @@ export class Memory extends MemorySearchApi {
         mode: "cloud",
       };
     } catch (err: unknown) {
-      if (err instanceof Error && err.message.includes("404")) {
+      // Same rule as `profile()`: only a REAL 404 means "this server has no
+      // /api/v1/ingest". Matching the text turned any 5xx that happened to
+      // echo "404" into a permanent downgrade — `ingestAvailable` is sticky,
+      // so one false positive silently rerouted every later write to the OSS
+      // fallback for the lifetime of the client.
+      if (err instanceof AnhurError && err.statusCode === 404) {
         this.ingestAvailable = false;
         return null;
       }

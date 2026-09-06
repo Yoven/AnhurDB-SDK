@@ -486,11 +486,14 @@ describe("Memory.search (nested SearchResult shape)", () => {
       )) as typeof fetch;
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
-      const results = (await mem.searchByType("fact", sessionsAll())) as SearchResult[];
+      const results = await mem.searchByType("fact", sessionsAll());
       assert.equal(results.length, 1);
       assert.equal(results[0].record.type, "fact");
       assert.equal(results[0].record.id, 42);
-      assert.equal(results[0].similarity, 0);
+      // A type filter computes no distance: the hit carries the record and
+      // NOTHING else. The old code fabricated `similarity: 0`, which is a real
+      // comparable worst score, not "unknown".
+      assert.ok(!("similarity" in results[0]));
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -74,6 +74,26 @@ export interface SearchResult {
 }
 
 /**
+ * One hit of {@link Memory.searchByType} — a record listed by its cognitive
+ * type, with NO similarity attached.
+ *
+ * Junior Tip [why this is deliberately NOT a {@link SearchResult}]: filtering
+ * `type = "fact"` computes no distance of any kind. The previous code returned
+ * `SearchResult` and filled the mandatory `similarity` with a fabricated `0`,
+ * which is not "unknown" — `0` is a real, comparable, WORST possible score. Any
+ * caller that concatenated these hits with `search()` hits and sorted by
+ * `similarity` silently pushed every typed record to the bottom of the list and
+ * had no way to notice. Making absence a SEPARATE TYPE turns that mistake into
+ * a compile error instead of a quiet mis-ranking. The wire contract is
+ * untouched — the server never sent a similarity on `/api/v1/search/type` in
+ * the first place, which is precisely why there is none to report.
+ */
+export interface TypeListingResult {
+  /** The full memory record, verbatim (no fields dropped). */
+  record: MemoryRecord;
+}
+
+/**
  * A bounded, admission-filtered summary of one node connected to a search
  * hit's `related_ids`/`main_ids` graph edges (ADR-0021, `expand_related`).
  *

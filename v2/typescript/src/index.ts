@@ -62,6 +62,11 @@ export type {
   SearchMode,
   LegScoreSummary,
   SearchWithRetrievalResult,
+  // searchByType answers WITHOUT a similarity — see TypeListingResult.
+  TypeListingResult,
+  // GET /api/v1/search/smart envelope (flat lexical rows, not SearchResult).
+  SmartSearchHit,
+  SmartSearchResponse,
   ProfileResult,
   // Extended
   MemoryRecord,

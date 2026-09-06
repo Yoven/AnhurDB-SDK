@@ -163,7 +163,14 @@ export type {
   SearchHitSignals,
   SearchResult,
   SearchWithRetrievalResult,
+  TypeListingResult,
 } from "./searchResults.js";
+// `GET /api/v1/search/smart` answers a different shape entirely — see
+// smartSearchResults.ts for why it is not folded into SearchResult.
+export type {
+  SmartSearchHit,
+  SmartSearchResponse,
+} from "./smartSearchResults.js";
 
 // ── profile() ────────────────────────────────────────────────
 
@@ -349,18 +356,38 @@ export interface UploadResult {
   uuid?: string;
 }
 
-/** Result from upload status polling. */
+/**
+ * Result from upload status polling — `GET /api/v1/upload/{id}/status`.
+ *
+ * Mirrors `UploadHandler.UploadStatus` in
+ * `AnhurDB/server/handler/upload.go` EXACTLY: the handler builds a fixed map of
+ * seven keys and never adds another. Every key below exists there; nothing that
+ * exists there is missing here.
+ *
+ * Junior Tip [a declared field the server never sends is worse than a missing
+ * one]: this interface used to declare `filename`, `error`, `record_ids` and a
+ * bare `id`. None of them are ever emitted — the handler answers
+ * `record_id/uuid/status/type/summary/metadata/completed`. The cost was not
+ * cosmetic: `waitForUpload` used `Boolean(payload.error)` as one of its
+ * TERMINAL conditions, so that branch was unreachable code that read as a
+ * safety net. A failed ingest is reported through `status`, and only through
+ * `status`. When you add a field here, open the handler first; the type is a
+ * claim about the server, not a wish list.
+ */
 export interface UploadStatusResult {
+  /** The file record's id (server key is `record_id`, never `id`). */
   record_id?: number;
-  id?: number;
+  /** Stable record uuid. */
+  uuid?: string;
   /** "processing", "completed", "saved", or "failed". */
   status: string;
+  /** Always `"file"` — the handler rejects anything else with HTTP 400. */
+  type?: string;
+  /** Server-computed: true when `status` is `completed` or `saved`. */
   completed?: boolean;
-  filename?: string;
-  error?: string;
   summary?: string;
+  /** Raw metadata JSON string, exactly as stored. */
   metadata?: string;
-  record_ids?: number[];
 }
 
 // ── Batch Operations ─────────────────────────────────────────
