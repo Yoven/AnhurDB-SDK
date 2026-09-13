@@ -112,7 +112,7 @@ extends), `src/searchRequest.ts` (payload assembly, validation, the guard) and
 `src/searchTypes.ts` (wire types, re-exported by `types.ts`). No public name
 moved: every import and every `mem.search(...)` call site is unchanged.
 
-## Unreleased — server behaviour change on `POST /api/v1/query` (2026-07-29)
+## Server-side behaviour change on `POST /api/v1/query` (2026-07-29, no SDK code changed)
 
 **No SDK code changed. No REST route, request shape or response shape changed.**
 What changed is on the server, and it can turn code that worked yesterday into an

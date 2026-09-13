@@ -21,7 +21,9 @@ true.
   asserts the header on the SERVER side of a mock request. The release workflow
   rewrites the manifest with `sed`, so without that lock a release could ship a
   wheel whose metadata and whose `User-Agent` disagreed, silently.
-- The published install pin in the README is deliberately still `2.0.12`: the
+- The published install pin in the README is deliberately still the newest PUBLISHED
+  wheel (`v2/python/v2.0.20`, corrected 2026-09-13 — this line said `2.0.12`, a pin
+  the README had already moved off): the
   2.1.0 wheel does not exist yet, and a doc pinning an unpublished version is
   worse than a stale one.
 

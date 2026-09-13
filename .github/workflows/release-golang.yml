@@ -51,13 +51,18 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
+          # Junior Tip [read the manifest, do not invent the number — 2026-09-13]:
+          # this step used to do `awk '{$NF += 1}'` on the newest tag, which can
+          # only ever produce a PATCH bump. With the source at 2.1.0 it would
+          # have cut 2.0.21 — and for python/typescript the next step
+          # rewrites the manifest with whatever this computes, so it would have
+          # silently reverted 2.1.0 back to 2.0.x in the published artifact. The
+          # version a release carries is a decision that belongs in the source,
+          # not an increment derived from history. This reads it instead.
           TAG_PREFIX="v2/golang/v"
-          LATEST=$(git tag -l "${TAG_PREFIX}*" | sort -V | tail -n1 || true)
-          if [ -z "$LATEST" ]; then
-            NEW_TAG="${TAG_PREFIX}2.0.0"
-          else
-            NEW_TAG=$(echo "$LATEST" | awk -F. -v OFS=. '{$NF += 1 ; print}')
-          fi
+          VERSION=$(awk -F'"' '/^const Version = "/{print $2; exit}' v2/golang/client/version.go)
+          if [ -z "$VERSION" ]; then echo "no Version in client/version.go" >&2; exit 1; fi
+          NEW_TAG="${TAG_PREFIX}${VERSION}"
           if git rev-parse -q --verify "refs/tags/${NEW_TAG}" >/dev/null; then
             echo "Tag ${NEW_TAG} already exists — skipping release create."
             exit 0

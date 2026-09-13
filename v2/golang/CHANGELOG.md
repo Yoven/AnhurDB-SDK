@@ -109,7 +109,7 @@ be grown, so the touched domains moved out first:
 `client.go` is down to 1359 lines and `types.go` to 696; both remain scheduled
 refactors, and neither grew in this change.
 
-## Unreleased — server behaviour change on `POST /api/v1/query` (2026-07-29)
+## Server-side behaviour change on `POST /api/v1/query` (2026-07-29, no SDK code changed)
 
 **No SDK code changed. No REST route, request shape or response shape changed.**
 What changed is on the server, and it can turn code that worked yesterday into an

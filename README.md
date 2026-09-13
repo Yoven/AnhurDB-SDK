@@ -35,13 +35,13 @@ npm install \
   https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.17/anhurdb-2.0.17.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.18
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.20
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
 >
 > The three pins above are the **latest published tag of each SDK** as of 2026-09-05
-> (`v2/python/v2.0.20`, `v2/typescript/v2.0.17`, `v2/golang/v2.0.18`) — verified with
+> (`v2/python/v2.0.20`, `v2/typescript/v2.0.17`, `v2/golang/v2.0.20`) — verified with
 > `git tag -l 'v2/*'`, not copied from another doc. They deliberately do **not** match each
 > other: the tags are per-language and were cut on different days. They also do not match the
 > in-repo source version (2.1.0), because 2.1.0 has not been released — pinning an unpublished

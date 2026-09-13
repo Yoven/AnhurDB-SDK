@@ -53,8 +53,12 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
     # Search — `sessions` is mandatory: sessions_all() is every session in
     # scope, or pass [session_id] to confine the query to one chat (ADR-0014).
     results = await mem.search("what does this user do?", sessions_all())
+    # A hit is a SearchResult model, NOT a dict: the record lives under
+    # `.record` and the relevance under `.similarity`. Subscripting it
+    # (`r['summary']`) raises TypeError — this snippet shipped broken until
+    # 2026-09-13.
     for r in results:
-        print(f"{r['summary']} (score: {r['score']:.2f})")
+        print(f"{r.record.summary} (similarity: {r.similarity:.2f})")
 
     # Get user profile
     profile = await mem.profile()
