@@ -33,7 +33,16 @@ jobs:
           # Reading the version from go.mod (setup-go prefers the `toolchain`
           # directive over the `go` directive) installs 1.26.0 up front, so no
           # switch happens and there is ONE place that decides the version.
-          go-version-file: v2/golang/go.mod
+          # CORRECAO 2026-09-14: go-version-file NAO resolveu. setup-go le a
+          # diretiva `go` (1.24) e IGNORA `toolchain` — o log do run 34814283122
+          # diz "Setup go version spec 1.24". Resultado: instala 1.24, e o
+          # GOTOOLCHAIN=auto busca a 1.26 na hora do comando; e a toolchain
+          # BAIXADA que nao traz `covdata` pre-construido, nao a instalada.
+          # Pinar a versao aqui faz o action instalar a distribuicao completa,
+          # entao nao ha troca e nao falta ferramenta. Mantem UM lugar que
+          # decide a versao — mas esse lugar tem de ser o mesmo numero do
+          # `toolchain` em v2/golang/go.mod; se um mudar, mude os dois.
+          go-version: "1.26.0"
       - run: go mod tidy
       - run: go build -v ./...
       - run: go test -v ./... -coverprofile=coverage.out
