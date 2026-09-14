@@ -26,6 +26,7 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 from .connection_guards import QueryParams, read_capped_body
+from .connection_host import RequestExecutionHost
 from .exceptions import (
     AnhurError,
     AnhurConnectionError,
@@ -38,12 +39,17 @@ class RequestExecutionMixin:
     """One request, one answer, one typed outcome. Mixed into
     ``HTTPConnection``.
 
-    Reads ``self.base_url``, ``self.headers``, ``self._session``,
-    ``self._timeout`` and ``self._max_response_size`` from the host connection.
+    The state it works on belongs to the host, and ``RequestExecutionHost``
+    (``connection_host.py``) is the declared list of what it reads:
+    ``base_url``, ``_session``, ``_before_request`` and ``_max_response_size``.
+    Typing ``self`` with that protocol is what makes mypy check the two
+    directions that matter — this body against the contract, and
+    ``HTTPConnection`` against the same contract — instead of taking either
+    side's word for it.
     """
 
     async def _request(
-        self,
+        self: RequestExecutionHost,
         method: str,
         path: str,
         body: Any = None,

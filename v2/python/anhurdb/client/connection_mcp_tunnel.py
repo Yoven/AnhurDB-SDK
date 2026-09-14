@@ -22,6 +22,7 @@ though that is what keeps this file near, rather than well under, the cut.
 import json
 from typing import Any, Dict
 
+from .connection_host import McpTunnelHost
 from .exceptions import AnhurQueryError
 
 
@@ -31,6 +32,10 @@ class McpTunnelMixin:
     Depends on the host connection for ``_request`` (the tunnel posts a normal
     REST body to ``/api/v1/mcp/direct``) — which is why this is a mixin and not
     a free function: it is one transport mode of a connection, not a utility.
+    That single dependency is declared by ``McpTunnelHost``
+    (``connection_host.py``) and used as the ``self`` type below, so a
+    composition that no longer provides ``_request`` fails the type check
+    instead of failing in production, in ``mode="mcp"`` only.
     """
 
     # -- MCP tool name mapping (used only in ``mode="mcp"``) ----------------
@@ -71,7 +76,11 @@ class McpTunnelMixin:
         }),
     }
 
-    async def _mcp_tunnel(self, endpoint: str, json_data: Dict[str, Any]) -> Any:
+    async def _mcp_tunnel(
+        self: McpTunnelHost,
+        endpoint: str,
+        json_data: Dict[str, Any],
+    ) -> Any:
         """Route a request through the MCP gateway at ``/api/v1/mcp/direct``.
 
         The server unwraps the MCP tool call, executes it, and returns the

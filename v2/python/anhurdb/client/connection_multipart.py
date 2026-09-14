@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 
 from ..version import USER_AGENT
 from .connection_guards import read_capped_body
+from .connection_host import MultipartUploadHost
 from .exceptions import (
     AnhurError,
     AnhurConnectionError,
@@ -31,14 +32,17 @@ class MultipartUploadMixin:
     """``POST`` of a single file as ``multipart/form-data``. Mixed into
     ``HTTPConnection``.
 
-    Reads ``self.base_url``, ``self.headers``, ``self._session``,
-    ``self._timeout`` and ``self._max_response_size`` from the host connection,
-    so it is a mixin rather than a free function: an upload is a use of an open
-    connection, not a standalone act.
+    It is a mixin rather than a free function because an upload is a use of an
+    OPEN connection, not a standalone act: it needs the live session and the
+    credentials the host owns. ``MultipartUploadHost``
+    (``connection_host.py``) is the declared list of exactly what it reads —
+    ``base_url``, ``api_key``, ``tenant_id``, ``_session`` and
+    ``_max_response_size`` — and typing ``self`` with it is what keeps that list
+    honest on both sides.
     """
 
     async def post_multipart(
-        self,
+        self: MultipartUploadHost,
         path: str,
         file_field: str,
         file_data: bytes,

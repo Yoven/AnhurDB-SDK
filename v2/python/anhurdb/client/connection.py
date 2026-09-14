@@ -45,13 +45,18 @@ who already wrote it.
 """
 
 import aiohttp
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 from ..version import USER_AGENT
 from .connection_guards import (
     MAX_RESPONSE_SIZE,
     QueryParams,
     validate_header_value,
+)
+from .connection_host import (
+    McpTunnelHost,
+    MultipartUploadHost,
+    RequestExecutionHost,
 )
 from .connection_mcp_tunnel import McpTunnelMixin
 from .connection_multipart import MultipartUploadMixin
@@ -236,3 +241,23 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
         Returns:
             Parsed JSON response body (empty dict when the server sends none)."""
         return await self._request("DELETE", path, params=params)
+
+
+# -- Host-contract proof ----------------------------------------------------
+#
+# Junior Tip [what these three lines buy, 2026-09-14]: each mixin above states,
+# in its ``self`` type, what it needs from whatever class composes it
+# (``connection_host.py``). Nothing in the mixins can check that HTTPConnection
+# actually DELIVERS it — a mixin only ever sees the contract. These assignments
+# are that check, and they are the reason this file is where it belongs: delete
+# ``self.base_url`` from ``__init__`` and mypy stops here with "HTTPConnection
+# is missing following RequestExecutionHost protocol member: base_url", naming
+# the attribute and the mixin that lost its footing, instead of leaving a
+# NameError to be discovered by a customer at runtime.
+#
+# They cost nothing at runtime: the annotations are evaluated by the type
+# checker only, and no HTTPConnection is constructed here.
+if TYPE_CHECKING:
+    _REQUEST_EXECUTION_CONTRACT: RequestExecutionHost = cast(HTTPConnection, None)
+    _MULTIPART_UPLOAD_CONTRACT: MultipartUploadHost = cast(HTTPConnection, None)
+    _MCP_TUNNEL_CONTRACT: McpTunnelHost = cast(HTTPConnection, None)
