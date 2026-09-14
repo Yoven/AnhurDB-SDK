@@ -212,8 +212,8 @@ func TestProfileStillRendersWhenArchiveIsHealthy(t *testing.T) {
 		t.Fatalf("preparando o diretorio: %v", mkdirErr)
 	}
 	profile := &client.ProfileResult{
-		Static: map[string]interface{}{"facts": []interface{}{"AnhurDB roda multi-raft"}},
-		Stats:  map[string]interface{}{"total_records": 10.0, "sessions": 2.0},
+		Static: client.ProfileStatic{Facts: []string{"AnhurDB roda multi-raft"}},
+		Stats:  client.ProfileStats{TotalRecords: 10, Sessions: 2},
 	}
 
 	block := formatMemory(cfg, profile, queueBacklog{}, inspectArchiveHealth(cfg))

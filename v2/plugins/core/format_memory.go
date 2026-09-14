@@ -94,17 +94,26 @@ func formatMemory(cfg config, profile *client.ProfileResult, backlog queueBacklo
 	// e nunca apareciam aqui: a extração pagava LLM para identificar riscos e o canal
 	// automático os ignorava. O curinga vem primeiro: é o item mais pesado sem assento,
 	// e o topo do bloco é a posição que o modelo lê com mais atenção.
-	section("Highlight", stringList(profile.Static, "highlight"))
-	section("Decisions", stringList(profile.Static, "decisions"))
-	section("Facts", stringList(profile.Static, "facts"))
-	section("Preferences", stringList(profile.Static, "preferences"))
-	section("Risks", stringList(profile.Static, "risks"))
-	section("Open tasks", stringList(profile.Dynamic, "recent_tasks"))
-	section("Emotions", stringList(profile.Static, "emotions"))
-	section("Recent topics", stringList(profile.Dynamic, "recent_topics"))
+	// Junior Tip [campos, nao chaves de mapa — SDK 3.0.0, 2026-09-14]: ate a
+	// 2.1.0 o Profile chegava como map[string]interface{} e cada secao era
+	// extraida por string. O SDK passou a tipar a resposta (ProfileStatic /
+	// ProfileDynamic em client/profile_types.go), entao uma chave errada agora
+	// e erro de compilacao em vez de uma secao vazia em silencio — que era
+	// exatamente como "Risks" e "Emotions" existiam no banco e nunca apareciam
+	// aqui. stringList continua existindo para os mapas que sobraram (Stats).
+	section("Highlight", profile.Static.Highlight)
+	section("Decisions", profile.Static.Decisions)
+	section("Facts", profile.Static.Facts)
+	section("Preferences", profile.Static.Preferences)
+	section("Risks", profile.Static.Risks)
+	section("Open tasks", profile.Dynamic.RecentTasks)
+	section("Emotions", profile.Static.Emotions)
+	section("Recent topics", profile.Dynamic.RecentTopics)
 
-	total := numField(profile.Stats, "total_records")
-	sessions := numField(profile.Stats, "sessions")
+	// Mesma razao dos campos acima: ProfileStats agora e tipada, entao o
+	// numero vem direto e sem conversao de float64.
+	total := profile.Stats.TotalRecords
+	sessions := profile.Stats.Sessions
 	// Junior Tip [do not advertise tools the model cannot call, 2026-07-17]: this line used to end
 	// with "The MCP tools mcp__anhurdb__* let you recall/store more during this session." That was
 	// false, and expensively so — it is injected into the model's context EVERY session, so it acted

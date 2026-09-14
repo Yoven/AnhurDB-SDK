@@ -17,7 +17,7 @@ import (
 // regression this guards is not "the code errors"; it is "the code stays quiet where a human looks".
 func TestFormatMemory_BacklogWarning(t *testing.T) {
 	cfg := config{container: "fable-1", recallLimit: 10}
-	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 186.0, "sessions": 18.0}}
+	profile := &client.ProfileResult{Stats: client.ProfileStats{TotalRecords: 186, Sessions: 18}}
 
 	clean := formatMemory(cfg, profile, queueBacklog{}, healthyArchiveForTest())
 	if strings.Contains(clean, "Unpersisted backlog") {
@@ -57,7 +57,7 @@ func TestFormatMemory_BacklogWarning(t *testing.T) {
 // from memory forever, with only a log line nobody tails as evidence.
 func TestFormatMemory_QuarantineWarning(t *testing.T) {
 	cfg := config{container: "fable-1", recallLimit: 10}
-	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 10.0, "sessions": 2.0}}
+	profile := &client.ProfileResult{Stats: client.ProfileStats{TotalRecords: 10, Sessions: 2}}
 
 	clean := formatMemory(cfg, profile, queueBacklog{}, healthyArchiveForTest())
 	if strings.Contains(clean, "Quarantined") {
@@ -89,7 +89,7 @@ func TestFormatMemory_QuarantineWarning(t *testing.T) {
 // advertisement invited leaking the key into the memory it protects.
 func TestFormatMemory_NoMCPToolAdvertisement(t *testing.T) {
 	cfg := config{container: "fable-1", recallLimit: 10}
-	profile := &client.ProfileResult{Stats: map[string]interface{}{"total_records": 1.0, "sessions": 1.0}}
+	profile := &client.ProfileResult{Stats: client.ProfileStats{TotalRecords: 1, Sessions: 1}}
 
 	block := formatMemory(cfg, profile, queueBacklog{}, healthyArchiveForTest())
 	if strings.Contains(block, "let you recall/store more") {
