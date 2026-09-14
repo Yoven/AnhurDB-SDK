@@ -1,13 +1,12 @@
 """
 Query operators and modes for the AnhurDB Query DSL.
 
-These operators map directly to SQL operations on the server side
-. Only operators the server
-actually implements are included — ``$neq``, ``$nin``, and ``$like``
-were removed because the server silently ignores them.
+These operators map directly to SQL operations on the server side. Only
+operators the server actually implements are included — ``$neq``, ``$nin`` and
+``$like`` were removed because the server rejects them with HTTP 400.
 
-Semantic search modes are defined but the server currently logs them
-without processing. They are included for forward compatibility.
+``SemanticMode`` survives only as the argument type of the disabled
+``QueryBuilder.semantic_search()``; the AST endpoint has no semantic leg.
 """
 
 from enum import Enum
@@ -38,9 +37,12 @@ class SemanticMode(str, Enum):
     """
     Semantic search modes for hybrid queries.
 
-    Note: The server currently logs semantic_search blocks but does not
-    process them. These are included for forward compatibility when the
-    server implements standalone semantic SQL mapping.
+    DEAD KNOB. The AST query engine reads a ``semantic_search`` block and then
+    SKIPS it (record_ast_query.go:169-172), so neither mode has ever changed a
+    single returned row. ``QueryBuilder.semantic_search()`` now refuses rather
+    than pretending; this enum is kept only as that method's argument type and
+    as the name to reuse if the server ever grows the capability. Real semantic
+    retrieval is ``Memory.search()`` / ``POST /api/v1/search``.
     """
 
     TEXT = "$text"

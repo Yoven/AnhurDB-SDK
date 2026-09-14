@@ -283,6 +283,18 @@ is a full record), an unrecognised sort order silently falls back to `DESC`, `li
 clamped to 1000 without an echo in the response, and `filters["semantic_search"]` is
 skipped — it is answered by `search()`, never by this endpoint.
 
+### Two things `QueryBuilder` refuses that the wire would accept
+
+| Refused | Why it is not left to the server |
+|---|---|
+| `None` as an operand (`where(status=None)`, `where(weight__gt=None)`, a `None` inside `$in`) | The server takes null as a scalar and answers **HTTP 200 with zero rows**, on every input, forever — `col = NULL` is NULL, never true. And the grammar has no `$exists`, no `$ne` and no `IS NULL`, so the intent behind it cannot be expressed here at all. Filter on a real value, or test for null yourself after the rows come back |
+| `$in []` (`where(type__in=[])`) | The server's answer is a fixed 400 the SDK already knows the text of, so the round trip buys nothing |
+
+`QueryBuilder.semantic_search()` **now raises**. The server accepted the key and skipped
+it, so the method returned a plain filter query while its name promised ranking — the
+one failure mode with no symptom. Use `search()` / `POST /api/v1/search`. The pseudo-key
+itself is still reachable by hand through `Filter` for anyone probing the server.
+
 ## Error Handling
 
 ```python
@@ -300,6 +312,26 @@ except AnhurConnectionError:
 except AnhurQueryError as e:
     print(f"Bad request: {e}")
 ```
+
+Query rejections are **one type on both sides of the wire**. A bad column, a
+`None` operand, an empty `$in`, a bad sort direction, an out-of-range `limit`, a
+non-AST argument and `execute()` without an executor all raise `AnhurQueryError`
+with `kind == "invalid_request"` — the same class and kind the server's own HTTP
+400 arrives as. `status_code` is what still tells you which side caught it:
+
+```python
+try:
+    records = await mem.query(QueryBuilder().where(type="risk").limit(20))
+except AnhurQueryError as bad_query:
+    if bad_query.status_code is None:
+        print(f"the SDK refused to send this: {bad_query}")
+    else:
+        print(f"the server rejected it (HTTP {bad_query.status_code}): {bad_query}")
+```
+
+Before 2.1.0 the client-side half raised `ValueError` / `TypeError` /
+`RuntimeError` instead, so a caller who wrote only the obvious `except
+AnhurQueryError` silently missed it.
 
 ## Search controls (ADR-0031)
 

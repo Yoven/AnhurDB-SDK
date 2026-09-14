@@ -272,7 +272,24 @@ const ast = new QueryBuilder()
 const result = await mem.query(ast);
 ```
 
-Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`.
+Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`. There is no
+`$ne`, `$or`, `$and` or `$not`: `filters` is flat and every predicate is ANDed.
+
+The builder refuses, before sending anything, what the server would otherwise
+answer misleadingly:
+
+| Rejected client-side | Why |
+|---|---|
+| a column or operator outside the whitelist | server 400, caught a round trip earlier |
+| a sort direction other than `asc`/`desc` | the server does **not** reject it — it silently sorts `DESC` and answers 200 |
+| a `null` filter value (including inside `$in`) | SQL never matches `col = NULL`, so the query returns zero rows for every input while answering 200 — and the grammar has no `$exists`/`$ne`/`IS NULL` to express it instead |
+| `$in` with an empty array | server 400, caught a round trip earlier |
+| `limit` outside 1..1000, negative `offset` | server clamps silently |
+
+Every one of these throws `AnhurQueryError` with `kind: "invalid_request"` and
+`retryable: false` — the same shape a server HTTP 400 arrives as, so one `catch`
+block handles both. Client-side rejections carry no `statusCode`, because no
+request was sent.
 
 ## API Reference
 

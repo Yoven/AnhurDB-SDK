@@ -186,64 +186,6 @@ func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, o
 }
 
 // --------------------------------------------------------------------------
-// Query — structured AST query (POST /api/v1/query)
-// --------------------------------------------------------------------------
-
-// Query executes a structured AST query via POST /api/v1/query and returns the
-// matching records as a flat slice. This is the MCP execute_ast contract: a
-// whitelisted filter/sort/pagination grammar over the record columns, evaluated
-// server-side as SQL.
-//
-// The request is the QueryRequest struct (filters/sort/pagination/select). Build
-// it directly, or with the small fluent helpers (NewQuery().Where(...).
-// OrderBy(...).Limit(...)).
-//
-//	req := client.NewQuery().
-//	    Where("type", client.QueryOp{Eq: "fact"}).
-//	    Where("score", client.QueryOp{Gte: 7}).
-//	    OrderBy("created_at", "desc").
-//	    Limit(20)
-//	records, _ := mem.Query(ctx, req)
-//
-func (m *Memory) Query(ctx context.Context, request *QueryRequest, opts ...ReadOption) ([]models.Record, error) {
-	if m.conn == nil {
-		return nil, ErrEmptyAPIKey
-	}
-	if request == nil {
-		return nil, fmt.Errorf("Query: request is required")
-	}
-	// Junior Tip [validar ANTES de gastar a requisicao — paridade com Python/TS]:
-	// campo fora da whitelist, operador ausente, $in vazio, limit/offset fora de
-	// faixa: os tres SDKs agora recusam no cliente. Sem isto, o Go pagava um
-	// round-trip para receber um 400 que ele ja tinha informacao para prever, e
-	// ate 2026-07-28 nem 400 recebia — o servidor descartava o predicado e
-	// devolvia uma listagem SEM FILTRO, que e a resposta errada mais cara que
-	// existe: parece certa.
-	if validationErr := request.Validate(); validationErr != nil {
-		return nil, validationErr
-	}
-
-	_ = opts
-
-	// The AST is a read behind POST.
-	respBytes, postErr := m.conn.PostRead(ctx, "/api/v1/query", request)
-	if postErr != nil {
-		return nil, postErr
-	}
-
-	var wrapped queryResponse
-	if decodeErr := json.Unmarshal(respBytes, &wrapped); decodeErr != nil {
-		return nil, fmt.Errorf("parsing query response: %w", decodeErr)
-	}
-	// records:null (empty result set) decodes to a nil slice; normalise to an
-	// empty slice so callers can range without a nil guard.
-	if wrapped.Records == nil {
-		return []models.Record{}, nil
-	}
-	return wrapped.Records, nil
-}
-
-// --------------------------------------------------------------------------
 // Manifest — global & session paginated listings
 // --------------------------------------------------------------------------
 

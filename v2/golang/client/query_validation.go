@@ -21,7 +21,7 @@ package client
 // à mão pode chamar Validate() diretamente.
 
 import (
-	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -67,6 +67,17 @@ func sortedAllowedColumns() string {
 // QueryOp{In: []interface{}{}} também vira `{}`, e o usuário recebe a mensagem
 // de "sem operador" quando o problema real era a lista vazia. Detectar aqui
 // devolve a mensagem CERTA antes de a requisição sair.
+//
+// Junior Tip [QueryOp{Eq: nil} não é uma lacuna do Go, 2026-09-14]: um nil
+// interface é indistinguível de "campo não preenchido", então o Go não
+// consegue emitir `$eq: null` — e isso está CERTO. Medido ao vivo no router de
+// produção em 2026-09-14 (somente leitura): `{"superseded_by":{"$eq":null}}`
+// devolveu HTTP 200 com count=0 num tenant cuja página sem filtro devolve 1000
+// registros, e TODOS eles satisfazem `superseded_by IS NULL`. O servidor
+// compila `$eq: null` para `col = ?` com NULL ligado, e em SQL `col = NULL`
+// nunca é verdadeiro. Python e TypeScript conseguem mandar esse predicado; o
+// que eles ganham é a capacidade de escrever uma consulta morta que responde
+// 200. Ver o adendo datado em CHANGELOG.md e PARITY_SPEC.md.
 func (operator QueryOp) isEmpty() bool {
 	return operator.Eq == nil && operator.Gt == nil && operator.Gte == nil &&
 		operator.Lt == nil && operator.Lte == nil && operator.In == nil
@@ -77,6 +88,55 @@ func (operator QueryOp) hasEmptyInList() bool {
 	return operator.In != nil && len(operator.In) == 0
 }
 
+// validateInElements refuses $in elements the grammar cannot honour: nil, and
+// anything that is not a JSON scalar (nested arrays, objects, structs, …).
+//
+// Junior Tip [B1 — why elements are inspected at all, 2026-09-14]: the length
+// check above was the ONLY inspection this list ever got, so
+// `{"type":{"$in":["fact",null]}}` left the process, the server answered HTTP
+// 200 and silently DROPPED the null (measured live against production on
+// 2026-09-14 by the three-SDK differential harness) — the caller ran a
+// narrower predicate than the one they wrote, with no error anywhere. The two
+// refusals here have DIFFERENT server behaviours behind them, and each message
+// says which: a null element is silently ignored (SQL IN never matches NULL);
+// a non-scalar element is answered with HTTP 400. Python (_assert_in_list) and
+// TypeScript (assertFilterValue) already refuse a null element client-side —
+// this closes the Go gap.
+func validateInElements(filterField string, operator QueryOp) error {
+	for elementIndex, elementValue := range operator.In {
+		if elementValue == nil {
+			return newValidationError(
+				"query: filter %q: $in[%d] is null — the server does not reject it, it silently DROPS the null "+
+					"and matches only the remaining values (SQL IN never matches NULL), so the query runs narrower "+
+					"than written with HTTP 200; remove the null element or compare against a real value",
+				filterField, elementIndex)
+		}
+		if !isScalarFilterValue(elementValue) {
+			return newValidationError(
+				"query: filter %q: $in[%d] is a %T — $in elements must be scalars (bool, number or string); "+
+					"the server answers HTTP 400 for a nested array or object",
+				filterField, elementIndex, elementValue)
+		}
+	}
+	return nil
+}
+
+// isScalarFilterValue reports whether a value marshals to a JSON scalar the
+// server grammar accepts (bool, any numeric kind, or string). Everything else
+// — slices, arrays, maps, structs, pointers — is refused by validateInElements.
+func isScalarFilterValue(value interface{}) bool {
+	switch reflect.ValueOf(value).Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		return true
+	default:
+		return false
+	}
+}
+
 // Validate checks the request against the same rules Python and TypeScript
 // enforce client-side. Query() calls it before spending a request; callers who
 // build a QueryRequest by hand can call it directly.
@@ -85,7 +145,7 @@ func (operator QueryOp) hasEmptyInList() bool {
 // then pagination), so the same malformed query always reports the same error.
 func (request *QueryRequest) Validate() error {
 	if request == nil {
-		return fmt.Errorf("query: request is nil")
+		return newValidationError("query: request is nil")
 	}
 	if len(request.buildErrors) > 0 {
 		return request.buildErrors[0]
@@ -99,39 +159,52 @@ func (request *QueryRequest) Validate() error {
 
 	for _, filterField := range filterFieldNames {
 		if !astAllowedFilterColumns[filterField] {
-			return fmt.Errorf("query: field %q is not allowed in filters — allowed: %s",
+			return newValidationError("query: field %q is not allowed in filters — allowed: %s",
 				filterField, sortedAllowedColumns())
 		}
 		operator := request.Filters[filterField]
 		if operator.hasEmptyInList() {
-			return fmt.Errorf("query: filter %q: $in requires a non-empty list of values", filterField)
+			return newValidationError("query: filter %q: $in requires a non-empty list of values", filterField)
+		}
+		if inElementErr := validateInElements(filterField, operator); inElementErr != nil {
+			return inElementErr
 		}
 		if operator.isEmpty() {
-			return fmt.Errorf("query: filter %q has no operator: set one of Eq, Gt, Gte, Lt, Lte or In", filterField)
+			// Junior Tip [name the CAUSE, not the symptom, 2026-09-14]: the old text
+			// read "has no operator: set one of Eq, Gt, ..." — and the single most
+			// common way to reach it is QueryOp{Eq: nil}, where the caller DID set
+			// Eq. Telling that caller to set Eq sends them back to code that already
+			// does what the error asks. The operator did not go missing, it was
+			// ERASED by `omitempty` during encoding, and the message has to say so or
+			// it is worse than no message at all.
+			return newValidationError("query: filter %q: no operator survived encoding — every QueryOp field is `omitempty`, "+
+				"so QueryOp{Eq: nil} marshals to {} exactly like QueryOp{}; set a NON-NIL Eq, Gt, Gte, Lt, Lte or In. "+
+				"A literal $eq:null is unreachable from Go on purpose: the server compiles it to `col = NULL`, "+
+				"which is never true, so it would return 200 with zero rows for every input", filterField)
 		}
 	}
 
 	for _, sortClause := range request.Sort {
 		sortField := sortClause["field"]
 		if !astAllowedFilterColumns[sortField] {
-			return fmt.Errorf("query: sort field %q is not allowed — allowed: %s",
+			return newValidationError("query: sort field %q is not allowed — allowed: %s",
 				sortField, sortedAllowedColumns())
 		}
 		// Junior Tip [ordem desconhecida cai em DESC no servidor, em silêncio]:
 		// o servidor aceita a clausula e usa DESC. Recusar aqui é a mesma postura
 		// de Python/TS e evita um "por que a ordem não mudou?" indepurável.
 		if sortOrder, present := sortClause["order"]; present && !astAllowedSortOrders[strings.ToLower(sortOrder)] {
-			return fmt.Errorf("query: sort order %q is not allowed — use \"asc\" or \"desc\"", sortOrder)
+			return newValidationError("query: sort order %q is not allowed — use \"asc\" or \"desc\"", sortOrder)
 		}
 	}
 
 	if limitValue, present := request.Pagination["limit"]; present {
 		if limitValue < 1 || limitValue > astQueryLimitMax {
-			return fmt.Errorf("query: limit must be between 1 and %d, got %d", astQueryLimitMax, limitValue)
+			return newValidationError("query: limit must be between 1 and %d, got %d", astQueryLimitMax, limitValue)
 		}
 	}
 	if offsetValue, present := request.Pagination["offset"]; present && offsetValue < 0 {
-		return fmt.Errorf("query: offset cannot be negative, got %d", offsetValue)
+		return newValidationError("query: offset cannot be negative, got %d", offsetValue)
 	}
 	return nil
 }

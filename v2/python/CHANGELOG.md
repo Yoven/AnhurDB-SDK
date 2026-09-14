@@ -1,5 +1,68 @@
 # Python SDK Changelog
 
+## 2.1.0 — AST query parity: the four silent divergences (2026-09-14)
+
+Held the 2.1.0 release for these. All four failed with no symptom: the caller
+got a 200, or an exception nobody was catching.
+
+### BREAKING — `QueryBuilder.semantic_search()` now raises
+
+The server accepts a `semantic_search` block and **skips** it
+(`service/record_ast_query.go:169-172` logs the block and continues). Confirmed
+live: sent alongside `type=risk`, it returned exactly the plain `type=risk`
+result set. The method therefore did nothing at all, while its name promised
+semantic ranking — a user could ship believing they had it.
+
+Kept as a raising method rather than deleted: deleting turns an existing call
+into an `AttributeError` that names nothing, while raising names
+`Memory.search()` / `POST /api/v1/search`, the path that actually runs the
+vector/hybrid retrieval. Nothing inside `anhurdb/` ever called it, so the blast
+radius is user code — which is the code that needs to read the message. The
+pseudo-key is still reachable by hand through `Filter` for anyone probing the
+server. (Go refuses the key client-side; TypeScript never had the method.)
+
+### BREAKING — client-side query rejections are `AnhurQueryError`
+
+A bad column used to raise `ValueError` locally while the identical mistake
+written as a raw dict came back as `AnhurQueryError(kind="invalid_request")`
+from the server. One bug class, two `except` blocks, and anyone who wrote the
+obvious one silently missed half the cases. Now unified: `where()`,
+`order_by()`, `limit()`, `offset()`, `execute()` without an executor, and
+`query()` with a non-AST argument all raise `AnhurQueryError` with
+`kind == "invalid_request"`. `status_code` still separates the halves — `None`
+when nothing was sent, `400` when the server answered. Message texts are
+unchanged, so string-matching callers are unaffected.
+
+### `None` as an operand is refused
+
+`where(status=None)` was accepted and produced `col = NULL`, which is NULL and
+never true: HTTP 200 with **zero rows on every input, forever**. The grammar has
+no `$exists`, no `$ne` and no `IS NULL`, so the intent cannot be expressed
+through this endpoint at all — the error says so instead of just forbidding.
+Applies to `$eq`, `$gt`, `$gte`, `$lt`, `$lte` and to a `None` element inside
+`$in`. Falsy values (`False`, `0`, `""`) are untouched and still filter.
+
+### `$in []` is refused client-side
+
+The server answers a fixed `400 filter "X": $in requires a non-empty array of
+values`. Go already refused it locally; Python spent a round trip to learn a
+string it already had.
+
+### Internals
+
+- New `anhurdb/query/grammar.py` — the server grammar mirrored in one place
+  (whitelist, operator set, every rejection), with the rule for when a
+  client-side duplicate of a server check earns its place.
+- New `anhurdb/query/shorthand.py` (`Filter`, `Eq`) and
+  `anhurdb/client/query_argument.py`, splitting `builder.py` (308 -> 274 lines)
+  and shrinking `client/__init__.py` under the 300-line house rule's spirit.
+  `Filter` still validates nothing — that is the documented escape hatch.
+- New `tests/test_ast_client_rejections.py` (24 cases) drives the real builder;
+  each guard was proven to bite by reverting it and watching the suite fail.
+- `tests/test_builder.py::test_execute_without_executor_raises` used
+  `asyncio.get_event_loop()` and passed only when an earlier test left a loop
+  installed. Now `asyncio.run`.
+
 ## 2.1.0 — ADR-0031 search controls, one version number, PEP 561 (2026-09-05)
 
 All three SDKs (Go, TypeScript, Python) converge on **2.1.0** in this change, per

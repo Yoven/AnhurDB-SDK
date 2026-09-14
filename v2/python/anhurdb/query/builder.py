@@ -5,7 +5,8 @@ Generates a JSON Abstract Syntax Tree (AST) that the server processes
 via ``POST /api/v1/query``. The AST is validated server-side against
 a column whitelist and operator set.
 
-Server contract: whitelisted filter/sort columns on the AST query endpoint.
+The grammar itself — the whitelist, the operator set, and every client-side
+rejection — lives in ``grammar.py``. This file is only the fluent surface.
 
 Usage::
 
@@ -19,6 +20,12 @@ Usage::
     f = Filter({"type": {"$eq": "risk"}})
     ast = f.ast()
 
+Errors:
+    Every rejection this builder issues is an ``AnhurQueryError`` with
+    ``kind == "invalid_request"`` and ``status_code is None`` — the same type
+    the server's own HTTP 400 arrives as, so one ``except AnhurQueryError``
+    covers a bad query whether it was caught here or on the wire.
+
 Security:
     - Column names are validated against the server's whitelist.
     - Operator suffixes are validated against the server's supported set.
@@ -28,29 +35,20 @@ Security:
 from typing import Any, Dict, List, Optional
 import copy
 
+from .grammar import (
+    ALLOWED_WHERE_COLUMNS,
+    OPERATOR_SUFFIXES,
+    assert_filter_column,
+    assert_filter_value,
+    assert_operator_suffix,
+    query_rejection,
+    semantic_search_rejection,
+)
 from .operators import QueryOperator, SemanticMode
 
-
-# Columns the server allows in filters and sort.
-# Must match the server AST query whitelist.
-ALLOWED_WHERE_COLUMNS = {
-    "id", "uuid", "type", "dimension", "weight", "score",
-    "status", "consolidated", "archived", "created_at", "updated_at",
-    "prefix", "metadata", "summary",
-    "superseded_by", "valid_from", "valid_until",
-}
-
-# Operator suffix → QueryOperator mapping.
-# Only operators the server actually implements are included.
-# $neq, $nin, $like were removed — server silently ignores them.
-_OP_MAP = {
-    "eq": QueryOperator.EQ,
-    "gt": QueryOperator.GT,
-    "gte": QueryOperator.GTE,
-    "lt": QueryOperator.LT,
-    "lte": QueryOperator.LTE,
-    "in": QueryOperator.IN,
-}
+# Re-exported: importers have used ``anhurdb.query.builder.ALLOWED_WHERE_COLUMNS``
+# since 2.0 (the live coverage sweep enumerates it to build its 102 pairs).
+__all__ = ["ALLOWED_WHERE_COLUMNS", "QueryBuilder"]
 
 
 class QueryBuilder:
@@ -107,6 +105,9 @@ class QueryBuilder:
 
         Supported operators: ``eq``, ``gt``, ``gte``, ``lt``, ``lte``, ``in``.
 
+        Every predicate is ANDed by the server; there is no ``or``. An SDK that
+        offered one would be inventing a capability the grammar does not have.
+
         Args:
             **kwargs: Field=value or field__op=value pairs.
 
@@ -114,39 +115,29 @@ class QueryBuilder:
             Self for chaining.
 
         Raises:
-            ValueError: If field is not in the server's whitelist.
-            ValueError: If operator suffix is not supported.
+            AnhurQueryError: field not in the server's whitelist, unsupported
+                operator suffix, or a value that would silently match nothing
+                (``None``, or an empty ``$in`` list).
         """
         for key, value in kwargs.items():
             if "__" in key:
                 field, op_suffix = key.split("__", 1)
-                if field not in ALLOWED_WHERE_COLUMNS:
-                    raise ValueError(
-                        f"Field '{field}' is not allowed in filters. "
-                        f"Allowed: {sorted(ALLOWED_WHERE_COLUMNS)}"
-                    )
-
-                if op_suffix not in _OP_MAP:
-                    raise ValueError(
-                        f"Operator suffix '{op_suffix}' is not supported. "
-                        f"Allowed: {sorted(_OP_MAP.keys())}"
-                    )
+                assert_filter_column(field)
+                assert_operator_suffix(op_suffix)
+                assert_filter_value(field, op_suffix, value)
 
                 if field not in self._filters:
                     self._filters[field] = {}
                 elif not isinstance(self._filters[field], dict):
-                    raise ValueError(
+                    raise query_rejection(
                         f"Field '{field}' has conflicting exact match."
                     )
 
-                self._filters[field][_OP_MAP[op_suffix].value] = value
+                self._filters[field][OPERATOR_SUFFIXES[op_suffix].value] = value
 
             else:
-                if key not in ALLOWED_WHERE_COLUMNS:
-                    raise ValueError(
-                        f"Field '{key}' is not allowed in filters. "
-                        f"Allowed: {sorted(ALLOWED_WHERE_COLUMNS)}"
-                    )
+                assert_filter_column(key)
+                assert_filter_value(key, "eq", value)
                 self._filters[key] = {QueryOperator.EQ.value: value}
 
         return self
@@ -155,23 +146,17 @@ class QueryBuilder:
         self, query: str, mode: SemanticMode = SemanticMode.HYBRID
     ) -> "QueryBuilder":
         """
-        Append a semantic search block to the query.
+        DISABLED — always raises. The AST endpoint has no semantic leg.
 
-        Note: The server currently logs this block but does not process it.
-        Included for forward compatibility.
+        The server accepts a ``semantic_search`` block and then skips it, so
+        this method never influenced a single returned row. It now refuses
+        instead of pretending, and the error names the endpoint that does the
+        real work (``Memory.search`` / ``POST /api/v1/search``).
 
-        Args:
-            query: Natural language search query.
-            mode:  Search mode (``$text`` or ``$hybrid``).
-
-        Returns:
-            Self for chaining.
+        Raises:
+            AnhurQueryError: always.
         """
-        self._filters["semantic_search"] = {
-            "query": query,
-            "mode": mode.value,
-        }
-        return self
+        raise semantic_search_rejection(getattr(mode, "value", mode))
 
     def order_by(self, field: str, direction: str = "desc") -> "QueryBuilder":
         """
@@ -185,17 +170,20 @@ class QueryBuilder:
             Self for chaining.
 
         Raises:
-            ValueError: If field is not in the whitelist.
-            ValueError: If direction is not ``asc`` or ``desc``.
+            AnhurQueryError: field not in the whitelist, or a direction outside
+                ``asc``/``desc``.
+
+        Junior Tip [why an unknown direction is refused here]: the server does
+        NOT reject one. Its whitelist is ``ASC/DESC/asc/desc`` and anything else
+        falls through to DESC silently (record_ast_query.go:240-242), so a typo
+        like ``"ascending"`` returns rows in the exact opposite order with a
+        200. That is a wrong answer with no error attached, which is precisely
+        the case a client-side check is for.
         """
-        if field not in ALLOWED_WHERE_COLUMNS:
-            raise ValueError(
-                f"Field '{field}' is not allowed in order_by. "
-                f"Allowed: {sorted(ALLOWED_WHERE_COLUMNS)}"
-            )
+        assert_filter_column(field, clause="order_by")
         direction_lower = direction.lower()
         if direction_lower not in ("asc", "desc"):
-            raise ValueError("order_by direction must be 'asc' or 'desc'.")
+            raise query_rejection("order_by direction must be 'asc' or 'desc'.")
 
         self._sort.append({"field": field, "order": direction_lower})
         return self
@@ -204,8 +192,6 @@ class QueryBuilder:
         """
         Set maximum results to return.
 
-        The server caps this at 1000 regardless of what is set here.
-
         Args:
             max_results: Maximum results (1-1000).
 
@@ -213,10 +199,16 @@ class QueryBuilder:
             Self for chaining.
 
         Raises:
-            ValueError: If out of range.
+            AnhurQueryError: If out of range.
+
+        Junior Tip [why 1001 is refused instead of forwarded]: the server caps
+        at 1000 by SILENT CLAMP — ask for 5000 and it answers 200 with 1000
+        rows and no field anywhere in the response saying it truncated you. A
+        caller paging on "did I get everything" would loop forever. Refusing
+        client-side is the only place that number can be questioned.
         """
         if max_results < 1 or max_results > 1000:
-            raise ValueError("Limit must be between 1 and 1000.")
+            raise query_rejection("Limit must be between 1 and 1000.")
         self._limit = max_results
         return self
 
@@ -231,10 +223,10 @@ class QueryBuilder:
             Self for chaining.
 
         Raises:
-            ValueError: If negative.
+            AnhurQueryError: If negative.
         """
         if skip < 0:
-            raise ValueError("Offset cannot be negative.")
+            raise query_rejection("Offset cannot be negative.")
         self._offset = skip
         return self
 
@@ -271,38 +263,12 @@ class QueryBuilder:
         Validate the AST and dispatch execution to the provided executor.
 
         Raises:
-            RuntimeError: If no executor was provided.
+            AnhurQueryError: If no executor was provided.
         """
         if not self._executor:
-            raise RuntimeError(
+            raise query_rejection(
                 "Cannot execute: No executor was provided to QueryBuilder."
             )
 
         ast = self.build_ast()
         return await self._executor.execute_query(ast)
-
-
-def Eq(field: str, value: Any) -> Dict[str, Any]:
-    """Shorthand for an exact-match filter dict."""
-    return {field: {"$eq": value}}
-
-
-class Filter:
-    """
-    Syntactic sugar for creating a pre-built AST filter.
-
-    Usage::
-
-        f = Filter({"type": {"$eq": "risk"}, "weight": {"$gt": 0.8}})
-        results = await client.search_with_ast(f, session_uuid="session-uuid")
-    """
-
-    def __init__(self, condition: Optional[Dict[str, Any]] = None, **kwargs: Any):
-        self._builder = QueryBuilder()
-        if condition:
-            for k, v in condition.items():
-                self._builder._filters[k] = v
-
-    def ast(self) -> Dict[str, Any]:
-        """Return the compiled AST dict."""
-        return self._builder.build_ast()

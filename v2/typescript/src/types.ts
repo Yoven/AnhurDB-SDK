@@ -702,107 +702,25 @@ export interface CreateOptions {
   metadata?: Record<string, unknown>;
 }
 
+
 // ── Error types ──────────────────────────────────────────────
-
-/** Base error for all AnhurDB SDK errors.
- *
- * `statusCode` carries the HTTP status when the error came from an HTTP
- * response (undefined otherwise) — callers branch on the REAL status instead
- * of parsing the message (e.g. `waitForUpload` treats a transient 404 as
- * "pending"). Additive and backward-compatible. */
-/** Failure classification, so callers branch on meaning instead of on strings. */
-export type AnhurErrorKind =
-  | "auth"
-  | "invalid_request"
-  | "not_found"
-  | "conflict"
-  | "rate_limited"
-  | "unavailable"
-  | "timeout"
-  | "transport"
-  | "server";
-
-const RETRYABLE_KINDS: ReadonlySet<AnhurErrorKind> = new Set([
-  "rate_limited",
-  "unavailable",
-  "timeout",
-  "transport",
-  "server",
-]);
-
-/** Classify an HTTP status. `undefined` means the request never reached the server. */
-export function kindForStatus(statusCode?: number): AnhurErrorKind {
-  if (statusCode === undefined) return "transport";
-  if (statusCode === 401 || statusCode === 403) return "auth";
-  if (statusCode === 404) return "not_found";
-  if (statusCode === 409) return "conflict";
-  if (statusCode === 429) return "rate_limited";
-  if (statusCode === 503) return "unavailable";
-  if (statusCode >= 400 && statusCode < 500) return "invalid_request";
-  return "server";
-}
-
-export class AnhurError extends Error {
-  readonly statusCode?: number;
-  readonly kind: AnhurErrorKind;
-  /** Whether repeating the same call could give a different result.
-   *
-   * Junior Tip [not the same as "safe to retry"]: a timeout on a WRITE means
-   * the server may or may not have committed it. The SDK never auto-retries
-   * writes — idempotency is the caller's decision. See SDK_ERROR_CONTRACT.md. */
-  readonly retryable: boolean;
-
-  constructor(message: string, statusCode?: number, kind?: AnhurErrorKind) {
-    const resolvedKind = kind ?? kindForStatus(statusCode);
-    // A message is never empty: an unexplained failure is unactionable.
-    super(message || defaultMessageFor(resolvedKind, statusCode));
-    this.name = "AnhurError";
-    this.statusCode = statusCode;
-    this.kind = resolvedKind;
-    this.retryable = RETRYABLE_KINDS.has(resolvedKind);
-  }
-}
-
-function defaultMessageFor(kind: AnhurErrorKind, statusCode?: number): string {
-  if (kind === "timeout")
-    return "request timed out (the server may still have processed it)";
-  if (kind === "transport") return "could not reach AnhurDB";
-  if (kind === "unavailable") return "service temporarily unavailable — retry";
-  return statusCode !== undefined
-    ? `AnhurDB request failed (HTTP ${statusCode})`
-    : "AnhurDB request failed";
-}
-
-/** Raised when authentication fails (invalid API key, expired token). */
-export class AnhurAuthError extends AnhurError {
-  constructor(message: string, statusCode?: number) {
-    super(message, statusCode);
-    this.name = "AnhurAuthError";
-  }
-}
-
-/** Raised when a request is malformed or rejected by the server. */
-export class AnhurQueryError extends AnhurError {
-  constructor(message: string, statusCode?: number) {
-    super(message, statusCode);
-    this.name = "AnhurQueryError";
-  }
-}
-
-/** Raised when the SDK cannot reach the AnhurDB server. */
-export class AnhurConnectionError extends AnhurError {
-  constructor(message: string, statusCode?: number, kind: AnhurErrorKind = "transport") {
-    super(message, statusCode, kind);
-    this.name = "AnhurConnectionError";
-  }
-}
-
-/** Raised by `waitForUpload` when the upload did not reach a terminal status
- * within the timeout. Parity: Go `ErrUploadWaitTimeout` / Python
- * `AnhurUploadWaitTimeout`. */
-export class AnhurUploadWaitTimeout extends AnhurError {
-  constructor(message: string) {
-    super(message);
-    this.name = "AnhurUploadWaitTimeout";
-  }
-}
+//
+// The taxonomy itself moved to `errors.ts` (house 300-line cut). It is
+// re-exported here, unchanged, because `types.ts` is the import path every
+// module and the public `index.ts` already use.
+//
+// Junior Tip [why a re-export and not a rename]: `AnhurError` is thrown across
+// a module boundary and matched with `instanceof`. Two copies of the class —
+// one imported from `./types.js`, one from `./errors.js` — would be two
+// DIFFERENT constructors, and `instanceof` between them is false. Keeping one
+// definition and one re-export means every path in the SDK, and every caller,
+// compares against the same class object.
+export type { AnhurErrorKind } from "./errors.js";
+export {
+  kindForStatus,
+  AnhurError,
+  AnhurAuthError,
+  AnhurQueryError,
+  AnhurConnectionError,
+  AnhurUploadWaitTimeout,
+} from "./errors.js";

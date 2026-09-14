@@ -13,8 +13,15 @@ func TestQueryValidate_RejectsWhatTheOtherSDKsReject(t *testing.T) {
 	}{
 		{"campo fora da whitelist", NewQuery().Where("nao_existe", QueryOp{Eq: 1}), "not allowed in filters"},
 		{"consolidate_id nao e filtravel", NewQuery().Where("consolidate_id", QueryOp{Eq: 1}), "not allowed in filters"},
-		{"operador ausente (QueryOp zero)", NewQuery().Where("type", QueryOp{}), "has no operator"},
+		{"operador ausente (QueryOp zero)", NewQuery().Where("type", QueryOp{}), "no operator survived encoding"},
 		{"$in vazio", NewQuery().Where("type", QueryOp{In: []interface{}{}}), "$in requires a non-empty"},
+		// B1 (2026-09-14): um null dentro de $in saía para o fio e o servidor o
+		// DESCARTAVA em silêncio (200, predicado mais estreito que o escrito);
+		// um elemento não-escalar viraria 400. Ambos recusados no cliente agora,
+		// com o índice do elemento e o comportamento do servidor na mensagem.
+		{"$in com elemento null", NewQuery().Where("type", QueryOp{In: []interface{}{"fact", nil}}), "$in[1] is null"},
+		{"$in com elemento aninhado", NewQuery().Where("type", QueryOp{In: []interface{}{"fact", []string{"nested"}}}), "$in[1] is a"},
+		{"$in com objeto", NewQuery().Where("type", QueryOp{In: []interface{}{map[string]string{"k": "v"}}}), "$in[0] is a"},
 		{"limit zero", NewQuery().Where("type", QueryOp{Eq: "fact"}).Limit(0), "limit must be between"},
 		{"limit acima do teto", NewQuery().Where("type", QueryOp{Eq: "fact"}).Limit(5000), "limit must be between"},
 		{"offset negativo", NewQuery().Where("type", QueryOp{Eq: "fact"}).Offset(-3), "offset cannot be negative"},

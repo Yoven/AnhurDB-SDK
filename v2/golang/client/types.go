@@ -1,7 +1,6 @@
 package client
 
 import (
-	"fmt"
 	"encoding/json"
 	"time"
 
@@ -571,23 +570,8 @@ func NewQuery() *QueryRequest {
 	return &QueryRequest{}
 }
 
-// Where adds (or replaces) the operator object for a column. Returns the
-// receiver so calls chain.
-func (request *QueryRequest) Where(field string, operator QueryOp) *QueryRequest {
-	if request.Filters == nil {
-		request.Filters = map[string]QueryOp{}
-	}
-	// Junior Tip [checagem aqui E em Validate(), de proposito]: aqui ela aponta
-	// a LINHA da cadeia que errou, o que e o que o desenvolvedor precisa; em
-	// Validate() ela cobre quem monta o QueryRequest como struct literal, sem
-	// passar por Where(). Python e TypeScript tem as duas pelo mesmo motivo.
-	if !astAllowedFilterColumns[field] {
-		request.buildErrors = append(request.buildErrors,
-			fmt.Errorf("query: field %q is not allowed in filters — allowed: %s", field, sortedAllowedColumns()))
-	}
-	request.Filters[field] = operator
-	return request
-}
+// Where lives in query_where.go — it MERGES operator objects per column and
+// the merge logic needed room this file (past the ~300-line cut) cannot give.
 
 // OrderBy appends a sort clause ({field, order}). order should be "asc" or
 // "desc"; an unrecognised value falls back to DESC server-side. Returns the
@@ -605,7 +589,7 @@ func (request *QueryRequest) Limit(limit int) *QueryRequest {
 	}
 	if limit < 1 || limit > astQueryLimitMax {
 		request.buildErrors = append(request.buildErrors,
-			fmt.Errorf("query: limit must be between 1 and %d, got %d", astQueryLimitMax, limit))
+			newValidationError("query: limit must be between 1 and %d, got %d", astQueryLimitMax, limit))
 	}
 	request.Pagination["limit"] = limit
 	return request
@@ -619,7 +603,7 @@ func (request *QueryRequest) Offset(offset int) *QueryRequest {
 	}
 	if offset < 0 {
 		request.buildErrors = append(request.buildErrors,
-			fmt.Errorf("query: offset cannot be negative, got %d", offset))
+			newValidationError("query: offset cannot be negative, got %d", offset))
 	}
 	request.Pagination["offset"] = offset
 	return request

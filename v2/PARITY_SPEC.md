@@ -124,6 +124,48 @@ SDK and posting raw JSON. This is a type-system constraint of the closed
 `QueryOp` struct (would need an `Option[T]`-style wrapper to close), not a
 missed validation check, and is not currently planned.
 
+> **Amendment 2026-09-14 — the paragraph above is kept verbatim for history, and
+> its VERDICT is wrong. This is not a gap, and Go is the SDK that is right.**
+> The mechanics it describes are accurate and unchanged: `omitempty` erases a nil
+> interface, `QueryOp{Eq: nil}` is byte-identical to `QueryOp{}` on the wire, and
+> `$eq: null` cannot leave the Go SDK. What is wrong is calling that a
+> deficiency to be closed with an `Option[T]` wrapper.
+>
+> The exhaustive live AST matrix (398 wire exchanges against the production
+> router, 2026-09-14) established that the server compiles `$eq: null` to
+> `col = ?` bound to NULL, and `col = NULL` is never true in SQL. Read-only
+> probes on the same day, on a tenant whose unfiltered page returns 1000 rows:
+>
+> | request body | result |
+> |---|---|
+> | `{"filters":{"superseded_by":{"$eq":null}}}` | HTTP 200, `count=0` — although EVERY row the server returns satisfies `superseded_by IS NULL` |
+> | `{"filters":{"valid_until":{"$eq":null}}}` | HTTP 200, `count=0` |
+>
+> So `$eq: null` is a predicate that returns 200 with **always zero rows on every
+> input**. Python and TypeScript can put it on the wire; that is not a capability
+> Go is missing, it is a way to write a dead query that never complains — exactly
+> the silent-wrong-answer class this spec exists to eliminate.
+>
+> Corrected parity statement: `$eq: null` is **unreachable from Go by
+> construction, and correctly so**. The Go SDK refuses it locally with a named
+> error before spending a request. The open item, if any, belongs to the other
+> two SDKs (warn or refuse), not to Go. The old advice to "bypass the SDK and post
+> raw JSON" to obtain it is **withdrawn**.
+>
+> Go-side evidence: `v2/golang/client/query_execute_test.go`
+> (`TestQueryOpNilFieldsVanishOnTheWire`), and the reworded local error now opens
+> with "no operator survived encoding" and goes on to name `omitempty` and
+> `QueryOp{Eq: nil}` explicitly, replacing the old `has no operator` text — which
+> told a caller who had set `Eq` to set `Eq`.
+>
+> Also amended the same day: `Memory.Query` dropped its `...ReadOption` variadic
+> (it accepted `WithAsOf`/`WithSince`/`WithUntil`/`WithKeyword` and discarded
+> them; `POST /api/v1/query` has no temporal or keyword surface — confirmed live
+> for both query parameters and top-level body keys). Python and TypeScript owners
+> should confirm their `query()` entry points do not accept temporal arguments on
+> this route either; that check has NOT been done here — this amendment covers the
+> Go column only.
+
 Escape hatches that bypass pre-validation and reach the server raw: Python
 `Filter({...})` (copies the dict with no validation) and TypeScript a hand-built
 `AstQuery` (typically via `as AstQuery`) — both can carry any shape in the table,
@@ -182,3 +224,42 @@ Contrato (defaults iguais nos três: timeout 120s, interval 5s, grace 30s):
 Suporte: os erros HTTP dos três SDKs carregam o status estruturado
 (Go `ErrNotFound` tipado; Python `AnhurError.status_code`; TS
 `AnhurError.statusCode`) — nunca parsear a mensagem.
+
+## Where()/where(): per-column operator accumulation (2026-09-14)
+
+Server grammar fact (proved live by the three-SDK differential harness, one
+fixture, one pass, against production): two operators on one column AND
+together — `{"score":{"$gte":3,"$lte":5}}` is a legal range.
+
+- **Go bug B3, fixed 2026-09-14**: `QueryRequest.Where` REPLACED the column's
+  operator object, so `.Where("score", QueryOp{Gte: 3}).Where("score",
+  QueryOp{Lte: 5})` put only `{"score":{"$lte":5}}` on the wire — HTTP 200,
+  5 rows where TypeScript and Python returned 3, no error anywhere. Go now
+  MERGES per column (client/query_where.go), like the other two.
+- **Cross-SDK divergence, deliberate and OPEN — the SAME operator twice on one
+  column.** TypeScript (`src/query.ts where()`: `condition[operator] = value`)
+  and Python (`anhurdb/query/builder.py where()`: per-field dict assignment;
+  the bare `where(field=value)` form even replaces the WHOLE per-column dict,
+  so `where(score__gte=3).where(score=5)` silently drops the `$gte`) both
+  overwrite last-wins, silently. Go REFUSES loudly with a typed error (kind
+  `invalid_request`, retryable false, surfaced at Validate/Build/Query): the
+  wire format has one slot per operator, so keeping either value silently
+  discards a predicate — the exact defect class B3 was. The refusal is the
+  INTENDED behaviour for all three SDKs; TypeScript and Python owners should
+  adopt it (including the Python bare-kwarg replace). Until they do, this entry
+  is the record that the difference is known and which side is correct.
+
+## Known pre-2.1.1: 14 accepted-and-discarded `...ReadOption` variadics in Go client.go (2026-09-14)
+
+Same silent-discard class as the `Memory.Query` variadic deleted on 2026-09-14:
+each method ends in `opts ...ReadOption` with a bare `_ = opts` in the body, so
+`WithAsOf`/`WithSince`/`WithUntil`/`WithKeyword` compile, are accepted, and are
+thrown away before the request is built. Recorded, NOT fixed (client.go is far
+past the ~300-line cut; each fix must move its method out first and decide per
+route whether the option should be honoured or made uncompilable):
+
+`Profile` (client.go:495), `ListSessions` (:552), `GetContext` (:608),
+`ReadContent` (:634), `Recent` (:653), `BatchReadContent` (:853),
+`UploadStatus` (:965), `ListEntities` (:1008), `SearchEntities` (:1042),
+`EntityGraph` (:1110), `EntityTimeline` (:1136), `GetRecordEntities` (:1207),
+`GetSessionHistory` (:1240), `GetSessionClusters` (:1258).

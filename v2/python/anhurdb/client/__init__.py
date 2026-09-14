@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
 from .exceptions import AnhurError, AnhurQueryError, AnhurUploadWaitTimeout
+from .query_argument import compile_query_argument
 from .search_parse import (
     _parse_search_response,
     _parse_search_results,
@@ -608,12 +609,13 @@ class Memory(SearchScopeMixin):
         )
 
     async def delete(self, record_id: int) -> None:
-        """Delete a record by ID (hard delete).
-
-        For soft delete, use ``update(id, status="archived")`` instead.
+        """Archive a record by ID (soft delete — the server sets ``archived=1``
+        and answers "record archived": the record becomes invisible to default
+        queries but is NOT physically removed; no hard-delete route exists for
+        a record id).
 
         Args:
-            record_id: The record ID to delete."""
+            record_id: The record ID to archive."""
         await self._connection.delete(f"/api/v1/records/{record_id}")
 
     async def delete_file(
@@ -784,23 +786,7 @@ class Memory(SearchScopeMixin):
             from anhurdb.query import QueryBuilder
             qb = QueryBuilder().where(type="risk", score__gte=7).limit(20)
             records = await mem.query(qb, session_uuid="s1")"""
-        # Accept a raw AST dict or a QueryBuilder (.build_ast()) / Filter (.ast()).
-        if isinstance(ast, dict):
-            compiled_ast = dict(ast)
-        elif hasattr(ast, "build_ast"):
-            compiled_ast = ast.build_ast()
-        elif hasattr(ast, "ast"):
-            compiled_ast = ast.ast()
-        else:
-            raise TypeError(
-                "query() needs an AST dict or a QueryBuilder/Filter "
-                "(exposing build_ast()/ast())."
-            )
-
-        # The server does NOT accept session_uuid as a separate field — it must be
-        # a regular filter in the AST's filters dict.
-        if session_uuid:
-            compiled_ast.setdefault("filters", {})["uuid"] = {"$eq": session_uuid}
+        compiled_ast = compile_query_argument(ast, session_uuid)
 
         # Server expects the AST flat at top-level. Do NOT wrap in {"query": ast}.
         data = await self._connection.post(

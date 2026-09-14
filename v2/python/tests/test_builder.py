@@ -4,9 +4,10 @@ Comprehensive tests for the AnhurDB QueryBuilder AST generation.
 Tests cover:
   - Basic fluent API (where, select, order_by, limit, offset)
   - All supported operators ($eq, $gt, $gte, $lt, $lte, $in)
-  - Removed operators ($neq, $nin, $like) must raise ValueError
+  - Removed operators ($neq, $nin, $like) must raise AnhurQueryError
   - Column whitelist enforcement
-  - Semantic search block
+  - semantic_search() and the other client-side rejections live in
+    tests/test_ast_client_rejections.py, which pins their shared error shape
   - Pagination defaults and bounds
   - Sort validation
   - Filter shorthand (Eq, Filter)
@@ -22,8 +23,10 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from anhurdb.query.builder import QueryBuilder, Filter, Eq, ALLOWED_WHERE_COLUMNS
-from anhurdb.query.operators import QueryOperator, SemanticMode
+from anhurdb.client.exceptions import AnhurError, AnhurQueryError
+from anhurdb.query import Filter, Eq
+from anhurdb.query.builder import QueryBuilder, ALLOWED_WHERE_COLUMNS
+from anhurdb.query.operators import QueryOperator
 
 
 class TestQueryBuilderBasic(unittest.TestCase):
@@ -109,22 +112,22 @@ class TestQueryBuilderOperators(unittest.TestCase):
 
     def test_removed_neq_raises(self):
         """$neq was removed — server silently ignores it."""
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(AnhurQueryError) as ctx:
             QueryBuilder().where(type__neq="episodic")
         self.assertIn("neq", str(ctx.exception))
 
     def test_removed_nin_raises(self):
         """$nin was removed — server silently ignores it."""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().where(type__nin=["a", "b"])
 
     def test_removed_like_raises(self):
         """$like was removed — server silently ignores it."""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().where(summary__like="%test%")
 
     def test_invalid_operator_raises(self):
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(AnhurQueryError) as ctx:
             QueryBuilder().where(weight__foo=10)
         self.assertIn("foo", str(ctx.exception))
 
@@ -143,16 +146,16 @@ class TestQueryBuilderWhitelist(unittest.TestCase):
         self.assertEqual(ALLOWED_WHERE_COLUMNS, server_columns)
 
     def test_invalid_column_in_where(self):
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(AnhurQueryError) as ctx:
             QueryBuilder().where(invalid_column="foo")
         self.assertIn("invalid_column", str(ctx.exception))
 
     def test_invalid_column_in_operator_form(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().where(bad_field__gt=5)
 
     def test_invalid_column_in_order_by(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().order_by("nonexistent")
 
     def test_valid_columns_dont_raise(self):
@@ -189,15 +192,15 @@ class TestQueryBuilderPagination(unittest.TestCase):
         self.assertEqual(ast["pagination"]["limit"], 1000)
 
     def test_limit_zero_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().limit(0)
 
     def test_limit_negative_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().limit(-1)
 
     def test_limit_over_1000_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().limit(1001)
 
     def test_default_offset(self):
@@ -209,7 +212,7 @@ class TestQueryBuilderPagination(unittest.TestCase):
         self.assertEqual(ast["pagination"]["offset"], 100)
 
     def test_offset_negative_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().offset(-1)
 
 
@@ -240,40 +243,8 @@ class TestQueryBuilderSort(unittest.TestCase):
         self.assertEqual(ast["sort"][0]["order"], "asc")
 
     def test_invalid_direction_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             QueryBuilder().order_by("score", "random")
-
-
-class TestQueryBuilderSemanticSearch(unittest.TestCase):
-    """Tests for semantic search blocks (forward compatibility)."""
-
-    def test_semantic_search_hybrid(self):
-        ast = (
-            QueryBuilder()
-            .semantic_search("cluster health", SemanticMode.HYBRID)
-            .build_ast()
-        )
-        self.assertEqual(ast["filters"]["semantic_search"]["query"], "cluster health")
-        self.assertEqual(ast["filters"]["semantic_search"]["mode"], "$hybrid")
-
-    def test_semantic_search_text(self):
-        ast = (
-            QueryBuilder()
-            .semantic_search("query", SemanticMode.TEXT)
-            .build_ast()
-        )
-        self.assertEqual(ast["filters"]["semantic_search"]["mode"], "$text")
-
-    def test_semantic_with_filters(self):
-        """Semantic search combined with regular filters."""
-        ast = (
-            QueryBuilder()
-            .where(type__in=["fact", "episodic"])
-            .semantic_search("cluster health")
-            .build_ast()
-        )
-        self.assertEqual(ast["filters"]["type"]["$in"], ["fact", "episodic"])
-        self.assertEqual(ast["filters"]["semantic_search"]["query"], "cluster health")
 
 
 class TestFilterShorthand(unittest.TestCase):
@@ -305,10 +276,15 @@ class TestQueryBuilderExecute(unittest.TestCase):
     """Tests for execute() without executor."""
 
     def test_execute_without_executor_raises(self):
+        # asyncio.run, not get_event_loop(): on 3.10+ get_event_loop() only
+        # works when SOME earlier test happened to leave a loop installed, so
+        # this test passed or failed depending on collection order.
         import asyncio
         qb = QueryBuilder()
-        with self.assertRaises(RuntimeError):
-            asyncio.get_event_loop().run_until_complete(qb.execute())
+        with self.assertRaises(AnhurQueryError) as ctx:
+            asyncio.run(qb.execute())
+        self.assertEqual(ctx.exception.kind, AnhurError.KIND_INVALID_REQUEST)
+        self.assertIsNone(ctx.exception.status_code)
 
 
 class TestQueryBuilderDeepCopy(unittest.TestCase):

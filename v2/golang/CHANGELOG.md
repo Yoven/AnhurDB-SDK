@@ -93,6 +93,74 @@ single source, and `client.UserAgent` is derived from it. A release bumps one li
   language floor imposed on consumers; `toolchain go1.26.0` is what the
   maintainers build with, matching `.tool-versions`. Both are now written down.
 
+### Fixed — AST parity round, 2026-09-14 (2.1.0 held for these)
+
+Two divergences found by the exhaustive live AST matrix (398 wire exchanges,
+102/102 column x operator pairs asserted against the production router). Both
+failed **silently**, which is why the release was held.
+
+**BREAKING (compile-time) — `Memory.Query` no longer takes `...ReadOption`.**
+
+```go
+// BEFORE: compiled, and the option was thrown away at runtime
+records, _ := mem.Query(ctx, req, client.WithAsOf("2026-03-15T12:00:00Z"))
+// NOW:    compile error — the endpoint has no as-of surface to honour
+records, _ := mem.Query(ctx, req)
+```
+
+The old signature ended in `opts ...ReadOption` and the body contained `_ = opts`.
+`WithAsOf`, `WithSince`, `WithUntil` and `WithKeyword` compiled, were accepted,
+and were discarded before the request was built — a caller who scoped a query to
+a point in time silently received the **unscoped** query.
+
+Why deletion and not honouring them (probed live, read-only, production router,
+2026-09-14):
+
+- `?as_of=`, `?since=`, `?until=`, `?q=` on the POST URL: identical count with
+  and without, including a `since` in 2030 that would have emptied the page.
+  `server/handler/record_query.go` reads the body and nothing else.
+- `as_of` as a top-level body key: silently ignored (the grammar keeps four keys
+  — `select`, `filters`, `sort`, `pagination` — and drops the rest).
+- As-of is **not expressible as filters**. The server's real predicate
+  (`server/database/list_record.go`, `GetRecordAsOf`) is `created_at <= T AND
+  (valid_from IS NULL OR valid_from <= T) AND (valid_until IS NULL OR
+  valid_until > T)` plus a supersede-chain unwind. The AST grammar has no `OR`,
+  no `IS NULL`, no subquery. Measured on a tenant whose unfiltered page returns
+  1000 rows: `valid_until $gt "2020-01-01T00:00:00Z"` → **0 rows**;
+  `superseded_by $eq null` → **0 rows**, although every row the server returns
+  already satisfies `superseded_by IS NULL`. A "best effort" translation would
+  not under-scope the answer, it would annihilate it with HTTP 200.
+- `since`/`until` alone *would* translate (`created_at $gte` / `$lte`, confirmed
+  working live) and are still deliberately not wired: that is already a
+  first-class filter, and a hidden second writer of the same column would
+  silently `AND` against the caller's explicit `created_at` and return an empty
+  page for a query that looks right.
+
+Migration: drop the options, or express the window as what it is —
+`NewQuery().Where("created_at", QueryOp{Gte: since, Lte: until})`. For a real
+point-in-time read use `ManifestGlobal` / `ManifestSession`, which carry
+`as_of` / `since` / `until` as query parameters and enforce the
+as_of-XOR-since/until rule server-side. No caller in this repository passed an
+option to `Query`, so nothing in-tree breaks.
+
+**The empty-operator error now names the cause.** It used to read
+`filter "type" has no operator: set one of Eq, Gt, ...` — and the commonest way
+to reach it is `QueryOp{Eq: nil}`, a caller who *did* set `Eq` and is then told
+to set `Eq`. The operator was not missing, it was erased by `omitempty`. New
+text:
+
+```text
+query: filter "type": no operator survived encoding — every QueryOp field is
+`omitempty`, so QueryOp{Eq: nil} marshals to {} exactly like QueryOp{}; set a
+NON-NIL Eq, Gt, Gte, Lt, Lte or In. A literal $eq:null is unreachable from Go on
+purpose: the server compiles it to `col = NULL`, which is never true, so it would
+return 200 with zero rows for every input
+```
+
+Tests: `client/query_execute_test.go`. Each assertion was proven to bite by
+reverting the fix (re-adding the variadic, restoring the old message, dropping
+`omitempty` from `QueryOp.Eq`) and confirming the matching test fails.
+
 ### House-law splits (~300 lines, by DOMAIN)
 
 `client.go` (1679 lines) and `types.go` (1042) were far past the cut and could not
@@ -105,9 +173,11 @@ be grown, so the touched domains moved out first:
 - `client/graph_walk.go` — `Walk` / `WalkSemantic`
 - `client/query_builder.go` — the fluent AST builder
 - `client/version.go` — `Version` / `UserAgent`
+- `client/query_execute.go` — `Memory.Query`, the AST execute path (split out of `parity.go` on 2026-09-14, which was 532 lines and could not grow)
 
 `client.go` is down to 1359 lines and `types.go` to 696; both remain scheduled
-refactors, and neither grew in this change.
+refactors, and neither grew in this change. `parity.go` went 532 → 474 on
+2026-09-14 when the AST execute path moved out.
 
 ## Server-side behaviour change on `POST /api/v1/query` (2026-07-29, no SDK code changed)
 
@@ -160,6 +230,20 @@ Consequences to be aware of:
   if you need it. **Still true as of v2.0.13** — `Validate()` changes what gets
   rejected before sending, not `QueryOp`'s wire encoding, so this gap is
   unaffected by that fix.
+  - **Amendment 2026-09-14 — this was mis-classified as a gap; Go is the SDK
+    that is right.** The mechanical fact above is unchanged: `omitempty` erases
+    a nil interface, so `QueryOp{Eq: nil}` is byte-identical to `QueryOp{}` and
+    `$eq: null` cannot leave this SDK. What was wrong is calling that a
+    deficiency. The server compiles `$eq: null` to `col = ?` bound to NULL, and
+    `col = NULL` is never true in SQL. Measured live against the production
+    router on 2026-09-14 (read-only): `{"superseded_by":{"$eq":null}}` answered
+    **HTTP 200, count=0** on a tenant whose unfiltered page returns 1000 rows —
+    every one of which satisfies `superseded_by IS NULL`. Python and TypeScript
+    can put that predicate on the wire; what they have is not a capability, it
+    is a way to write a query that can never match and never complains. Nothing
+    to close here, and the earlier advice to "use Python/TypeScript or a
+    hand-built JSON body if you need it" is **withdrawn** — needing it is the
+    bug. Pinned by `TestQueryOpNilFieldsVanishOnTheWire`.
 - Unlike the Python and TypeScript builders, `QueryRequest.Where` used to apply
   **no client-side column whitelist** and `Limit`/`Offset` used to apply **no
   range check** — a bad column name only failed at the server (400 `invalid
