@@ -22,7 +22,15 @@ package client
 // three previously claimed 2.1 on the wire while their manifests said 2.0.0
 // and their published tags were 2.0.17/2.0.18/2.0.20. 2.1.0 sits above every
 // shipped tag and makes the wire-visible claim true instead of aspirational.
-const Version = "2.1.0"
+//
+// 3.0.0 (2026-09-14) is the SDK parity release. It is a MAJOR bump because it
+// removes surface: fourteen methods lost an option parameter they were
+// discarding, three model types that described contracts the server does not
+// speak were deleted, SmartSearch stopped returning raw bytes and
+// SearchWithRetrieval stopped returning a tuple that could not carry
+// leg_scores. Every removal is a compile error, by design — the old code
+// compiled and lied.
+const Version = "3.0.0"
 
 // UserAgentPrefix names the SDK in the User-Agent header. Kept separate from
 // Version so the two concerns (who I am / which release I am) never get

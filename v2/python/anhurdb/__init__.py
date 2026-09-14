@@ -21,15 +21,11 @@ Quick start::
 
 Full API::
 
-    from anhurdb import AnhurClient, CreateRequest, MemoryType
+    from anhurdb import AnhurClient, MemoryType
 
     async with AnhurClient(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as client:
         session_id = await client.create_session()
-        await client.create(CreateRequest(
-            session_id=session_id,
-            type=MemoryType.FACT,
-            content="...",
-        ))
+        await client.create(session_id, "...", type=MemoryType.FACT)
         entities = await client.search_entities(query="Google")
 """
 
@@ -49,6 +45,30 @@ from .models import (
     SessionStats,
     EntityModel,
     EntityEdge,
+    # Typed response envelopes (3.0.0) — see the __all__ note below.
+    AddResult,
+    RecordSummary,
+    ProfileResult,
+    ProfileStatic,
+    ProfileDynamic,
+    ProfileStats,
+    WalkResult,
+    WalkEdge,
+    ContextResult,
+    GroundingResult,
+    GroundingTarget,
+    GroundingAnchor,
+    GroundingConsolidation,
+    ManifestResult,
+    UploadResult,
+    UploadStatusResult,
+    EntitiesPage,
+    EntityGraphResult,
+    EntityGraphNode,
+    EntityGraphEdge,
+    EntityTimelineResult,
+    SmartSearchResponse,
+    SmartSearchHit,
 )
 from .client import Memory, AnhurClient
 from .client.session_filter import (
@@ -101,6 +121,36 @@ __all__ = [
     "SessionStats",
     "EntityModel",
     "EntityEdge",
+    # Junior Tip [2026-09-14 — why twenty-two more names appear here]: 3.0.0
+    # replaced ``Dict[str, Any]`` with a real model on twelve response
+    # concepts. Every one of them is now something a public method HANDS BACK,
+    # and the rule this package already follows is that a type you can receive
+    # but cannot name is not a public API. The field sets are the LIVE server
+    # responses, so a name here is also the answer to "what does this endpoint
+    # actually send" without opening a handler.
+    "AddResult",
+    "RecordSummary",
+    "ProfileResult",
+    "ProfileStatic",
+    "ProfileDynamic",
+    "ProfileStats",
+    "WalkResult",
+    "WalkEdge",
+    "ContextResult",
+    "GroundingResult",
+    "GroundingTarget",
+    "GroundingAnchor",
+    "GroundingConsolidation",
+    "ManifestResult",
+    "UploadResult",
+    "UploadStatusResult",
+    "EntitiesPage",
+    "EntityGraphResult",
+    "EntityGraphNode",
+    "EntityGraphEdge",
+    "EntityTimelineResult",
+    "SmartSearchResponse",
+    "SmartSearchHit",
     # Search modes (ADR-0031) — the exact three values ``search(mode=...)``
     # accepts, exported so callers validate against the SDK instead of
     # retyping the strings.

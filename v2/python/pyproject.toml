@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "anhurdb"
-version = "2.1.0"
+version = "3.0.0"
 description = "Official Python SDK V2 for AnhurDB - The Cognitive Database"
 authors = ["Paulo Junior <paulo.junior@yoven.io>"]
 readme = "README.md"

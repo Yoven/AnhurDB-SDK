@@ -61,6 +61,43 @@ class CreateRequest(BaseModel):
     consolidated: bool = Field(default=False)
     consolidate_id: int = Field(default=0)
 
+    def optional_fields(self) -> Dict[str, Any]:
+        """The keyword arguments ``Memory.create()`` accepts, as a dict.
+
+        This is the migration bridge for the 3.0.0 signature change. Where a
+        caller used to write ``await mem.create(req)`` they now write::
+
+            await mem.create(
+                req.session_id or req.uuid,
+                req.content,
+                **req.optional_fields(),
+            )
+
+        Junior Tip [why only the fields the caller actually SET are returned]:
+        every field on this model has a default, so an unconditional dump would
+        send ``score=5``, ``status="saved"`` and ``type="episodic"`` on a call
+        where the caller pinned none of them — turning three server-side
+        defaults into three client-side ones. The day the server changes a
+        default, that call would keep writing the old value and nobody would
+        see a diff. ``model_fields_set`` is pydantic's record of what was
+        passed explicitly, so an unset field stays unset all the way to the
+        wire.
+        """
+        settable = (
+            "type",
+            "score",
+            "status",
+            "related_ids",
+            "valid_from",
+            "valid_until",
+            "metadata",
+        )
+        return {
+            field_name: getattr(self, field_name)
+            for field_name in settable
+            if field_name in self.model_fields_set
+        }
+
 
 class Record(BaseModel):
     """

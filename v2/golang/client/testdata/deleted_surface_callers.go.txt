@@ -1,0 +1,63 @@
+// This file is NOT compiled as part of the SDK. It is the corpus for
+// TestDeletedSurfaceDoesNotCompile: every line below is a call or a reference
+// that WORKED before 3.0.0 and MUST NOT compile after it.
+//
+// A deleted option proves nothing by being absent — absence is exactly how the
+// old `_ = opts` sites looked to a caller. The proof is a compiler that refuses.
+package probe
+
+import (
+	"context"
+
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+)
+
+func mustNotCompile(ctx context.Context, memory *client.Memory) {
+	// ── The sixteen methods that no longer accept ReadOption ───────────────
+	_, _ = memory.ListSessions(ctx, client.WithLimit(10))
+	_, _ = memory.GetContext(ctx, 1, client.WithLimit(10))
+	_, _ = memory.ReadContent(ctx, 1, client.WithLimit(10))
+	_, _ = memory.Recent(ctx, 10, client.WithLimit(10))
+	_, _ = memory.RecentMemories(ctx, 10, client.WithLimit(10))
+	_, _ = memory.BatchReadContent(ctx, []int64{1}, client.WithLimit(10))
+	_, _ = memory.UploadStatus(ctx, 1, client.WithLimit(10))
+	_, _ = memory.ListEntities(ctx, 10, 0, client.WithLimit(10))
+	_, _ = memory.SearchEntities(ctx, "q", "person", 10, client.WithLimit(10))
+	_, _ = memory.EntityGraph(ctx, 1, 1, client.WithLimit(10))
+	_, _ = memory.EntityTimeline(ctx, 1, client.WithLimit(10))
+	_, _ = memory.GetRecordEntities(ctx, 1, client.WithLimit(10))
+	_, _ = memory.GetSessionHistory(ctx, "s", 10, 0, client.WithLimit(10))
+	_, _ = memory.ListChat(ctx, "s", nil, "", client.WithLimit(10))
+	_, _ = memory.GetGrounding(ctx, 1, 3, client.WithLimit(10))
+
+	// Profile no longer takes ReadOption at all — only the narrow ProfileOption.
+	_, _ = memory.Profile(ctx, client.WithLimit(10))
+
+	// GetSessionClusters gained two explicit params the server always honoured.
+	_, _ = memory.GetSessionClusters(ctx, "s")
+
+	// ── The three dead model types ─────────────────────────────────────────
+	_ = models.CreateRequest{}
+	_ = models.SearchResult{}
+	_ = models.SessionStats{}
+
+	// ── The two response shapes that changed ───────────────────────────────
+	// SmartSearch no longer returns raw bytes.
+	var _ []byte = mustBeBytes(memory.SmartSearch(ctx, "q", client.SessionsAll(), 10))
+
+	// SearchWithRetrieval is no longer a 3-tuple.
+	_, _, _ = memory.SearchWithRetrieval(ctx, "q", client.SessionsAll())
+
+	// ── Phantom struct fields the server never sent ────────────────────────
+	_ = client.UploadResult{}.ID
+	_ = client.UploadStatusResult{}.Error
+	_ = client.UploadStatusResult{}.Filename
+	_ = client.ProfileResult{}.Tag
+	_ = client.ProfileResult{}.Status
+	_ = client.WalkResult{}.StartID
+	_ = client.WalkResult{}.Depth
+	_ = client.WalkNode{}
+}
+
+func mustBeBytes(raw []byte, err error) []byte { return raw }

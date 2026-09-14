@@ -55,6 +55,8 @@ import type {
   WalkSemanticOptions,
 } from "./types.js";
 import { fetchAllSessionStats } from "./sessionStats.js";
+import { fetchProfile } from "./profile.js";
+import { truncateSummary } from "./summary.js";
 
 /** Default cloud endpoint. Self-hosted users pass `url` explicitly. */
 const DEFAULT_CLOUD_URL = "https://anhurdb.yoven.ai";
@@ -372,49 +374,23 @@ export class Memory extends MemorySearchApi {
   // ── profile() — get user/agent profile ──────────────────────
 
   /**
-   * Get the memory profile for this container tag (user/agent).
+   * Get the memory profile for a container tag (user/agent).
    *
-   * Returns profile information including static facts, dynamic state,
-   * and aggregate statistics. If the server does not support profiles
-   * (OSS without agents), returns an empty profile rather than throwing.
+   * Static facts, dynamic state and aggregate statistics. The call — including
+   * WHY an unknown tag is an empty 200 and never an exception, and why an
+   * empty tag never reaches the wire — lives in `profile.ts`.
    *
+   * @param containerTag - Tag to profile. Defaults to this client's own.
    * @example
    * ```ts
-   * const profile = await mem.profile();
-   * console.log(profile.static, profile.stats);
+   * const other = await mem.profile("some-other-agent");
    * ```
    */
-  async profile(): Promise<ProfileResult> {
+  async profile(containerTag?: string): Promise<ProfileResult> {
     await this.tagReady;
-
-    try {
-      const data = await this.client.get<ProfileResult>(
-        "/api/v1/profile",
-        { tag: this.derivedContainerTag });
-      return {
-        static: data.static ?? {},
-        dynamic: data.dynamic ?? {},
-        stats: data.stats ?? {},
-      };
-    } catch (err: unknown) {
-      // If the endpoint doesn't exist (OSS), return empty profile.
-      // Junior Tip [branch on the STATUS, never on the message text]: this read
-      // `err.message.includes("404")`, and a 500 whose echoed body merely
-      // mentioned 404 (a proxy page, a record id `404`, a stack line) was
-      // accepted as "OSS has no profile endpoint" — a real server failure
-      // returned as an empty profile with `status: "not_available"`. The status
-      // is the contract; the message is decoration.
-      if (err instanceof AnhurError && err.statusCode === 404) {
-        return {
-          static: {},
-          dynamic: {},
-          stats: {},
-          tag: this.derivedContainerTag,
-          status: "not_available",
-        };
-      }
-      throw err;
-    }
+    return fetchProfile(
+      this.client,
+      containerTag?.trim() || this.derivedContainerTag);
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1396,10 +1372,29 @@ export class Memory extends MemorySearchApi {
    * Empty session + derived type → HTTP 422 ("create an episodic first").
    * The SDK does not fabricate that anchor. MCP: `create_memory`.
    *
-   * @param text    - Record text (stored in summary + content).
-   * @param options - Full-fidelity fields (all optional).
+   * Junior Tip [the session is a REQUIRED first argument — 3.0.0, BREAKING]:
+   * the old signature was `create(text, options?)`, taking the session from
+   * `options.sessionUuid`, or `options.sessionId`, or — when neither was given
+   * — silently from whatever session this instance happened to hold. That
+   * fallback never prevented an error; it only decided, invisibly, WHERE the
+   * record landed, so a forgotten option MISFILED a record instead of failing.
+   * The session is now positional and a blank one throws rather than falling
+   * back, mirroring Go's `parity.go:42`. Migration:
+   * `create(t, {sessionUuid: s, ...o})` → `create(s, t, o)`; `create(t)` →
+   * `create(await mem.createSession(), t)`.
+   *
+   * @param sessionUuid - Session UUID to place the record under (required).
+   * @param text        - Record text (stored in summary + content).
+   * @param options     - Full-fidelity fields (all optional).
    */
-  async create(text: string, options?: CreateOptions): Promise<AddResult> {
+  async create(
+    sessionUuid: string,
+    text: string,
+    options?: CreateOptions): Promise<AddResult> {
+    if (!sessionUuid.trim()) {
+      throw new Error("create: sessionUuid is required — create a session " +
+        "first (POST /api/v1/sessions)");
+    }
     if (!text) {
       throw new Error("text cannot be empty");
     }
@@ -1408,27 +1403,12 @@ export class Memory extends MemorySearchApi {
     const type: MemoryType = options?.type ?? "episodic";
     const score = options?.score ?? 5;
     return this.createRecord(text, score, type, options?.metadata, {
-      sessionUuid: this.resolveWriteSessionId(
-        options?.sessionId ?? options?.sessionUuid,
-      ),
+      sessionUuid: sessionUuid.trim(),
+      status: options?.status,
       relatedIds: options?.relatedIds,
       validFrom: options?.validFrom,
       validUntil: options?.validUntil,
     });
-  }
-
-  /**
-   * Truncate `text` to 200 Unicode code points, with an ellipsis when cut.
-   *
-   * UTF-16 code unit and can split a surrogate pair (astral emoji / CJK ext),
-   * emitting a lone surrogate. `Array.from` iterates by code point, so the three
-   * SDKs (Python str[:200], Go []rune, TS Array.from) truncate at the SAME point.
-   */
-  private truncateSummary(text: string): string {
-    const codePoints = Array.from(text);
-    return codePoints.length > 200
-      ? codePoints.slice(0, 200).join("") + "..."
-      : text;
   }
 
   /**
@@ -1451,7 +1431,7 @@ export class Memory extends MemorySearchApi {
     // fall out of container-scoped search/profile. Go/Python set the tag
     // synchronously; awaiting here matches add/search/create/newSession.
     await this.tagReady;
-    const summary = this.truncateSummary(text);
+    const summary = truncateSummary(text);
     const payload: RecordPayload = {
       uuid: sessionUuid,
       type: "episodic" as MemoryType,
@@ -1602,8 +1582,17 @@ export class Memory extends MemorySearchApi {
    * Starting from an entity, discovers connected entities through
    * typed edges (works_at, knows, part_of, etc.).
    *
+   * Junior Tip [omit `depth` and the SERVER owns the default — it is 1]:
+   * `handler/entity.go:280` sets `depth := 1` before reading `?depth`; live on
+   * 2026-09-14 an omitted depth answered `{"depth":1,"node_count":1}` and
+   * `?depth=2` answered `{"depth":2,"node_count":2}` — the value CHANGES the
+   * graph. So no `depth` param is sent when the caller did not ask, rather than
+   * restating `1` on the wire: an SDK hardcoding today's server default keeps
+   * returning the old graph on the day the server changes it. Python used to
+   * default to 2 and silently returned a graph the server would not have.
+   *
    * @param entityId - The starting entity ID.
-   * @param depth    - How many hops (default 2, max 5).
+   * @param depth    - How many hops. Omit for the server default of 1 (max 5).
    */
   async entityGraph(
     entityId: number,
@@ -1747,7 +1736,7 @@ export class Memory extends MemorySearchApi {
         {
           id: data.id ?? 0,
           type: "episodic" as string,
-          summary: this.truncateSummary(text),
+          summary: truncateSummary(text),
         },
       ];
 
@@ -1756,7 +1745,7 @@ export class Memory extends MemorySearchApi {
         records: records.map((recordRow) => ({
           id: recordRow.id,
           type: (recordRow.type ?? "episodic") as MemoryType,
-          summary: recordRow.summary ?? this.truncateSummary(text),
+          summary: recordRow.summary ?? truncateSummary(text),
         })),
         mode: "cloud",
       };
@@ -1792,12 +1781,27 @@ export class Memory extends MemorySearchApi {
     metadata?: Record<string, unknown>,
     extra?: {
       sessionUuid?: string;
+      /** Written verbatim; "saved" when the caller does not say otherwise. */
+      status?: string;
       relatedIds?: number[];
       validFrom?: string;
       validUntil?: string;
     }): Promise<AddResult> {
-    const summary = this.truncateSummary(text);
+    const summary = truncateSummary(text);
     const sessionUuid = extra?.sessionUuid ?? this.sessionUuid;
+
+    // Junior Tip [por que valid_from vai no METADATA e nao no topo — 2026-09-14]:
+    // nesta rota o servidor le a janela temporal de DENTRO do metadata
+    // (service/record_create.go:334 faz metaMap["valid_from"]), nunca de um
+    // campo de topo. Ate hoje este SDK mandava payload.valid_from no topo: o
+    // servidor respondia 201 e a janela simplesmente nao existia no banco —
+    // perda silenciosa no caminho de ESCRITA. Go (client/parity.go:88) e Python
+    // (client/__init__.py:648) sempre mesclaram no metadata; so o TypeScript
+    // divergia. Mesclar aqui, antes de buildMetadataJson, mantem o
+    // container_tag com a ultima palavra.
+    const temporalMetadata: Record<string, unknown> = { ...(metadata ?? {}) };
+    if (extra?.validFrom) temporalMetadata.valid_from = extra.validFrom;
+    if (extra?.validUntil) temporalMetadata.valid_until = extra.validUntil;
 
     const payload: RecordPayload = {
       uuid: sessionUuid,
@@ -1810,17 +1814,12 @@ export class Memory extends MemorySearchApi {
       related_ids: extra?.relatedIds ?? [],
       main_ids: [],
       consolidate_id: 0,
-      metadata: buildMetadataJson(this.derivedContainerTag, metadata),
+      metadata: buildMetadataJson(this.derivedContainerTag, temporalMetadata),
       summary,
       content: text,
       consolidated: false,
-      status: "saved",
+      status: extra?.status ?? "saved",
     };
-    // Only attach temporal fields when supplied — the server treats absent
-    // valid_from/valid_until as "no window", so omitting keeps the wire payload
-    // identical to the pre-existing add() path.
-    if (extra?.validFrom) payload.valid_from = extra.validFrom;
-    if (extra?.validUntil) payload.valid_until = extra.validUntil;
 
     // Exactly one request. If the session has no episodic anchor yet, the
     // server returns HTTP 422 ("create an episodic record first"). The SDK

@@ -1,5 +1,209 @@
 # Go SDK Changelog
 
+## 3.0.0 — SDK parity: nineteen discarded options, two lying return types, three dead models (2026-09-14)
+
+The release that stops the Go SDK compiling calls it does not honour. Every
+breaking change below removes surface that was already broken: a parameter that
+was thrown away, a struct field the server has never sent, a return type that
+structurally could not carry the server's answer. All of it fails at COMPILE
+time, which is the point — the old code compiled and lied.
+
+Authority for every verdict: the handler source, plus a read-only live call
+against production on 2026-09-14 (writes only into a disposable `paridade-`
+session, deleted afterwards and proven empty with `GET /api/v1/chats/{uuid}`
+returning `count: 0`).
+
+> **Install pins are NOT bumped in this release.** `README.md` still points at a
+> published tag, because `3.0.0` is not published yet.
+
+### BREAKING — sixteen methods no longer accept `opts ...ReadOption`
+
+They never honoured them. Each wrote `_ = opts` and sent a request the option
+could not have changed, and `SearchOption` being a type ALIAS of `ReadOption`
+meant EVERY option compiled at EVERY read call site. A silently-discarded option
+is a lie the caller cannot detect; a compile error is a lie they cannot ignore.
+
+`ListSessions`, `GetContext`, `ReadContent`, `Recent`, `RecentMemories`,
+`BatchReadContent`, `UploadStatus`, `ListEntities`, `SearchEntities`,
+`EntityGraph`, `EntityTimeline`, `GetRecordEntities`, `GetSessionHistory`,
+`ListChat`, `GetGrounding`, and `Profile` (see below).
+
+In each case the parameter the caller wanted was either not parsed by the
+endpoint at all, or already a positional argument. Migration: delete the option
+from the call; it was doing nothing.
+
+`ListSessions` deliberately does NOT gain a limit: it pages to exhaustion via
+`next_offset`, so a caller `WithLimit` would be ambiguous between page size and
+total cap and would silently truncate the tenant.
+
+### BREAKING — `GetSessionClusters` gained two parameters the server always honoured
+
+```go
+GetSessionClusters(ctx, sessionUUID string, eps float64, minPoints int) ([]byte, error)
+```
+
+`eps` and `min` have been parsed by the handler since the endpoint shipped and
+were unreachable from Go. Pass `0` for either to let the server keep its own
+tuned defaults (0.45 / 3) — the SDK omits the key rather than restating them.
+
+### BREAKING — `SmartSearch` returns a typed envelope, not `[]byte`
+
+```go
+SmartSearch(ctx, query string, sessions []string, limit int, opts ...ReadOption) (*SmartSearchResponse, error)
+```
+
+New `SmartSearchResponse` / `SmartSearchHit` in `client/smart_search_types.go`.
+
+`Results` is genuinely **nullable**: the handler marshals a Go slice and a nil
+slice serialises as JSON `null`, so the ordinary "no matches" answer is
+`"results": null` (live-confirmed). A nil `Results` means NO MATCHES, not
+"absent", and ranging over it is safe.
+
+`Relevance` is BM25 × cognitive decay — a LEXICAL score. It is **not** comparable
+with the cosine `Similarity` on a hybrid `SearchResult`, and the hit is a flat
+projection, not a `{record, similarity}` pair. Do not merge the two rankings.
+
+### BREAKING — `SearchWithRetrieval` returns `*SearchOutcome`
+
+```go
+SearchWithRetrieval(ctx, query string, sessions []string, opts ...SearchOption) (*SearchOutcome, error)
+```
+
+The old `([]SearchResult, *RetrievalMeta, error)` tuple had no room for
+`leg_scores`, which the server puts at the TOP level of the response as a sibling
+of `retrieval`. The SDK compensated first by LOGGING that it was dropping them
+and then by growing a fourth search method. `SearchOutcome{Results, Retrieval,
+LegScores}` is field-for-field the TypeScript `SearchWithRetrievalResult` and the
+Python `SearchResponse`, so all three arms now return one envelope from one
+method.
+
+Migration is two lines:
+
+```go
+results, meta, err := mem.SearchWithRetrieval(ctx, q, sessions) // before
+outcome, err := mem.SearchWithRetrieval(ctx, q, sessions)       // after
+// then outcome.Results / outcome.Retrieval / outcome.LegScores
+```
+
+`SearchWithSignals` is retained for one release as a `// Deprecated:` alias
+delegating to `SearchWithRetrieval`, and is removed in 4.0.0 — one break, not
+two. The runtime warning about dropped leg scores and the test asserting it are
+gone: once nothing is dropped, a warning about dropping is a second lie.
+
+Measured migration cost, not estimated: `grep -rn "SearchWithRetrieval("` across
+the whole Anhur tree found one definition and two SDK test files — zero
+production callers.
+
+### BREAKING — phantom struct fields deleted
+
+A declared field the server never sends is worse than a missing one: it makes an
+unreachable branch read as a safety net.
+
+| Type | Deleted | Added |
+|---|---|---|
+| `UploadResult` | `ID` | `Message`, `MIME`, `MIMEDetected`, `Extension`, `SizeBytes` |
+| `UploadStatusResult` | `ID`, `Filename`, `Error` | `UUID`, `Type` |
+| `ProfileResult` | `Tag`, `Status` | — (`Static`/`Dynamic`/`Stats` are now concrete structs, not maps) |
+| `WalkResult` | `StartID`, `Depth` | `Truncated`; `Nodes` retyped to `[]models.Record` |
+| `WalkNode` | the whole type | — |
+
+`UploadStatusResult.Error` was load-bearing in the wrong direction: `WaitForUpload`
+treated `Error != ""` as a terminal condition, a branch that could not fire. A
+failed ingest is reported through `status`, and only through `status`.
+
+`WalkNode` kept id / type / summary out of a fourteen-key record, so a caller who
+walked the graph to read `weight`, `status` or `related_ids` got zeros and
+concluded the records were unscored and unlinked.
+
+`WalkResult.Truncated` is new because without it a capped traversal and a
+genuinely small subgraph decode identically.
+
+Note `ProfileStats.LastActive` really is `last_active`, while `SessionStats` uses
+`last_activity`. Two handlers, two spellings, both real — do not "fix" either.
+
+### BREAKING — three dead model types deleted
+
+`models.CreateRequest`, `models.SearchResult` and `models.SessionStats`.
+A tree-wide grep returned zero references before deletion: `client.Create` builds
+its payload inline from `createConfig`, search returns the richer
+`client.SearchResult`, and sessions return `client.SessionStats`.
+`models/session.go` held nothing else and was removed. `models.Record` and
+`models.MemoryType` are untouched — both are live.
+
+### Added — `Profile` can read any container tag inside the tenant
+
+```go
+Profile(ctx context.Context, opts ...ProfileOption) (*ProfileResult, error)
+WithProfileTag(tag string) ProfileOption
+```
+
+The tag is an IN-TENANT filter, never a tenant selector: the handler takes the
+tenant from the auth middleware and uses `tag` only to narrow within it. Live
+testing confirmed there is no cross-tenant reach and no wildcard (`*` is a
+literal tag that matches nothing). Python already had this; Go and TypeScript
+could not express a tag at all.
+
+An unknown tag returns an **empty profile with HTTP 200**, not a 404 — that is
+the server's answer and it is passed through verbatim. An absent tag is a
+guaranteed 400, so the SDK refuses an empty tag before the request leaves.
+
+`ProfileOption` is deliberately NOT `ReadOption`: the wide type carries ~20 knobs
+of which exactly zero apply to this endpoint, and reusing it is how the sixteen
+discarded-option sites happened.
+
+### Added — `Walk` honours `as_of`, and refuses what the server drops
+
+`Walk` keeps `opts ...ReadOption` and wires **`WithAsOf` only**. Live proof from
+production: the same walk answered 8 nodes / 8 edges bare, **0 / 0** with
+`as_of`, and **8 / 8** with `since` — i.e. `since` went over the wire, the server
+answered 200, and the filter was dropped. `WithSince` / `WithUntil` and every
+other option are now refused at call time.
+
+`SearchByType` honours `WithKeyword` only; `SmartSearch` honours `WithTypeFilter`
+and `WithScope` only. Everything else on those three methods is refused the same
+way.
+
+### Added — `ErrUnsupportedOption` and `*UnsupportedOptionError`
+
+```
+anhurdb: WithSince is not supported by Walk — POST /api/v1/walk honours as_of only
+```
+
+Naming the option, the method and what the endpoint does parse. Detect with
+`errors.Is(err, ErrUnsupportedOption)`. Refusing at call time is the point: the
+server answers 200 and drops it.
+
+### Added — `WithCreateValidUntil`
+
+Parity with TypeScript `CreateOptions.validUntil` and Python
+`CreateRequest.valid_until`. `createConfig` carried only `validFrom`, so the same
+three-language call wrote an open-ended record in Go and a bounded one
+everywhere else. Delivered inside the metadata envelope, exactly like
+`valid_from` — `service.createRecord` reads both keys out of metadata when the
+dedicated input fields are empty, and the REST create route never fills them.
+
+### Internal — files split by domain, not by size
+
+`client/types.go` was 680 lines, far past the ~300-line house cut, so every
+addition moved out first: `profile_types.go`, `upload_types.go`,
+`smart_search_types.go`, `create_options.go`, `profile_options.go`,
+`read_option_support.go`. `WalkResult` / `WalkEdge` moved into `graph_walk.go`,
+next to the two methods that produce them.
+
+### Internal — the tests that would have caught all of it
+
+- `deleted_surface_test.go` compiles a corpus of deleted calls in a throwaway
+  module and requires the build to FAIL **at every statement's own line number**.
+  A substring check was tried first and a mutation that gave `Recent` its
+  discarded `opts` back SURVIVED it, because the word "Recent" was still in the
+  output from the `RecentMemories` line next to it.
+- `wire_shape_test.go` asserts each response struct's JSON field set against the
+  handler's key set in BOTH directions — a test that only checks the fields it
+  already knows about cannot catch a phantom.
+- `read_option_refusal_test.go` requires each refusal to happen before any
+  request reaches the server, and a reflection check keeps the refusal sweep
+  exhaustive against `searchConfig`.
+
 ## 2.1.0 — ADR-0031 search controls, one version constant, three parity fixes (2026-09-05)
 
 First release where the Go, TypeScript and Python SDKs carry the SAME version.

@@ -29,12 +29,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from anhurdb import (
     Memory,
     AnhurClient,
-    CreateRequest,
     MemoryType,
     AnhurError,
     AnhurAuthError,
     AnhurQueryError,
     sessions_all,
+    ContextResult,
+    EntityGraphResult,
+    EntityTimelineResult,
+    ProfileResult,
+    WalkResult,
 )
 from anhurdb.query import QueryBuilder, Filter
 
@@ -129,7 +133,7 @@ async def test_memory_profile():
         profile = await mem.profile()
         record_result(
             "Memory.profile",
-            isinstance(profile, dict) and "static" in profile,
+            isinstance(profile, ProfileResult),
             f"keys={list(profile.keys())}",
         )
 
@@ -184,7 +188,7 @@ async def test_memory_list_sessions():
         sessions = await mem.list_sessions()
         record_result(
             "Memory.list_sessions",
-            isinstance(sessions, (list, dict)),
+            isinstance(sessions, list),
             f"type={type(sessions).__name__}",
         )
 
@@ -197,8 +201,8 @@ async def test_memory_walk():
             graph = await mem.walk(start_id=1, depth=2)
             record_result(
                 "Memory.walk",
-                isinstance(graph, dict),
-                f"keys={list(graph.keys()) if isinstance(graph, dict) else 'not dict'}",
+                isinstance(graph, WalkResult),
+                f"nodes={len(graph.nodes)} edges={len(graph.edges)}",
             )
         except Exception as e:
             record_result("Memory.walk", False, str(e))
@@ -211,8 +215,8 @@ async def test_memory_walk_semantic():
             graph = await mem.walk_semantic(start_id=1, depth=2)
             record_result(
                 "Memory.walk_semantic",
-                isinstance(graph, dict),
-                f"keys={list(graph.keys()) if isinstance(graph, dict) else 'n/a'}",
+                isinstance(graph, WalkResult),
+                f"nodes={len(graph.nodes)} edges={len(graph.edges)}",
             )
         except Exception as e:
             record_result("Memory.walk_semantic", False, str(e))
@@ -225,8 +229,8 @@ async def test_memory_get_context():
             ctx = await mem.get_context(record_id=1)
             record_result(
                 "Memory.get_context",
-                isinstance(ctx, dict),
-                f"keys={list(ctx.keys()) if isinstance(ctx, dict) else 'n/a'}",
+                isinstance(ctx, ContextResult),
+                f"neighbors={len(ctx.neighbors)}",
             )
         except Exception as e:
             record_result("Memory.get_context", False, str(e))
@@ -343,7 +347,7 @@ async def test_entity_operations():
                 entity_type="organization",
                 summary="Test organisation",
             )
-            entity_id = entity.get("id")
+            entity_id = entity.id
             record_result(
                 "Memory.upsert_entity",
                 entity_id is not None,
@@ -371,7 +375,7 @@ async def test_entity_operations():
                 entity_type="person",
                 summary="Test person",
             )
-            person_id = person.get("id")
+            person_id = person.id
         except Exception:
             person_id = None
 
@@ -393,8 +397,8 @@ async def test_entity_operations():
             graph = await mem.entity_graph(entity_id=entity_id, depth=2)
             record_result(
                 "Memory.entity_graph",
-                isinstance(graph, dict),
-                f"keys={list(graph.keys()) if isinstance(graph, dict) else 'n/a'}",
+                isinstance(graph, EntityGraphResult),
+                f"depth={graph.depth} node_count={graph.node_count}",
             )
         except Exception as e:
             record_result("Memory.entity_graph", False, str(e))
@@ -404,8 +408,8 @@ async def test_entity_operations():
             timeline = await mem.entity_timeline(entity_id=entity_id)
             record_result(
                 "Memory.entity_timeline",
-                isinstance(timeline, dict),
-                f"keys={list(timeline.keys()) if isinstance(timeline, dict) else 'n/a'}",
+                isinstance(timeline, EntityTimelineResult),
+                f"edge_count={timeline.edge_count}",
             )
         except Exception as e:
             record_result("Memory.entity_timeline", False, str(e))
@@ -488,20 +492,18 @@ async def test_ast_query():
     async with AnhurClient(url=SERVER_URL, api_key=API_KEY) as client:
         # Server requires an episodic anchor before derived types.
         # Create episodic first, then risk.
-        await client.create(CreateRequest(
-            uuid="integration-ast-test",
+        await client.create(
+            "integration-ast-test",
+            "Starting integration AST test",
             type=MemoryType.EPISODIC,
-            summary="AST test session start",
-            content="Starting integration AST test",
             score=5,
-        ))
-        await client.create(CreateRequest(
-            uuid="integration-ast-test",
+        )
+        await client.create(
+            "integration-ast-test",
+            "Detailed risk analysis for integration testing",
             type=MemoryType.RISK,
-            summary="Integration test risk: no rollback plan",
-            content="Detailed risk analysis for integration testing",
             score=8,
-        ))
+        )
 
         # Test with Filter
         try:
@@ -567,24 +569,22 @@ async def test_anhur_client_extras():
     async with AnhurClient(url=SERVER_URL, api_key=API_KEY) as client:
         # create — episodic anchor first, then derived type
         try:
-            await client.create(CreateRequest(
-                uuid="integration-client-test",
+            await client.create(
+                "integration-client-test",
+                "Starting integration client test",
                 type=MemoryType.EPISODIC,
-                summary="Client test session start",
-                content="Starting integration client test",
                 score=5,
-            ))
-            result = await client.create(CreateRequest(
-                uuid="integration-client-test",
+            )
+            result = await client.create(
+                "integration-client-test",
+                "We decided to test everything",
                 type=MemoryType.DECISION,
-                summary="Integration test decision",
-                content="We decided to test everything",
                 score=7,
-            ))
+            )
             record_result(
                 "AnhurClient.create",
-                isinstance(result, dict) and "id" in result,
-                f"id={result.get('id')}",
+                result.id is not None,
+                f"id={result.id}",
             )
         except Exception as e:
             record_result("AnhurClient.create", False, str(e))

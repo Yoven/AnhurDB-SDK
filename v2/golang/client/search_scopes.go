@@ -97,6 +97,10 @@ func (m *Memory) SearchShared(ctx context.Context, query string, sessions []stri
 // sessions is MANDATORY (ADR-0014), exactly as in Search: this endpoint had no
 // session argument at all before, so "give me the facts of this chat" quietly
 // returned the facts of every chat.
+//
+// WithKeyword is the ONLY ReadOption this method honours (it becomes the `q`
+// query param); anything else is refused at call time with
+// *UnsupportedOptionError.
 func (m *Memory) SearchByType(ctx context.Context, memType string, sessions []string, limit int, opts ...ReadOption) ([]SearchResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -111,6 +115,11 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, sessions []st
 	}
 
 	cfg := applyReadOptions(opts)
+	if optionErr := rejectUnsupportedReadOptions(cfg, "SearchByType",
+		"GET /api/v1/search/type honours q (WithKeyword); type, limit and sessions are positional arguments",
+		"WithKeyword"); optionErr != nil {
+		return nil, optionErr
+	}
 
 	params := url.Values{}
 	params.Set("type", memType)
@@ -149,7 +158,15 @@ func (m *Memory) SearchByType(ctx context.Context, memType string, sessions []st
 // sessions is MANDATORY (ADR-0014), exactly as in Search. SmartSearch is one of
 // the two paths that had no session argument at all before — it accepted the
 // scope, dropped the chat filter, and answered from every conversation.
-func (m *Memory) SmartSearch(ctx context.Context, query string, sessions []string, limit int, opts ...ReadOption) ([]byte, error) {
+//
+// WithTypeFilter and WithScope are the ONLY ReadOptions this method honours;
+// anything else is refused at call time with *UnsupportedOptionError.
+//
+// Junior Tip [a nil Results means NO MATCHES, 2026-09-14]: this route answers
+// `"results": null` when nothing matched, so the decoded slice is nil rather
+// than empty. Check Count, or just range — never treat nil as "the server did
+// not answer". See SmartSearchResponse.
+func (m *Memory) SmartSearch(ctx context.Context, query string, sessions []string, limit int, opts ...ReadOption) (*SmartSearchResponse, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
@@ -163,6 +180,11 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, sessions []strin
 	}
 
 	cfg := applyReadOptions(opts)
+	if optionErr := rejectUnsupportedReadOptions(cfg, "SmartSearch",
+		"GET /api/v1/search/smart honours type (WithTypeFilter) and scope (WithScope); q, limit and sessions are positional arguments",
+		"WithTypeFilter", "WithScope"); optionErr != nil {
+		return nil, optionErr
+	}
 	scope := cfg.scope
 	if scope == "" {
 		scope = searchScopeSessions
@@ -177,7 +199,16 @@ func (m *Memory) SmartSearch(ctx context.Context, query string, sessions []strin
 		params.Set("type", cfg.typeFilter)
 	}
 
-	return m.conn.Get(ctx, "/api/v1/search/smart", params)
+	respBytes, getErr := m.conn.Get(ctx, "/api/v1/search/smart", params)
+	if getErr != nil {
+		return nil, getErr
+	}
+
+	var response SmartSearchResponse
+	if decodeErr := json.Unmarshal(respBytes, &response); decodeErr != nil {
+		return nil, fmt.Errorf("parsing smart search response: %w", decodeErr)
+	}
+	return &response, nil
 }
 
 // Recall searches for memories using plane-aware search (default sessions).

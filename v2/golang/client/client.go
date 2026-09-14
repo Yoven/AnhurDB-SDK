@@ -487,54 +487,6 @@ func (m *Memory) createRecord(ctx context.Context, text string, cfg *addConfig) 
 	}, nil
 }
 
-// Profile retrieves the memory profile for this container tag.
-//
-// If the server doesn't have a profile endpoint yet (OSS without agents),
-// it returns an empty profile rather than failing — matching the Python
-// SDK behaviour.
-func (m *Memory) Profile(ctx context.Context, opts ...ReadOption) (*ProfileResult, error) {
-	if m.conn == nil {
-		return nil, ErrEmptyAPIKey
-	}
-
-	_ = opts
-
-	params := url.Values{}
-	params.Set("tag", m.containerTag)
-
-	respBytes, err := m.conn.Get(ctx, "/api/v1/profile", params)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return &ProfileResult{
-				Static:  map[string]interface{}{},
-				Dynamic: map[string]interface{}{},
-				Stats:   map[string]interface{}{},
-				Tag:     m.containerTag,
-				Status:  "not_available",
-			}, nil
-		}
-		return nil, err
-	}
-
-	var result ProfileResult
-	if err := json.Unmarshal(respBytes, &result); err != nil {
-		return nil, fmt.Errorf("parsing profile response: %w", err)
-	}
-
-	// Ensure maps are never nil.
-	if result.Static == nil {
-		result.Static = map[string]interface{}{}
-	}
-	if result.Dynamic == nil {
-		result.Dynamic = map[string]interface{}{}
-	}
-	if result.Stats == nil {
-		result.Stats = map[string]interface{}{}
-	}
-
-	return &result, nil
-}
-
 // --------------------------------------------------------------------------
 // Extended methods — full REST tool set
 // --------------------------------------------------------------------------
@@ -549,12 +501,10 @@ const listSessionsPageLimit = 500
 // token budgets. Agents need the full tenant, so we request limit=500 and follow
 // has_more/next_offset until the last page. Skipping pagination left consolidation
 // scanning only ~4 of 64 sessions that still needed work on HEL1 bench-1.
-func (m *Memory) ListSessions(ctx context.Context, opts ...ReadOption) ([]SessionStats, error) {
+func (m *Memory) ListSessions(ctx context.Context) ([]SessionStats, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	allSessions := make([]SessionStats, 0)
 	pageOffset := 0
@@ -605,12 +555,10 @@ func (m *Memory) ListSessions(ctx context.Context, opts ...ReadOption) ([]Sessio
 //
 // Returns parent, child, and sibling records — useful for understanding
 // how a memory fits into the knowledge graph.
-func (m *Memory) GetContext(ctx context.Context, recordID int64, opts ...ReadOption) (*ContextResult, error) {
+func (m *Memory) GetContext(ctx context.Context, recordID int64) (*ContextResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	path := fmt.Sprintf("/api/v1/records/%d/topology", recordID)
 	respBytes, err := m.conn.Get(ctx, path, nil)
@@ -631,12 +579,10 @@ func (m *Memory) GetContext(ctx context.Context, recordID int64, opts ...ReadOpt
 // Records store a summary for search indexing, but the full content may
 // be much larger. This endpoint returns the complete decrypted file
 // bytes for file records, or the inline content for episodic records.
-func (m *Memory) ReadContent(ctx context.Context, recordID int64, opts ...ReadOption) (string, error) {
+func (m *Memory) ReadContent(ctx context.Context, recordID int64) (string, error) {
 	if m.conn == nil {
 		return "", ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	path := fmt.Sprintf("/api/v1/records/%d/content", recordID)
 	respBytes, err := m.conn.Get(ctx, path, nil)
@@ -650,12 +596,10 @@ func (m *Memory) ReadContent(ctx context.Context, recordID int64, opts ...ReadOp
 //
 // GET /api/v1/recent?limit=N hits the server's dedicated ListRecent endpoint,
 // which returns records ordered by creation time (newest first).
-func (m *Memory) Recent(ctx context.Context, limit int, opts ...ReadOption) ([]models.Record, error) {
+func (m *Memory) Recent(ctx context.Context, limit int) ([]models.Record, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	params := url.Values{}
 	params.Set("limit", strconv.Itoa(limit))
@@ -699,8 +643,8 @@ func (m *Memory) Recent(ctx context.Context, limit int, opts ...ReadOption) ([]m
 //
 // Deprecated: use Recent. This alias forwards verbatim and is kept only so the
 // keep compiling. New code MUST call Recent.
-func (m *Memory) RecentMemories(ctx context.Context, limit int, opts ...ReadOption) ([]models.Record, error) {
-	return m.Recent(ctx, limit, opts...)
+func (m *Memory) RecentMemories(ctx context.Context, limit int) ([]models.Record, error) {
+	return m.Recent(ctx, limit)
 }
 
 // firstJSONToken returns the first non-whitespace byte of a JSON payload, or 0
@@ -850,12 +794,10 @@ func (m *Memory) Forget(ctx context.Context, memoryID int64) error {
 // BatchReadContent fetches full content for multiple records in a single
 // call (max 100). Eliminates the N+1 pattern of calling ReadContent
 // in a loop.
-func (m *Memory) BatchReadContent(ctx context.Context, ids []int64, opts ...ReadOption) (map[string]json.RawMessage, error) {
+func (m *Memory) BatchReadContent(ctx context.Context, ids []int64) (map[string]json.RawMessage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	payload := map[string]interface{}{"ids": ids}
 	// Read behind POST — PostRead for search-shaped endpoints.
@@ -962,12 +904,10 @@ func (m *Memory) UploadFile(ctx context.Context, filename string, content []byte
 }
 
 // UploadStatus checks the processing status of a file upload.
-func (m *Memory) UploadStatus(ctx context.Context, uploadID int64, opts ...ReadOption) (*UploadStatusResult, error) {
+func (m *Memory) UploadStatus(ctx context.Context, uploadID int64) (*UploadStatusResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	path := fmt.Sprintf("/api/v1/upload/%d/status", uploadID)
 	respBytes, err := m.conn.Get(ctx, path, nil)
@@ -1005,12 +945,10 @@ func (m *Memory) UploadStatus(ctx context.Context, uploadID int64, opts ...ReadO
 //	}
 //
 // limit is server-clamped to [1, 500]; offset is clamped to >= 0.
-func (m *Memory) ListEntities(ctx context.Context, limit, offset int, opts ...ReadOption) (*EntitiesPage, error) {
+func (m *Memory) ListEntities(ctx context.Context, limit, offset int) (*EntitiesPage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	if limit <= 0 {
 		limit = 200
@@ -1039,12 +977,10 @@ func (m *Memory) ListEntities(ctx context.Context, limit, offset int, opts ...Re
 }
 
 // SearchEntities searches named entities (people, organisations, concepts).
-func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, limit int, opts ...ReadOption) ([]Entity, error) {
+func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, limit int) ([]Entity, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	params := url.Values{}
 	if query != "" {
@@ -1107,12 +1043,10 @@ func (m *Memory) UpsertEntity(ctx context.Context, name, entityType, summary str
 //
 // Starting from an entity, discovers connected entities through typed
 // edges (works_at, knows, part_of, etc.).
-func (m *Memory) EntityGraph(ctx context.Context, entityID int64, depth int, opts ...ReadOption) (*EntityGraphResult, error) {
+func (m *Memory) EntityGraph(ctx context.Context, entityID int64, depth int) (*EntityGraphResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	params := url.Values{}
 	params.Set("depth", strconv.Itoa(depth))
@@ -1133,12 +1067,10 @@ func (m *Memory) EntityGraph(ctx context.Context, entityID int64, depth int, opt
 
 // EntityTimeline returns the full temporal history of an entity's
 // relationships, including invalidated edges ordered by event time.
-func (m *Memory) EntityTimeline(ctx context.Context, entityID int64, opts ...ReadOption) (*EntityTimelineResult, error) {
+func (m *Memory) EntityTimeline(ctx context.Context, entityID int64) (*EntityTimelineResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	path := fmt.Sprintf("/api/v1/entities/%d/timeline", entityID)
 	respBytes, err := m.conn.Get(ctx, path, nil)
@@ -1204,12 +1136,10 @@ func (m *Memory) LinkRecordEntity(ctx context.Context, recordID, entityID int64,
 }
 
 // GetRecordEntities returns entities linked to a specific memory record.
-func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64, opts ...ReadOption) ([]Entity, error) {
+func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64) ([]Entity, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	path := fmt.Sprintf("/api/v1/records/%d/entities", recordID)
 	respBytes, err := m.conn.Get(ctx, path, nil)
@@ -1237,12 +1167,10 @@ func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64, opts ...
 //
 // Returns actual message content, unlike ListSessions which returns
 // metadata only.
-func (m *Memory) GetSessionHistory(ctx context.Context, sessionUUID string, limit, offset int, opts ...ReadOption) ([]byte, error) {
+func (m *Memory) GetSessionHistory(ctx context.Context, sessionUUID string, limit, offset int) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
-
-	_ = opts
 
 	params := url.Values{}
 	params.Set("limit", strconv.Itoa(limit))
@@ -1252,18 +1180,41 @@ func (m *Memory) GetSessionHistory(ctx context.Context, sessionUUID string, limi
 	return m.conn.Get(ctx, path, params)
 }
 
-// GetSessionClusters returns thematic clusters within a session.
+// GetSessionClusters returns thematic clusters within a session — a DBSCAN-like
+// grouping of the session's episodic records over BSQ Hamming space.
 //
-// session's records.
-func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string, opts ...ReadOption) ([]byte, error) {
+// eps is the Hamming tolerance ratio and must be in (0, 1]; minPoints is the
+// minimum group size. Pass 0 for either to let the server apply its own tuned
+// default (0.45 and 3 — server/handler/record_clustering.go:31-42).
+//
+// Junior Tip [why these are explicit parameters, 2026-09-14]: the server has
+// honoured eps and min since the endpoint shipped, and Go could not reach
+// either — the method took `opts ...ReadOption` and threw them away, so every
+// Go caller got exactly one clustering no matter what they asked for. A knob
+// that exists on the server and not in the SDK is a knob that reads as
+// "unsupported" to anyone using the SDK as the contract.
+func (m *Memory) GetSessionClusters(ctx context.Context, sessionUUID string, eps float64, minPoints int) ([]byte, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
-	_ = opts
+	params := url.Values{}
+	// Junior Tip [0 means "let the server decide", 2026-09-14]: the handler
+	// (server/handler/record_clustering.go:31-42) only overrides its defaults
+	// when the key parses to a value in range — eps in (0,1], min > 0 — so
+	// sending eps=0 would be indistinguishable from sending nothing anyway.
+	// Omitting the key makes that explicit instead of hoping the server
+	// re-validates, and keeps the server's own tuned defaults (0.45 / 3) the
+	// single source of truth rather than restating them here.
+	if eps > 0 {
+		params.Set("eps", strconv.FormatFloat(eps, 'f', -1, 64))
+	}
+	if minPoints > 0 {
+		params.Set("min", strconv.Itoa(minPoints))
+	}
 
 	path := fmt.Sprintf("/api/v1/sessions/%s/clusters", sessionUUID)
-	return m.conn.Get(ctx, path, nil)
+	return m.conn.Get(ctx, path, params)
 }
 
 // --------------------------------------------------------------------------

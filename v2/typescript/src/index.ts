@@ -67,10 +67,16 @@ export type {
   // GET /api/v1/search/smart envelope (flat lexical rows, not SearchResult).
   SmartSearchHit,
   SmartSearchResponse,
+  // GET /api/v1/profile — three CLOSED blocks, no open index signature.
   ProfileResult,
+  ProfileStatic,
+  ProfileDynamic,
+  ProfileStats,
   // Extended
   MemoryRecord,
   WalkResult,
+  // A walk edge is {source, target} and nothing else.
+  WalkEdge,
   WalkTarget,
   WalkSemanticOptions,
   ContextResult,

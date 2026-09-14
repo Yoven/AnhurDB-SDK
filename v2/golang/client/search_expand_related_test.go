@@ -192,12 +192,13 @@ func TestSearchDecodesExpandRelatedResponseFields(t *testing.T) {
 	defer server.Close()
 
 	memoryClient := NewMemory("k", WithURL(server.URL))
-	results, retrieval, searchErr := memoryClient.SearchWithRetrieval(
+	outcome, searchErr := memoryClient.SearchWithRetrieval(
 		context.Background(), "postgres", SessionsAll(), WithExpandRelated(),
 	)
 	if searchErr != nil {
 		t.Fatalf("SearchWithRetrieval returned error: %v", searchErr)
 	}
+	results, retrieval := outcome.Results, outcome.Retrieval
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
@@ -295,11 +296,11 @@ func TestSearchIgnoresRetrievalWhenServerOmitsIt(t *testing.T) {
 		t.Fatalf("expected all ADR-0021 fields empty, got %+v", results[0])
 	}
 
-	_, retrieval, searchWithRetrievalErr := memoryClient.SearchWithRetrieval(context.Background(), "hello", SessionsAll())
+	retrievalOutcome, searchWithRetrievalErr := memoryClient.SearchWithRetrieval(context.Background(), "hello", SessionsAll())
 	if searchWithRetrievalErr != nil {
 		t.Fatalf("SearchWithRetrieval returned error: %v", searchWithRetrievalErr)
 	}
-	if retrieval != nil {
+	if retrieval := retrievalOutcome.Retrieval; retrieval != nil {
 		t.Fatalf("retrieval = %+v, want nil", retrieval)
 	}
 }

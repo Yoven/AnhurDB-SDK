@@ -758,7 +758,7 @@ describe("Memory.create (no anchor seeding)", () => {
     try {
       const mem = new Memory({ apiKey: "key", userId: "u" });
       await assert.rejects(
-        () => mem.create("some fact", { type: "fact" }),
+        () => mem.create("", "some fact", { type: "fact" }),
         (err: unknown) =>
           err instanceof Error &&
           err.message.includes("create a session first"),
@@ -785,7 +785,7 @@ describe("Memory.create (no anchor seeding)", () => {
       const mem = new Memory({ apiKey: "key", userId: "u" });
       await assert.rejects(
         () =>
-          mem.create("some fact", { type: "fact", sessionId: "registered-sess" }),
+          mem.create("registered-sess", "some fact", { type: "fact" }),
         // A 422 maps to AnhurQueryError (see HttpClient.request).
         (err: unknown) => err instanceof AnhurQueryError,
       );

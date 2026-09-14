@@ -1,5 +1,151 @@
 # TypeScript SDK Changelog
 
+## 3.0.0 — SDK parity: the types stop lying (2026-09-14)
+
+Released together with Go and Python at the SAME number. This round closes the
+last divergences between the three arms against the REAL API: routes in
+`AnhurDB/server/router.go`, handlers beside them, every field set re-proved by
+a live call to `https://anhurdb.yoven.ai` on 2026-09-14. A behaviour all three
+SDKs agreed on that the server does not support was still wrong, and several
+of the fixes below are exactly that case.
+
+It is a MAJOR because four public shapes and one method signature change.
+Every break is compile-time: nothing here fails at runtime in a way a
+TypeScript caller can miss.
+
+### Breaking — `create()` takes the session as its FIRST argument
+
+```ts
+// 2.1.0
+await mem.create(text, { sessionUuid: session, type: "fact" });
+await mem.create(text);                        // ambient session, invisibly
+
+// 3.0.0
+await mem.create(session, text, { type: "fact" });
+await mem.create(await mem.createSession(), text);
+```
+
+`sessionUuid` and `sessionId` are REMOVED from `CreateOptions`. The old
+signature had three ways to name the session plus an invisible fourth: when no
+option was given, the record went to whatever session the `Memory` instance
+happened to be holding. `POST /api/v1/records` cannot succeed without a
+session, so that fallback never prevented an error — it only decided,
+silently, WHERE the record landed. A forgotten option misfiled a record
+instead of failing. The session is now positional, matching Go's
+`Create(ctx, sessionUUID, content, opts...)`, and a blank one throws locally
+before any HTTP.
+
+`CreateOptions` also gains `status`, the one field of the shared optional set
+(`type, score, status, related_ids, valid_from, valid_until, metadata`) that
+TypeScript could not express — `createRecord` hardcoded `"saved"`.
+
+### Breaking — `SessionStats.last_active` is really `last_activity`
+
+`database/list_sessions.go:37-43` and the live row both say `last_activity`.
+The wrong spelling never threw: `row.last_active` on a row that does not carry
+it is `undefined`, so every "sort by last activity" silently sorted by nothing
+and every "last seen" rendered blank. Go had it right since it was written.
+
+Also **added**, both previously unreachable from TypeScript: `types`
+(`Record<string, number>`, the per-type histogram) and `summary?`.
+
+Note the profile's `stats.last_active` is NOT a typo and was not touched: the
+server genuinely uses two spellings for two different objects
+(`handler/profile.go:50` vs `database/list_sessions.go:41`), both confirmed
+live on the same day.
+
+### Breaking — `BatchUpdateResult` described a response that does not exist
+
+`handler/record_batch.go:212` is the only success path of
+`PATCH /api/v1/records/mark-consolidated` and it writes one literal:
+`{"message":"marked consolidated"}`. `updated_count` has never existed on any
+code path, so `result.updated_count === ids.length` compiled and was always
+false. The interface now declares `{ message: string }`. The exported NAME is
+kept deliberately — changing the body is the fix, removing the name would be a
+second break for no gain. Live-confirmed: the ack came back with exactly one
+key, `message`.
+
+### Breaking — `UploadResult` had a phantom `id` and was missing five fields
+
+`handler/upload.go:109-119` sends a fixed nine-key map, and `id` is not one of
+them; the polling key is `record_id`. A phantom optional is the worst lie a
+type can tell — `upload.id ?? upload.record_id` reads like a careful fallback
+whose first branch is dead code no test can reach. **Removed** `id`;
+**added** `message`, `mime`, `mime_detected`, `extension`, `size_bytes`.
+Live-confirmed against a real upload: the 202 body carried exactly
+`[extension, filename, message, mime, mime_detected, record_id, size_bytes,
+status, uuid]`, and no `id`.
+
+### Breaking — `WalkResult` nodes are FULL records; edges have two keys
+
+`POST /api/v1/walk` accumulates `map[int64]*model.Record` and marshals the
+records whole — live, every node carried all 14 record keys. The old
+`{id, type, summary, weight}` projection was not wrong on the wire, it was
+wrong in the type: ten real fields hidden from every caller. `nodes` is now
+`MemoryRecord[]`, so a walk node composes with the rest of the SDK.
+
+**Removed** `type` from the edge shape (both handlers build a two-field
+`{source, target}` struct and one of them carries a comment calling that shape
+frozen). **Added** `truncated?: boolean`.
+
+`truncated` is OPTIONAL, deliberately, against the letter of the parity spec:
+`/walk` sends it (`record_search_graph.go:222`) and `/walk/semantic` does not
+(:337-340) — confirmed live the same day, `[edges, nodes, truncated]` versus
+`[edges, nodes]`. Both routes return this type, so declaring it required would
+have replaced one phantom with another. Read it as `result.truncated === true`;
+`undefined` means "the semantic route did not say", which is not the same claim
+as "nothing was cut".
+
+### Breaking — `ProfileResult` models three CLOSED blocks
+
+`handler/profile.go:27-51` declares `static`, `dynamic` and `stats` as closed
+Go structs, not maps. They were typed `Record<string, unknown>` behind a
+`[key: string]: unknown` index signature, and that signature was not a
+forward-compatibility hatch — it was a hiding place. It let the SDK's OWN 404
+fallback invent `tag` and `status: "not_available"`, two keys the handler has
+never emitted, and the compiler accepted them as if the server had sent them.
+Callers branching on `profile.status` were branching on an SDK fiction.
+
+`static` / `dynamic` / `stats` are now concrete, the index signature is gone,
+and the 404 fallback returns the same all-zero profile the hosted server
+returns for a tag it does not know.
+
+### Added — `profile(containerTag?)`
+
+`tag` is an IN-TENANT filter, not a tenant selector: `handler/profile.go:63-66`
+takes the tenant from the auth middleware and reads `tag` only from the query
+string. Measured live with the owner key: another container's tag answered 200
+with ITS 6 records; an invented tag answered **200 with an empty profile**, not
+404; `*` is a literal tag, not a wildcard; and an EMPTY tag is a guaranteed
+**400** (`tag: tag is required`).
+
+So there is no authorisation hole to close — the gap was that TypeScript could
+not express a tag at all. `profile(containerTag?)` defaults to the client's own
+derived tag and NEVER puts a blank tag on the wire. An unknown tag stays an
+empty profile: turning it into an exception would hide a typo behind a fake
+server failure.
+
+### Unchanged, and asserted so it stays that way
+
+- **`entityGraph` depth**: the server's default is **1**
+  (`handler/entity.go:280`), and this SDK already omitted the param when the
+  caller did not ask. Live: omitted → `depth:1`, `?depth=2` → `depth:2` — the
+  value changes the graph. Python defaulted to 2 and is the arm that changed.
+  A test now locks "no `depth` param unless asked".
+- **`smartSearch`**: `SmartSearchResponse` / `SmartSearchHit` were already the
+  reference implementation for the other two arms, nullable `results`
+  included. No change.
+
+### Housekeeping
+
+`types.ts` was past the ~300-line house cut, so the shapes this round touched
+moved to domain files instead of growing it: `profileTypes.ts`, `uploadTypes.ts`,
+`walkTypes.ts`, and `SessionStats` into `sessionStats.ts` beside the paging loop
+that consumes it. `memory.ts` was over the cut too, so `profile()`'s body moved
+to `profile.ts` and `truncateSummary` to `summary.ts`; the file ends this round
+SMALLER than it started. Every moved type is re-exported from `types.ts`, which
+stays the import path for callers — no import in `index.ts` changed.
+
 ## 2.1.0 — ADR-0031 search controls (2026-09-05)
 
 Released together with Go and Python at the SAME number. Before this release

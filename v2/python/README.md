@@ -29,10 +29,14 @@ pip install \
 ```
 
 > The pin above is the newest wheel actually **published**. The source in this
-> repository is already at `2.1.0` (`anhurdb.__version__`); the pin moves when the
-> 2.1.0 release is cut, not before — a doc that pins a version nobody can download
+> repository is already at `3.0.0` (`anhurdb.__version__`); the pin moves when the
+> 3.0.0 release is cut, not before — a doc that pins a version nobody can download
 > is worse than a stale one. (It was stale at `v2.0.12` — eight releases behind —
 > until 2026-09-05.)
+>
+> **3.0.0 is a breaking release.** `create()` changed arity, twelve responses
+> became typed models instead of dicts, and `get_entity_graph()` now defaults to
+> the server's own depth of 1 instead of 2. Read `CHANGELOG.md` before upgrading.
 
 ## Quick Start — Memory (Simple API)
 
@@ -60,33 +64,35 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
     for r in results:
         print(f"{r.record.summary} (similarity: {r.similarity:.2f})")
 
-    # Get user profile
+    # Get user profile — a ProfileResult model since 3.0.0, not a dict.
     profile = await mem.profile()
-    print(profile["static"])
+    print(profile.static.facts)
 ```
 
 ## Quick Start — AnhurClient (Full API)
 
 ```python
-from anhurdb import AnhurClient, CreateRequest, MemoryType, sessions_all
+from anhurdb import AnhurClient, MemoryType, sessions_all
 
 async with AnhurClient(api_key="anhur_xxx") as client:
-    # Create a record
-    await client.create(CreateRequest(
-        uuid="session-1",
+    # Create a record. Since 3.0.0 the session and the content are required
+    # POSITIONALS — POST /api/v1/records cannot succeed without either, so the
+    # failure belongs in the signature, not in an HTTP 422.
+    await client.create(
+        "session-1",
+        "Full conversation context here...",
         type=MemoryType.FACT,
-        summary="User is a data scientist",
-        content="Full conversation context here...",
         score=8,
-    ))
+    )
 
     # Search
     results = await client.search("data scientist", sessions_all(), limit=10)
 
     # Entity knowledge graph
     entity = await client.upsert_entity("Google", entity_type="organization")
-    graph = await client.get_entity_graph(entity["id"], depth=2)
-    timeline = await client.entity_timeline(entity["id"])
+    # depth omitted = the SERVER's default of 1. Pass depth=2 to widen it.
+    graph = await client.get_entity_graph(entity.id)
+    timeline = await client.entity_timeline(entity.id)
 
     # Batch operations
     contents = await client.batch_read_content([1, 2, 3])
@@ -95,7 +101,7 @@ async with AnhurClient(api_key="anhur_xxx") as client:
     with open("report.pdf", "rb") as f:
         pdf_bytes = f.read()
     upload = await client.upload_file("report.pdf", pdf_bytes)
-    status = await client.upload_status(upload["record_id"])
+    status = await client.upload_status(upload.record_id)
 
     # Temporal versioning
     await client.supersede(old_id=42, new_id=99)
@@ -127,14 +133,14 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 |--------|-------------|---------|
 | `add(text, *, mode="ingest", session_id="", score=None, type=None, metadata=None)` | Store a memory. Keyword-only after `text`. Pinning `score` / `type` / `metadata` switches from `/ingest` to `/records` | `dict` with session_id, records, mode |
 | `search(query, sessions, *, limit=10, type_filter=None, scope="sessions", mode=None, semantic_timeout_ms=None, debug_signals=False)` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG). `sessions` is **required** and positional: `sessions_all()` or up to 1000 uuids. Absent/empty/`["*", "uuid"]` → HTTP 400. See [Search controls](#search-controls-adr-0031) for the three retrieval knobs | `list[SearchResult]` |
-| `profile()` | Get user/agent memory profile | `dict` with static, dynamic, stats |
+| `profile(container_tag=None)` | Get the memory profile for a container tag. The tag is an IN-TENANT filter, never a tenant selector; an unknown tag is an EMPTY profile with HTTP 200, not a 404. An empty string is refused locally (guaranteed HTTP 400) | `ProfileResult` |
 
 ### Search & Discovery
 
 | Method | Description |
 |--------|-------------|
 | `search_by_type(type, sessions, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
-| `smart_search(query, sessions, *, limit=10, memory_type=None, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text). `memory_type` is sent as `?type=`. Returns the RAW response dict, not `list[SearchResult]` |
+| `smart_search(query, sessions, *, limit=10, memory_type=None, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text). `memory_type` is sent as `?type=`. Returns `SmartSearchResponse`, NOT `list[SearchResult]` — `results` is `None` (not `[]`) when nothing matched, and `relevance` is a LEXICAL score that must never be compared with `SearchResult.similarity` |
 | `recall(query, sessions, limit=10)` | Same engine as `search`, MCP naming |
 | `recent(limit=20)` | Most recent records |
 
@@ -156,7 +162,7 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 |--------|-------------|
 | `search_entities(query, entity_type, limit)` | Search named entities |
 | `upsert_entity(name, entity_type, summary)` | Create/update entity |
-| `entity_graph(entity_id, depth)` | BFS entity relationship traversal |
+| `entity_graph(entity_id, depth=None)` | BFS entity relationship traversal. `depth=None` omits the parameter and lets the server apply its own default of **1** (it was 2 before 3.0.0) |
 | `entity_timeline(entity_id)` | Temporal history of relationships |
 | `upsert_entity_edge(src, dst, relation)` | Create/update typed relationship |
 | `link_record_entity(record_id, entity_id)` | Cross-layer link |
@@ -198,7 +204,7 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 | `create_session()` | Register a write session (`POST /api/v1/sessions`); omit id → server generates |
 | `open_session()` | Local generate + register (new_session + create_session) |
 | `new_session()` | Local id only — does **not** register |
-| `list_sessions()` | All sessions with stats |
+| `list_sessions()` | All sessions with stats, paged to exhaustion → `list[SessionStats]` |
 | `get_session_history(uuid, limit, offset)` | Paginated session history |
 | `get_session_clusters(uuid)` | Thematic clusters |
 

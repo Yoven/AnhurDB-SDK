@@ -245,16 +245,20 @@ def ast_fixture():
             memory.create_session(session_id=session_id, metadata={"purpose": "ast-teste"})
         )
         for entry in SEED_PLAN:
-            request = CreateRequest(
-                session_id=registered,
-                type=entry["type"],
-                score=entry["score"],
-                summary=entry["summary"],
-                content="ast-teste content for " + entry["summary"],
-                metadata=json.dumps(entry["metadata"]) if entry.get("metadata") else "",
+            # 3.0.0 signature: session and content are required positionals,
+            # everything else is keyword-only. `summary` is derived from
+            # `content` by the SDK (same rule as Go's truncateSummary), so it
+            # is no longer something a caller can pin.
+            response = loop.run_until_complete(
+                memory.create(
+                    registered,
+                    "ast-teste content for " + entry["summary"],
+                    type=entry["type"],
+                    score=entry["score"],
+                    metadata=entry.get("metadata") or None,
+                )
             )
-            response = loop.run_until_complete(memory.create(request))
-            ids_by_key[entry["key"]] = int(response["id"])
+            ids_by_key[entry["key"]] = int(response.id or 0)
 
         loop.run_until_complete(memory.supersede(ids_by_key["india"], ids_by_key["juliett"]))
 

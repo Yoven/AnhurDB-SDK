@@ -24,7 +24,43 @@
 
 import type { HttpClient } from "./client.js";
 import { AnhurError } from "./errors.js";
-import type { SessionStats } from "./types.js";
+
+/**
+ * Aggregate stats for a single session — one row of `sessions[]`.
+ *
+ * GROUND TRUTH: `AnhurDB/server/database/list_sessions.go:37-43`, the Go
+ * struct the handler marshals verbatim. Re-proved live on 2026-09-14 against
+ * `https://anhurdb.yoven.ai`: `GET /api/v1/sessions/stats?limit=2` answered
+ * rows with keys `[last_activity, record_count, summary, types, uuid]`.
+ *
+ * Junior Tip [the key is `last_activity`, and this SDK said `last_active` —
+ * 2026-09-14]: the wrong spelling had been in `types.ts` since the type was
+ * written. Nothing failed, because `row.last_active` on a row that does not
+ * carry it is simply `undefined` — so every caller sorting or displaying "last
+ * activity" got a blank or an epoch date, silently, forever. Go
+ * (`client/types.go:82`) had it right all along. The near-miss is the danger:
+ * a name that is obviously a typo gets caught, a name that is plausible does
+ * not. Note this is a DIFFERENT object from the profile's `stats` block, which
+ * really does spell it `last_active` (`handler/profile.go:50`) — the server
+ * uses both spellings, for two different things. Do not unify them.
+ *
+ * Junior Tip [`types` and `summary` were missing entirely]: the server sends a
+ * per-type histogram (`{"episodic": 12, "fact": 3}`) and, when a consolidated
+ * summary exists for the session, its text. Both are exactly what a caller
+ * needs to decide whether a session is worth opening — and neither was
+ * reachable from TypeScript without an `as any`. `summary` is `omitempty`
+ * server-side, so it is optional here; `types` is always present.
+ */
+export interface SessionStats {
+  uuid: string;
+  record_count: number;
+  /** Record count per memory type, e.g. `{"episodic": 12, "fact": 3}`. */
+  types: Record<string, number>;
+  /** RFC3339 timestamp of the newest record in the session. */
+  last_activity: string;
+  /** Latest consolidated summary, when the session has one (`omitempty`). */
+  summary?: string;
+}
 
 /**
  * Page size requested for every `sessions/stats` call.

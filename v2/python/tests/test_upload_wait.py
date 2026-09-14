@@ -15,6 +15,7 @@ testado direto na classe.
 import unittest
 
 from anhurdb.client import Memory
+from anhurdb.models import UploadStatusResult
 from anhurdb.client.exceptions import (
     AnhurError,
     AnhurQueryError,
@@ -50,7 +51,7 @@ class TestWaitForUpload(unittest.IsolatedAsyncioTestCase):
             state["index"] += 1
             if isinstance(current, Exception):
                 raise current
-            return current
+            return UploadStatusResult.model_validate(current)
 
         memory.upload_status = stubbed_upload_status  # type: ignore[method-assign]
         return memory
@@ -64,7 +65,7 @@ class TestWaitForUpload(unittest.IsolatedAsyncioTestCase):
         result = await memory.wait_for_upload(
             42, timeout=5.0, interval=0.01, not_found_grace=2.0
         )
-        self.assertTrue(result["completed"])
+        self.assertTrue(result.completed)
 
     async def test_404_beyond_grace_raises_the_real_error(self) -> None:
         memory = self._memory_with_stub([_not_found()])
@@ -76,10 +77,13 @@ class TestWaitForUpload(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_status_is_terminal_data_not_error(self) -> None:
         memory = self._memory_with_stub([
-            {"record_id": 7, "status": "failed", "error": "extract crashed"},
+            {"record_id": 7, "status": "failed", "completed": False},
         ])
         result = await memory.wait_for_upload(7, timeout=2.0, interval=0.01)
-        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result.status, "failed")
+        # `completed` stays False on a failure — terminal for the CALLER is not
+        # the same question as the server's own completion flag.
+        self.assertFalse(result.completed)
 
     async def test_timeout_raises_typed_error_with_last_status(self) -> None:
         memory = self._memory_with_stub([{"record_id": 8, "status": "processing"}])

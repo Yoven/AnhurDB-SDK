@@ -28,7 +28,41 @@ var (
 
 	// ErrEmptyAPIKey is returned when the API key is not provided.
 	ErrEmptyAPIKey = errors.New("api_key is required")
+
+	// ErrUnsupportedOption is returned when a caller passes a ReadOption to a
+	// method whose endpoint does not parse the parameter that option carries.
+	//
+	// Junior Tip [why refusing beats forwarding, 2026-09-14]: ReadOption is one
+	// shared type across ~20 knobs, so EVERY option compiles at EVERY read call
+	// site. Before this error, fourteen methods wrote `_ = opts` and threw the
+	// caller's request away; the ones that did forward sent keys the handler
+	// never reads. Either way the server answers HTTP 200 and the caller reads
+	// a result that silently ignored what they asked for — the exact
+	// "absence read as success" failure this SDK keeps paying for. An option the
+	// endpoint cannot honour now fails BEFORE the request leaves the process.
+	// Use errors.Is(err, ErrUnsupportedOption) to detect it.
+	ErrUnsupportedOption = errors.New("anhurdb: option not supported by this method")
 )
+
+// UnsupportedOptionError names the exact option, the method that refused it,
+// and what the endpoint does honour, so the caller can fix the call without
+// reading the handler.
+type UnsupportedOptionError struct {
+	// Option is the constructor name the caller wrote, e.g. "WithSince".
+	Option string
+	// Method is the SDK method that refused it, e.g. "Walk".
+	Method string
+	// Honoured is the one-line statement of what the endpoint does parse,
+	// e.g. "POST /api/v1/walk honours as_of only".
+	Honoured string
+}
+
+func (e *UnsupportedOptionError) Error() string {
+	return fmt.Sprintf("anhurdb: %s is not supported by %s — %s", e.Option, e.Method, e.Honoured)
+}
+
+// Unwrap lets errors.Is(err, ErrUnsupportedOption) match every instance.
+func (e *UnsupportedOptionError) Unwrap() error { return ErrUnsupportedOption }
 
 // APIError wraps an HTTP status code with the response body for debugging.
 type APIError struct {

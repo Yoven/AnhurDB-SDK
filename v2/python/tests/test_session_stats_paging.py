@@ -101,7 +101,7 @@ class SessionStatsPagingTest(AioHTTPTestCase):
             sessions = await memory.list_sessions()
 
         self.assertEqual(
-            [session["uuid"] for session in sessions],
+            [session.uuid for session in sessions],
             ["page0-a", "page0-b", "page1-a"],
             "list_sessions must concatenate every page the server offers",
         )
@@ -126,7 +126,7 @@ class SessionStatsPagingTest(AioHTTPTestCase):
         async with self._memory() as memory:
             sessions = await memory.list_sessions()
 
-        self.assertEqual([session["uuid"] for session in sessions], ["only"])
+        self.assertEqual([session.uuid for session in sessions], ["only"])
         self.assertEqual(len(self.recorded_requests), 1, "has_more is the authority")
 
     async def test_stuck_next_offset_terminates_loudly_instead_of_spinning(self) -> None:
@@ -154,7 +154,7 @@ class SessionStatsPagingTest(AioHTTPTestCase):
         async with self._memory() as memory:
             sessions = await memory.list_sessions()
 
-        self.assertEqual([session["uuid"] for session in sessions], ["legacy"])
+        self.assertEqual([session.uuid for session in sessions], ["legacy"])
         self.assertEqual(
             len(self.recorded_requests), 1, "a bare array carries no has_more: it is the answer"
         )

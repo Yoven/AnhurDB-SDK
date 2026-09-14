@@ -50,11 +50,19 @@ const (
 // uploadStatusIsTerminal mirrors the status strings the server emits for a
 // finished ingest — success AND failure are both terminal: a failed payload is
 // data the caller must inspect, not a transport error.
+//
+// Junior Tip [failure arrives as status, never as an error field, 2026-09-14]:
+// this used to also test `result.Error != ""`. UploadStatusResult declared an
+// Error field the server has never sent (the status payload is a fixed 7-key
+// map, server/handler/upload.go:220-236), so that branch could not fire — it
+// read like a second safety net and was a dead one. The ONLY report of a failed
+// ingest is status == "failed", already covered below. If you ever add a
+// terminal condition here, prove the server sends the field first.
 func uploadStatusIsTerminal(result *UploadStatusResult) bool {
 	if result == nil {
 		return false
 	}
-	if result.Completed || result.Error != "" {
+	if result.Completed {
 		return true
 	}
 	switch strings.ToLower(result.Status) {

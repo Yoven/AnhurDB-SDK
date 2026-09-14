@@ -3,21 +3,19 @@ Package models defines the data structures for AnhurDB memory records.
 
 These types match the Go server's JSON serialisation exactly and are
 shared across the Memory client and any custom integrations.
+
+Junior Tip [what is NOT here, and why, 2026-09-14]: this package once also
+declared CreateRequest, SearchResult and SessionStats. None of the three was
+ever constructed or returned by anything — client.Create builds its payload
+inline from createConfig, search returns the richer client.SearchResult, and
+sessions return client.SessionStats. All three were deleted. A type that
+describes a contract nobody speaks is worse than no type: a reader finds it,
+believes it is the shape, and writes code against a wire format that does not
+exist.
 */
 package models
 
 import "time"
-
-// CreateRequest represents a high-level input from a client to AnhurDB.
-//
-// The SDK hides cognitive params (weight, dimension, vectors) so the
-// server handles embedding and classification automatically.
-type CreateRequest struct {
-	UUID     string            `json:"uuid"`
-	Type     MemoryType        `json:"type"`
-	Content  string            `json:"content"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
 
 // Record represents a unified cognitive memory record returned by AnhurDB.
 //
@@ -74,10 +72,4 @@ type Record struct {
 
 	// Full payload content from FileStorage (not from DB directly).
 	Content any `json:"content,omitempty"`
-}
-
-// SearchResult wraps a Record with its relevance score from search.
-type SearchResult struct {
-	Record     Record  `json:"record"`
-	Similarity float64 `json:"similarity"`
 }

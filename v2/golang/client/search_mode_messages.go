@@ -70,16 +70,4 @@ const (
 	// when the truth is "the server never understood the request".
 	warnDebugSignalsIgnored = `this AnhurDB server ignored debug_signals (it predates ADR-0031); ` +
 		`per-hit signals and leg_scores are absent, not empty.`
-
-	// warnLegScoresDroppedByRetrievalForm is Go-only, and it exists because Go
-	// alone cannot widen a return type without breaking every caller.
-	// SearchWithRetrieval returns ([]SearchResult, *RetrievalMeta, error) — a
-	// tuple with no room for leg_scores — while TypeScript searchWithRetrieval
-	// and Python search_with_retrieval return ONE envelope that carries all
-	// three. Takes one argument: how many leg summaries are being dropped, so
-	// the line only appears when something real was actually lost.
-	warnLegScoresDroppedByRetrievalForm = `debug_signals was set and the server returned %d leg_scores ` +
-		`entries, but SearchWithRetrieval's ([]SearchResult, *RetrievalMeta, error) tuple has no ` +
-		`room for them. Call SearchWithSignals instead — it returns the same single envelope that ` +
-		`TypeScript searchWithRetrieval and Python search_with_retrieval return.`
 )

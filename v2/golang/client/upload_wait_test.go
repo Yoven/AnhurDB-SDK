@@ -75,7 +75,10 @@ func TestWaitForUpload_404BeyondGraceIsARealError(t *testing.T) {
 
 func TestWaitForUpload_FailedStatusIsTerminal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		io.WriteString(responseWriter, `{"record_id":7,"status":"failed","error":"extract crashed"}`)
+		// The server reports a failed ingest through status and ONLY through
+		// status — the 7-key status map has no error field
+		// (server/handler/upload.go:220-236).
+		io.WriteString(responseWriter, `{"record_id":7,"uuid":"sess-7","type":"file","status":"failed","completed":false}`)
 	}))
 	defer server.Close()
 
@@ -87,7 +90,7 @@ func TestWaitForUpload_FailedStatusIsTerminal(t *testing.T) {
 	if waitErr != nil {
 		t.Fatalf("failed status is terminal data, not a transport error: %v", waitErr)
 	}
-	if result.Status != "failed" || result.Error == "" {
+	if result.Status != "failed" {
 		t.Fatalf("caller must receive the failed payload to inspect: %+v", result)
 	}
 }

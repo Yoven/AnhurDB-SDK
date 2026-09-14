@@ -81,7 +81,12 @@ for (const r of results) {
 
 // Get user profile (SDK sends GET /profile?tag=<container_tag>)
 const profile = await mem.profile();
-console.log(profile.static);  // identity, preferences
+console.log(profile.static.facts);   // string[]
+console.log(profile.stats.sessions); // number
+
+// `tag` filters WITHIN your tenant — it never selects another one. An unknown
+// tag is an EMPTY profile with HTTP 200, not an error.
+const other = await mem.profile("some-other-agent");
 ```
 
 ### Search & Discovery
@@ -139,7 +144,8 @@ strict-semantic guarantee verified.
 // BFS graph walk
 const graph = await mem.walk(42, 3);
 
-// Semantic walk (vector-weighted edges)
+// Semantic walk (vector-weighted edges). `graph.nodes` are FULL records;
+// `graph.truncated` is sent by /walk only, so it is undefined here.
 const semantic = await mem.walkSemantic(42, 3);
 
 // Record context (1-hop neighbors)
@@ -165,6 +171,7 @@ const entity = await mem.upsertEntity("Google", {
 });
 
 // Entity graph and timeline
+// Omit `depth` to get the SERVER's default of 1 — the SDK sends no param.
 const graph = await mem.entityGraph(entity.id, 2);
 const timeline = await mem.entityTimeline(entity.id);
 
@@ -186,7 +193,9 @@ const linked = await mem.getRecordEntities(42);
 const contents = await mem.batchReadContent([1, 2, 3, 4, 5]);
 
 // Bulk status update
-await mem.batchUpdateStatus([10, 11, 12], "archived");
+// The server acks with a message only — it does NOT report a row count.
+const ack = await mem.batchUpdateStatus([10, 11, 12], "archived");
+console.log(ack.message); // "marked consolidated"
 ```
 
 ### File Upload
@@ -201,8 +210,9 @@ const upload = await mem.uploadFile("report.pdf", fileBytes, {
 // Shared Data (tenant):
 await mem.uploadFile("handbook.pdf", fileBytes, { mode: "tenant_shared" });
 
-// Poll processing status
-const status = await mem.uploadStatus(upload.id);
+// Poll processing status. The polling key is `record_id` — there is no `id`
+// on the upload ack (handler/upload.go:109-119 sends a fixed nine-key map).
+const status = await mem.uploadStatus(upload.record_id!);
 console.log(status.status); // "processing" | "completed" | "failed"
 ```
 
@@ -226,14 +236,31 @@ await mem.openSession();
 // Local id only (does NOT register — call createSession after)
 await mem.newSession();
 
-// List all sessions with stats
+// List all sessions with stats (auto-paged). The freshness key is
+// `last_activity`; `types` is a per-type histogram.
 const sessions = await mem.listSessions();
+console.log(sessions[0].last_activity, sessions[0].types);
 
 // Full session history (paginated)
 const history = await mem.getSessionHistory("session-uuid", 50, 0);
 
 // Thematic clusters within a session
 const clusters = await mem.getSessionClusters("session-uuid");
+```
+
+### Typed create (POST /records, no extraction)
+
+```typescript
+// The session is the FIRST argument and is REQUIRED — 3.0.0 removed the
+// silent fallback to the client's ambient session.
+const created = await mem.create(sessionId, "Ship the parity release", {
+  type: "decision",
+  score: 9,
+  status: "saved",
+  relatedIds: [anchorEpisodicId],
+  validFrom: "2026-09-14T00:00:00Z",
+  metadata: { origin: "release-notes" },
+});
 ```
 
 ### Record CRUD

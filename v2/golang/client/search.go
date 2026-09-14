@@ -69,61 +69,39 @@ func (m *Memory) Search(ctx context.Context, query string, sessions []string, op
 // "retrieval" key to the response — nil is not an error, it just means the
 // server built no RetrievalMeta for this query.
 //
-// It does NOT return leg_scores: the tuple has no room for a third block, and
-// widening it would break the same callers the tuple exists to protect. When
-// WithDebugSignals() was set and the server actually sent leg scores, this
-// method LOGS that they are being dropped and names the method that carries
-// them. Use SearchWithSignals for the same single envelope that TypeScript
-// searchWithRetrieval and Python search_with_retrieval return.
-func (m *Memory) SearchWithRetrieval(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, *RetrievalMeta, error) {
-	outcome, searchErr := m.runSearch(ctx, query, sessions, opts...)
-	if searchErr != nil {
-		return nil, nil, searchErr
-	}
-	// Junior Tip [why this warns instead of silently dropping, 2026-09-05]: this
-	// method's tuple has no room for leg_scores, while TypeScript
-	// searchWithRetrieval and Python search_with_retrieval both return them from
-	// their single envelope. Go cannot add a fourth return value without breaking
-	// every existing caller, so the tuple stays and the LOSS is announced — a
-	// caller who set WithDebugSignals() and got nothing back would otherwise
-	// conclude the server produced no leg scores, which is the same
-	// "absence read as zero" defect the ADR-0031 guard exists to prevent.
-	// The rich form is SearchWithSignals; see its doc comment.
-	if requestConfig := applyReadOptions(opts); requestConfig.debugSignals && len(outcome.LegScores) > 0 {
-		// Same flagless writer as every other warning this SDK emits
-		// (search_mode.go): one voice, one format, no timestamp glued to a
-		// sentence three SDKs compare byte for byte. NOT deduplicated — this
-		// one names a COUNT of dropped leg_scores, so a second call that
-		// dropped a different number is genuinely new information, and it has
-		// no TypeScript counterpart whose cadence it would have to match.
-		sdkWarningLogger.Printf(warningPrefix+warnLegScoresDroppedByRetrievalForm, len(outcome.LegScores))
-	}
-	return outcome.Results, outcome.Retrieval, nil
+// It returns the WHOLE envelope the server sent — Results, Retrieval and
+// LegScores — in one *SearchOutcome.
+//
+// Junior Tip [why this stopped being a 3-tuple, 2026-09-14]: the old signature
+// was ([]SearchResult, *RetrievalMeta, error). leg_scores is a TOP-LEVEL key of
+// the search response, a sibling of retrieval, so the tuple structurally could
+// not carry it — and the SDK compensated by logging a warning that leg scores
+// were being dropped, then by growing a FOURTH search method to return them.
+// A method that cannot express its own endpoint's answer is not an API, it is a
+// migration waiting to happen. SearchOutcome{Results, Retrieval, LegScores} is
+// field-for-field the TypeScript SearchWithRetrievalResult and the Python
+// SearchResponse, so all three SDKs now return one envelope from one method.
+//
+// Migration from the tuple form is two lines:
+//
+//	results, meta, err := mem.SearchWithRetrieval(ctx, q, sessions)   // before
+//	outcome, err := mem.SearchWithRetrieval(ctx, q, sessions)         // after
+//	// then outcome.Results / outcome.Retrieval / outcome.LegScores
+//
+// Retrieval is nil when the server attached no "retrieval" key to the response.
+// nil is not an error: it means the server built no RetrievalMeta for this
+// query.
+func (m *Memory) SearchWithRetrieval(ctx context.Context, query string, sessions []string, opts ...SearchOption) (*SearchOutcome, error) {
+	return m.runSearch(ctx, query, sessions, opts...)
 }
 
-// SearchWithSignals is Search plus EVERYTHING the server reported about how it
-// found the hits: the RetrievalMeta and, under WithDebugSignals, the per-leg
-// LegScoreSummary distributions.
+// SearchWithSignals is the pre-3.0.0 name for SearchWithRetrieval.
 //
-// Junior Tip [why a third entry point rather than widening SearchWithRetrieval,
-// 2026-09-05]: SearchWithRetrieval's ([]SearchResult, *RetrievalMeta, error)
-// signature is public API that callers in other repositories already assign to
-// three variables — adding a fourth return value would break every one of them
-// at compile time, for a signal most of them never read. The same reasoning
-// that gave SearchWithRetrieval its own method applies once more, and this time
-// the return type is a STRUCT (SearchOutcome), so the next signal ADR adds a
-// field instead of a fifth return value.
-//
-// Junior Tip [this is the method that matches the other two SDKs, 2026-09-05]:
-// SearchOutcome{Results, Retrieval, LegScores} is field-for-field the TypeScript
-// SearchWithRetrievalResult{results, retrieval, legScores} and the Python
-// SearchResponse{.results, .retrieval, .leg_scores}. One envelope carrying all
-// three blocks is the SHARED MENTAL MODEL of the three SDKs; only the Go method
-// NAME differs, because SearchWithRetrieval was already taken by the narrower
-// tuple that shipped first and cannot be widened without breaking callers.
-// Reach for this one whenever you set WithDebugSignals().
+// Deprecated: use SearchWithRetrieval, which now returns the same
+// *SearchOutcome. This alias exists so 2.x callers survive the 3.0.0 rename by
+// one release; it is removed in 4.0.0. One break, not two.
 func (m *Memory) SearchWithSignals(ctx context.Context, query string, sessions []string, opts ...SearchOption) (*SearchOutcome, error) {
-	return m.runSearch(ctx, query, sessions, opts...)
+	return m.SearchWithRetrieval(ctx, query, sessions, opts...)
 }
 
 // runSearch is the shared implementation behind Search, SearchWithRetrieval and

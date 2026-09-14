@@ -38,6 +38,7 @@ from .connection import HTTPConnection
 from .search import HybridSearchMixin
 from .search_parse import _parse_typed_records
 from .session_filter import normalize_sessions
+from ..models.smart_search import SmartSearchResponse
 from ..models import SearchResult
 
 
@@ -224,7 +225,7 @@ class SearchScopeMixin(HybridSearchMixin):
         limit: int = 10,
         memory_type: Optional[str] = None,
         scope: str = "sessions",
-    ) -> Any:
+    ) -> SmartSearchResponse:
         """Full-text search with cognitive weight boosting.
 
         Prefer this over ``search()`` for conceptual text queries (no
@@ -244,7 +245,10 @@ class SearchScopeMixin(HybridSearchMixin):
             scope:       Search plane (default ``sessions``).
 
         Returns:
-            Search results ranked by cognitive relevance."""
+            ``SmartSearchResponse`` (BREAKING in 3.0.0 — was the raw dict).
+            ``results`` is ``None``, not ``[]``, when nothing matched, and
+            ``relevance`` is a LEXICAL score. Both traps, and why they are
+            traps, are documented on the model in ``models/smart_search.py``."""
         resolved_sessions = normalize_sessions(sessions)
         params: List[Tuple[str, str]] = [
             ("q", query),
@@ -254,9 +258,10 @@ class SearchScopeMixin(HybridSearchMixin):
         params.extend(("sessions", session) for session in resolved_sessions)
         if memory_type:
             params.append(("type", memory_type))
-        return await self._connection.get(
+        data = await self._connection.get(
             "/api/v1/search/smart", params=params
         )
+        return SmartSearchResponse.model_validate(data if isinstance(data, dict) else {})
 
     async def recall(
         self,

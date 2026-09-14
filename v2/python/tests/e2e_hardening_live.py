@@ -52,10 +52,10 @@ async def test_score_type_persist():
             score=8,
             type=MemoryType.PREFERENCE,
         )
-        check("add returned a record", bool(result["records"]), str(result))
-        record_id = result["records"][0]["id"]
-        check("mode is oss/direct (records path)", result["mode"] == "oss",
-              f"mode={result['mode']}")
+        check("add returned a record", bool(result.records), str(result))
+        record_id = result.records[0].id
+        check("mode is oss/direct (records path)", result.mode == "oss",
+              f"mode={result.mode}")
 
         row = await _find_record(mem._client, record_id)
         check("type persisted as 'preference'", row.get("type") == "preference",
@@ -73,7 +73,7 @@ async def test_metadata_merge():
             type=MemoryType.FACT,
             metadata={"project": "apollo", "priority": "high"},
         )
-        record_id = result["records"][0]["id"]
+        record_id = result.records[0].id
         row = await _find_record(mem._client, record_id)
         import json
         meta = json.loads(row.get("metadata", "{}"))
@@ -101,7 +101,7 @@ async def test_long_content_not_truncated():
     big = "Lorem ipsum dolor sit amet. " * 80  # ~2240 chars
     async with Memory(api_key=API_KEY, url=BASE_URL, user_id="e2e_hardening") as mem:
         result = await mem.add(big, type=MemoryType.FACT)
-        record_id = result["records"][0]["id"]
+        record_id = result.records[0].id
         content = await mem.read_content(record_id)
         check("returned as str", isinstance(content, str),
               f"type={type(content).__name__}")

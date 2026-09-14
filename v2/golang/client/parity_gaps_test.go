@@ -143,8 +143,10 @@ func TestQueryBuilderExecuteRunsAgainstMemory(t *testing.T) {
 // TestUserAgentIsDerivedFromVersion is the anti-drift trap. Before version.go
 // the User-Agent was a literal that no manifest, tag or changelog agreed with.
 func TestUserAgentIsDerivedFromVersion(t *testing.T) {
-	if Version != "2.1.0" {
-		t.Fatalf("Version=%q want 2.1.0 (converged with the TypeScript and Python SDKs)", Version)
+	// The literal moves with the release, and it moves in ALL THREE SDKs in the
+	// same pass — that is the invariant this line pins, not the number itself.
+	if Version != "3.0.0" {
+		t.Fatalf("Version=%q want 3.0.0 (converged with the TypeScript and Python SDKs)", Version)
 	}
 	if UserAgent != "AnhurSDK-Golang/"+Version {
 		t.Fatalf("UserAgent=%q must be derived from Version, never typed again", UserAgent)

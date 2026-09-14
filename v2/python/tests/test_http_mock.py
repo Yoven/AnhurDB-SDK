@@ -111,10 +111,19 @@ async def handle_search(request):
 async def handle_profile(request):
     """Simulates GET /api/v1/profile."""
     tag = request.query.get("tag", "")
+    # The REAL envelope (handler/profile.go:27-51), not an invented one: a mock
+    # that answers a shape the server never sends proves nothing about parsing.
     return web.json_response({
-        "static": {"role": "engineer", "company": "Google"},
-        "dynamic": {"recent_topic": "NLP"},
-        "stats": {"total_records": 42},
+        "static": {
+            "facts": ["works as an engineer"],
+            "preferences": ["prefers Go"],
+            "decisions": [],
+            "risks": [],
+            "emotions": [],
+            "highlight": [],
+        },
+        "dynamic": {"recent_tasks": ["ship 3.0.0"], "recent_topics": ["NLP"]},
+        "stats": {"total_records": 42, "sessions": 3, "last_active": "2026-09-14"},
     })
 
 
@@ -306,9 +315,9 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("I'm a data scientist at Google")
-            self.assertEqual(result["mode"], "cloud")
-            self.assertEqual(len(result["records"]), 2)
-            self.assertEqual(result["records"][0]["id"], 42)
+            self.assertEqual(result.mode, "cloud")
+            self.assertEqual(len(result.records), 2)
+            self.assertEqual(result.records[0].id, 42)
             self.assertEqual(len(self.app["sessions_created"]), 1)
 
     @unittest_run_loop
@@ -332,9 +341,10 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             profile = await mem.profile()
-            self.assertEqual(profile["static"]["role"], "engineer")
-            self.assertEqual(profile["dynamic"]["recent_topic"], "NLP")
-            self.assertEqual(profile["stats"]["total_records"], 42)
+            self.assertEqual(profile.static.facts, ["works as an engineer"])
+            self.assertEqual(profile.dynamic.recent_topics, ["NLP"])
+            self.assertEqual(profile.stats.total_records, 42)
+            self.assertEqual(profile.stats.sessions, 3)
 
     @unittest_run_loop
     async def test_read_content(self):
@@ -350,15 +360,15 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             sessions = await mem.list_sessions()
             self.assertEqual(len(sessions), 1)
-            self.assertEqual(sessions[0]["uuid"], "s1")
+            self.assertEqual(sessions[0].uuid, "s1")
 
     @unittest_run_loop
     async def test_walk(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             result = await mem.walk(42, depth=2)
-            self.assertIn("nodes", result)
-            self.assertIn("edges", result)
+            self.assertIsInstance(result.nodes, list)
+            self.assertIsInstance(result.edges, list)
 
     @unittest_run_loop
     async def test_walk_semantic_dijkstra_backward_compat(self):
@@ -367,8 +377,8 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             result = await mem.walk_semantic(42, depth=2)
-            self.assertIn("nodes", result)
-            self.assertIn("edges", result)
+            self.assertIsInstance(result.nodes, list)
+            self.assertIsInstance(result.edges, list)
         body = self.app["walk_semantic_body"]
         self.assertEqual(body, {"seed_id": 42, "depth": 2})
 
@@ -407,8 +417,8 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             result = await mem.get_context(42)
-            self.assertIn("target", result)
-            self.assertIn("neighbors", result)
+            self.assertIsNotNone(result.target)
+            self.assertIsInstance(result.neighbors, list)
 
     @unittest_run_loop
     async def test_recent(self):
@@ -430,16 +440,20 @@ class TestMemoryOSSFallback(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("Test text for OSS mode")
-            self.assertEqual(result["mode"], "oss")
-            self.assertEqual(result["records"][0]["id"], 100)
+            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.records[0].id, 100)
 
     @unittest_run_loop
     async def test_profile_404_returns_empty(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             profile = await mem.profile()
-            self.assertEqual(profile["status"], "not_available")
-            self.assertEqual(profile["static"], {})
+            # 404 = the server has no profile engine. An all-default
+            # ProfileResult says exactly that; the old dict carried a phantom
+            # `status: "not_available"` key the server has never sent.
+            self.assertEqual(profile.stats.total_records, 0)
+            self.assertEqual(profile.static.facts, [])
+            self.assertFalse(hasattr(profile, "status"))
 
 
 class TestAnhurClientMock(AioHTTPTestCase):
@@ -452,14 +466,15 @@ class TestAnhurClientMock(AioHTTPTestCase):
     async def test_create_record(self):
         url = f"http://localhost:{self.server.port}"
         async with AnhurClient(url=url, api_key="test-key") as client:
-            result = await client.create(CreateRequest(
-                uuid="test-session",
+            result = await client.create(
+                "test-session",
+                "Full content",
                 type=MemoryType.FACT,
-                summary="Test fact",
-                content="Full content",
                 score=8,
-            ))
-            self.assertEqual(result["id"], 100)
+            )
+            self.assertEqual(result.id, 100)
+            self.assertEqual(result.records[0].id, 100)
+            self.assertEqual(result.mode, "oss")
 
     @unittest_run_loop
     async def test_batch_read_content(self):
@@ -475,7 +490,7 @@ class TestAnhurClientMock(AioHTTPTestCase):
         async with AnhurClient(url=url, api_key="test-key") as client:
             entities = await client.search_entities(query="Google")
             self.assertEqual(len(entities), 1)
-            self.assertEqual(entities[0]["name"], "Google")
+            self.assertEqual(entities[0].name, "Google")
 
     @unittest_run_loop
     async def test_search_with_ast(self):
@@ -735,7 +750,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
         async with AnhurClient(url=url, api_key="test-key") as client:
             from anhurdb.models import CreateRequest, MemoryType
             with self.assertRaises(AnhurQueryError) as ctx:
-                await client.create(CreateRequest(uuid="s1", content="test"))
+                await client.create("s1", "test")
             self.assertIn("409", str(ctx.exception))
 
     @unittest_run_loop
@@ -811,7 +826,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("plain text", mode="ingest")
-            self.assertEqual(result["mode"], "cloud")
+            self.assertEqual(result.mode, "cloud")
         self.assertEqual(len(self.app["ingest_calls"]), 1)
         self.assertEqual(len(self.app["records_calls"]), 0)
 
@@ -823,7 +838,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("pinned score", mode="ingest", score=8)
-            self.assertEqual(result["mode"], "oss")
+            self.assertEqual(result.mode, "oss")
         self.assertEqual(
             len(self.app["ingest_calls"]), 0,
             "ingest must be skipped entirely when a pin is present",
@@ -841,7 +856,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
             result = await mem.add(
                 "pinned type", mode="ingest", type=MemoryType.FACT
             )
-            self.assertEqual(result["mode"], "oss")
+            self.assertEqual(result.mode, "oss")
         self.assertEqual(len(self.app["ingest_calls"]), 0)
         self.assertEqual(len(self.app["records_calls"]), 1)
         self.assertEqual(self.app["records_calls"][0]["type"], "fact")
@@ -856,7 +871,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
             result = await mem.add(
                 "pinned metadata", mode="ingest", metadata={"k": "v"}
             )
-            self.assertEqual(result["mode"], "oss")
+            self.assertEqual(result.mode, "oss")
         self.assertEqual(len(self.app["ingest_calls"]), 0)
         self.assertEqual(len(self.app["records_calls"]), 1)
         sent_metadata = json.loads(self.app["records_calls"][0]["metadata"])
@@ -871,7 +886,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("empty metadata", mode="ingest", metadata={})
-            self.assertEqual(result["mode"], "cloud")
+            self.assertEqual(result.mode, "cloud")
         self.assertEqual(len(self.app["ingest_calls"]), 1)
         self.assertEqual(len(self.app["records_calls"]), 0)
 
@@ -882,7 +897,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("regular text", mode="regular")
-            self.assertEqual(result["mode"], "oss")
+            self.assertEqual(result.mode, "oss")
         self.assertEqual(len(self.app["ingest_calls"]), 0)
         self.assertEqual(len(self.app["records_calls"]), 1)
 

@@ -24,8 +24,8 @@ import (
 // use plain Add(ctx, text) / MCP ingest_memory instead. No satellite LLM job;
 // billing is embed-only for this one record.
 //
-// Caller controls type, score, related_ids, metadata, status, and valid_from
-// through functional options. Bare Create(ctx, sessionUUID, content) defaults
+// Caller controls type, score, related_ids, metadata, status, valid_from and
+// valid_until through functional options. Bare Create(ctx, sessionUUID, content) defaults
 // to episodic / score 5 / saved.
 //
 //	mem.Create(ctx, "chat-42", "user asked about pricing") // defaults
@@ -33,8 +33,8 @@ import (
 //	    client.WithCreateType("fact"),
 //	    client.WithCreateScore(9),
 //	    client.WithCreateRelatedIDs([]int64{101, 102}),
-//	    client.WithCreateValidFrom("2026-01-01T00:00:00Z"))
-//
+//	    client.WithCreateValidFrom("2026-01-01T00:00:00Z"),
+//	    client.WithCreateValidUntil("2027-01-01T00:00:00Z"))
 func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts ...CreateOption) (*AddResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -86,6 +86,15 @@ func (m *Memory) Create(ctx context.Context, sessionUUID, content string, opts .
 			extraMetadata = map[string]interface{}{}
 		}
 		extraMetadata["valid_from"] = cfg.validFrom
+	}
+	// Same story for the closing bound: service.createRecord falls back to the
+	// metadata keys for BOTH halves of the bi-temporal window when the dedicated
+	// input fields are empty, and the REST create route never fills them.
+	if cfg.validUntil != "" {
+		if extraMetadata == nil {
+			extraMetadata = map[string]interface{}{}
+		}
+		extraMetadata["valid_until"] = cfg.validUntil
 	}
 
 	payload := map[string]interface{}{
@@ -196,7 +205,6 @@ func (m *Memory) SearchSession(ctx context.Context, sessionUUID, query string, o
 //
 // (WithAsOf/WithSince/WithUntil) scope created_at; as_of is mutually exclusive
 // with since/until (the server returns HTTP 400 on violation — we surface it).
-//
 func (m *Memory) ManifestGlobal(ctx context.Context, keyword string, limit, offset int, opts ...ReadOption) (*ManifestPage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -226,7 +234,6 @@ func (m *Memory) ManifestGlobal(ctx context.Context, keyword string, limit, offs
 // ManifestSession returns a paginated page of one session's record manifest via
 // GET /api/v1/chats/{uuid}/manifest. Same envelope as ManifestGlobal, scoped to
 // the session.
-//
 func (m *Memory) ManifestSession(ctx context.Context, sessionUUID, keyword string, limit, offset int, opts ...ReadOption) (*ManifestPage, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -268,16 +275,13 @@ func (m *Memory) ManifestSession(ctx context.Context, sessionUUID, keyword strin
 //
 // status (optional, "" = no filter) is an exact status match
 // (e.g. "saved","processing","failed").
-//
-func (m *Memory) ListChat(ctx context.Context, sessionUUID string, consolidated *bool, status string, opts ...ReadOption) ([]models.Record, error) {
+func (m *Memory) ListChat(ctx context.Context, sessionUUID string, consolidated *bool, status string) ([]models.Record, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 	if sessionUUID == "" {
 		return nil, fmt.Errorf("ListChat: sessionUUID is required")
 	}
-
-	_ = opts
 
 	params := url.Values{}
 	if consolidated != nil {
@@ -301,7 +305,6 @@ func (m *Memory) ListChat(ctx context.Context, sessionUUID string, consolidated 
 
 // CountByType returns a {type: count} map by paging the global manifest and
 // tallying each record's "type" field. It is the MCP count_by_type contract.
-//
 func (m *Memory) CountByType(ctx context.Context, opts ...ReadOption) (map[string]int, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -336,7 +339,6 @@ func (m *Memory) CountByType(ctx context.Context, opts ...ReadOption) (map[strin
 
 // ListTypes returns the canonical record-type taxonomy as a local, static slice
 // — NO network call. It mirrors the MCP list_types tool, which exposes the same
-//
 func (m *Memory) ListTypes() []models.MemoryType {
 	return []models.MemoryType{
 		models.TypeEpisodic,
@@ -368,16 +370,13 @@ func (m *Memory) ListTypes() []models.MemoryType {
 // other value MUST be 1..5 inclusive or the server returns HTTP 400
 // "max_depth must be an integer between 1 and 5" (we surface that error rather
 // than clamping, so an out-of-range value fails loud).
-//
-func (m *Memory) GetGrounding(ctx context.Context, recordID int64, maxDepth int, opts ...ReadOption) (*GroundingResult, error) {
+func (m *Memory) GetGrounding(ctx context.Context, recordID int64, maxDepth int) (*GroundingResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 	if recordID <= 0 {
 		return nil, fmt.Errorf("GetGrounding: recordID must be > 0")
 	}
-
-	_ = opts
 
 	params := url.Values{}
 	if maxDepth > 0 {
@@ -423,7 +422,6 @@ func applyTemporalParams(params url.Values, cfg searchConfig) {
 // decodeManifestPage decodes the manifest envelope shared by ManifestGlobal and
 // ManifestSession: {"records":[Record],"count":int,"limit":int,"offset":int,
 // "has_more":bool}. label names the call site for clearer parse errors.
-//
 func decodeManifestPage(raw []byte, label string) (*ManifestPage, error) {
 	switch firstJSONToken(raw) {
 	case '{':

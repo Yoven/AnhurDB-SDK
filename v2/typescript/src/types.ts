@@ -173,18 +173,16 @@ export type {
 } from "./smartSearchResults.js";
 
 // ── profile() ────────────────────────────────────────────────
-
-/** Value returned by `Memory.profile()`. */
-export interface ProfileResult {
-  /** Static profile facts (identity, preferences, etc.). */
-  static: Record<string, unknown>;
-  /** Dynamic profile state (recent topics, mood, etc.). */
-  dynamic: Record<string, unknown>;
-  /** Aggregate statistics. */
-  stats: Record<string, unknown>;
-  /** Raw server response (in case fields differ by version). */
-  [key: string]: unknown;
-}
+//
+// GET /api/v1/profile answers three CLOSED blocks. The concrete interfaces
+// live in `profileTypes.ts` (house 300-line cut) and are re-exported here
+// because `types.ts` is the import path every module already uses.
+export type {
+  ProfileStatic,
+  ProfileDynamic,
+  ProfileStats,
+  ProfileResult,
+} from "./profileTypes.js";
 
 // ── Extended Memory types ────────────────────────────────────
 
@@ -219,11 +217,9 @@ export interface MemoryRecord {
   valid_until?: string;
 }
 
-/** Result of a graph walk starting from a given record. */
-export interface WalkResult {
-  nodes: Array<{ id: number; type: string; summary: string; weight: number }>;
-  edges: Array<{ source: number; target: number; type: string }>;
-}
+// POST /api/v1/walk and /walk/semantic. Shapes live in `walkTypes.ts`
+// (house 300-line cut); re-exported here as the established import path.
+export type { WalkEdge, WalkResult } from "./walkTypes.js";
 
 /**
  * Goal-directed steering mode for {@link WalkSemanticOptions.target}.
@@ -269,12 +265,9 @@ export interface ContextResult {
   neighbors: MemoryRecord[];
 }
 
-/** Aggregate stats for a single session. */
-export interface SessionStats {
-  uuid: string;
-  record_count: number;
-  last_active: string;
-}
+// One row of GET /api/v1/sessions/stats. The shape lives beside the paging
+// loop that consumes it, in `sessionStats.ts`; re-exported here unchanged.
+export type { SessionStats } from "./sessionStats.js";
 
 // ── Entity Knowledge Graph (Layer 2) ─────────────────────────
 
@@ -346,55 +339,33 @@ export interface EntityTimelineResult {
 }
 
 // ── File Upload ──────────────────────────────────────────────
-
-/** Result from file upload. Contains ID for status polling. */
-export interface UploadResult {
-  record_id?: number;
-  id?: number;
-  status?: string;
-  filename?: string;
-  uuid?: string;
-}
-
-/**
- * Result from upload status polling — `GET /api/v1/upload/{id}/status`.
- *
- * Mirrors `UploadHandler.UploadStatus` in
- * `AnhurDB/server/handler/upload.go` EXACTLY: the handler builds a fixed map of
- * seven keys and never adds another. Every key below exists there; nothing that
- * exists there is missing here.
- *
- * Junior Tip [a declared field the server never sends is worse than a missing
- * one]: this interface used to declare `filename`, `error`, `record_ids` and a
- * bare `id`. None of them are ever emitted — the handler answers
- * `record_id/uuid/status/type/summary/metadata/completed`. The cost was not
- * cosmetic: `waitForUpload` used `Boolean(payload.error)` as one of its
- * TERMINAL conditions, so that branch was unreachable code that read as a
- * safety net. A failed ingest is reported through `status`, and only through
- * `status`. When you add a field here, open the handler first; the type is a
- * claim about the server, not a wish list.
- */
-export interface UploadStatusResult {
-  /** The file record's id (server key is `record_id`, never `id`). */
-  record_id?: number;
-  /** Stable record uuid. */
-  uuid?: string;
-  /** "processing", "completed", "saved", or "failed". */
-  status: string;
-  /** Always `"file"` — the handler rejects anything else with HTTP 400. */
-  type?: string;
-  /** Server-computed: true when `status` is `completed` or `saved`. */
-  completed?: boolean;
-  summary?: string;
-  /** Raw metadata JSON string, exactly as stored. */
-  metadata?: string;
-}
+//
+// POST /api/v1/upload and GET /api/v1/upload/{id}/status. Both shapes live in
+// `uploadTypes.ts` (house 300-line cut); re-exported here unchanged because
+// `types.ts` is the import path every module and `index.ts` already use.
+export type { UploadResult, UploadStatusResult } from "./uploadTypes.js";
 
 // ── Batch Operations ─────────────────────────────────────────
 
-/** Result from batch status update. */
+/**
+ * Result from batch status update — `PATCH /api/v1/records/mark-consolidated`.
+ *
+ * Junior Tip [`updated_count` never existed — 2026-09-14]: this interface used
+ * to declare exactly one field, `updated_count: number`, and the handler has
+ * never sent it. `handler/record_batch.go:212` is the only success path and it
+ * writes a single literal: `{"message": "marked consolidated"}`. So every
+ * caller writing `if (result.updated_count === ids.length)` was comparing
+ * `undefined` to a number — a check that is always false, on a type that
+ * promised the number was there. The server does not tell you how many rows
+ * it touched on this route; the honest type says so, and a caller who needs
+ * the count must re-read the records.
+ *
+ * The exported NAME is kept (it is public API via `index.ts`): changing the
+ * body is the fix, deleting the name would be a second, pointless break.
+ */
 export interface BatchUpdateResult {
-  updated_count: number;
+  /** Server ack, currently the literal `"marked consolidated"`. */
+  message: string;
 }
 
 // ── Delete file (whole ingested document) ────────────────────
@@ -679,19 +650,36 @@ export interface GroundingResult {
  *
  * POST /api/v1/records (NOT the ingest pipeline), so every field is persisted
  * exactly as supplied — unlike `add()`, whose cloud-ingest path owns its own
- * type/score. Mirrors the Go `Create` opts (type/score/related_ids/valid_from)
- * and the Python `create(req)`. All optional; `type` defaults to "episodic"
- * and `score` to 5, matching the other two SDKs.
+ * type/score. The optional field set is identical in all three SDKs:
+ * `type, score, status, related_ids, valid_from, valid_until, metadata`.
+ * All optional; `type` defaults to "episodic" and `score` to 5.
+ *
+ * Junior Tip [the session is NOT in here any more — 3.0.0, 2026-09-14]: this
+ * interface used to carry `sessionUuid` AND its alias `sessionId`, and
+ * `create()` fell back to the client's ambient session when both were absent.
+ * Three ways to name one thing, plus an invisible fourth. A caller who forgot
+ * the option did not get an error — the record landed in whatever session the
+ * Memory instance happened to be holding, which is the kind of misfile nobody
+ * notices until a search comes back with someone else's turn in it. The
+ * session is now the FIRST POSITIONAL ARGUMENT of `create()`, exactly as in
+ * Go's `Create(ctx, sessionUUID, content, opts...)`: `POST /api/v1/records`
+ * cannot succeed without a session and a body, so both are required, and
+ * forgetting one is a compile error instead of a silent misfile.
  */
 export interface CreateOptions {
-  /** Session UUID to place the record under. Defaults to the current session. */
-  sessionUuid?: string;
-  /** Alias for sessionUuid (same meaning as ingest add options.sessionId). */
-  sessionId?: string;
   /** Memory type (default "episodic"). Written verbatim. */
   type?: MemoryType;
   /** Importance rating 1-10 (default 5). Written verbatim. */
   score?: number;
+  /**
+   * Record status, written verbatim (default "saved").
+   *
+   * Present for parity with Go's `WithCreateStatus` and Python's
+   * `CreateRequest.status` — the three SDKs expose ONE optional field set on
+   * this endpoint: type, score, status, related_ids, valid_from, valid_until,
+   * metadata. TypeScript was the only arm that could not set it.
+   */
+  status?: string;
   /** Parent/sibling record IDs to attach as `related_ids`. */
   relatedIds?: number[];
   /** RFC3339 UTC start of the record's validity window (`valid_from`). */

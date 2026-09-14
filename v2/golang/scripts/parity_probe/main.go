@@ -118,7 +118,7 @@ func main() {
 	if profileErr != nil {
 		failOp("Profile", profileErr, "")
 	} else {
-		pass("Profile", fmt.Sprintf("status=%s", profile.Status))
+		pass("Profile", fmt.Sprintf("records=%d sessions=%d", profile.Stats.TotalRecords, profile.Stats.Sessions))
 	}
 
 	counts, countErr := mem.CountByType(ctx)

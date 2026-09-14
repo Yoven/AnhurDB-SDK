@@ -81,7 +81,7 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
                 type=MemoryType.PREFERENCE,
             )
             # Routed to the records (oss) path, not cloud ingest.
-            self.assertEqual(result["mode"], "oss")
+            self.assertEqual(result.mode, "oss")
             # The record sent is the preference, carrying score+type.
             sent = self.app["last_record"]
             self.assertEqual(sent["type"], "preference")
@@ -112,7 +112,7 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
         async with Memory(api_key="k", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("plain text, no options")
-            self.assertEqual(result["mode"], "cloud")
+            self.assertEqual(result.mode, "cloud")
             ingest_payload = self.app["last_ingest"]
             self.assertEqual(
                 set(ingest_payload.keys()),
@@ -136,7 +136,7 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
             result = await mem.add(
                 "plain with pins", score=8, type=MemoryType.PREFERENCE
             )
-            self.assertEqual(result["mode"], "oss")
+            self.assertEqual(result.mode, "oss")
             self.assertIn("last_record", self.app)
             self.assertNotIn("last_ingest", self.app)
             self.assertEqual(self.app["last_record"]["score"], 8)

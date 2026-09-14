@@ -11,7 +11,38 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
 )
+
+// WalkResult contains the graph traversal output from the walk endpoints.
+//
+// Wire envelope is exactly {nodes, edges, truncated}
+// (server/handler/record_search_graph.go:219-223). It carries NO start_id and
+// NO depth: this struct declared both until 2026-09-14 and neither has ever
+// been sent, so a caller reading result.Depth got 0 and concluded the traversal
+// went nowhere.
+//
+// Junior Tip [Truncated is the honest half of an empty-looking answer]: the
+// handler stops the BFS the moment it holds max_nodes records and sets
+// truncated=true. Without this field a capped walk and a genuinely small
+// subgraph decode identically, and "the graph is sparse here" is exactly the
+// wrong conclusion to reach silently.
+type WalkResult struct {
+	Nodes     []models.Record `json:"nodes"`
+	Edges     []WalkEdge      `json:"edges"`
+	Truncated bool            `json:"truncated"`
+}
+
+// WalkEdge is a single edge connecting two nodes in a graph walk.
+//
+// Wire shape is exactly {"source","target"} — the handler builds an anonymous
+// struct with those two int64 fields and nothing else. There is no edge type,
+// no weight and no direction on this route.
+type WalkEdge struct {
+	Source int64 `json:"source"`
+	Target int64 `json:"target"`
+}
 
 // defaultWalkDepth is the traversal depth used when the caller passes a
 // non-positive depth.
@@ -40,17 +71,39 @@ func resolveWalkDepth(requestedDepth int) int {
 // direction:"both" means traverse both incoming and outgoing edges.
 // The server returns nodes and edges up to the specified depth; a depth <= 0
 // falls back to defaultWalkDepth, matching the TypeScript and Python SDKs.
+//
+// WithAsOf is the ONLY ReadOption this method honours. Any other option is
+// refused at call time with *UnsupportedOptionError.
+//
+// Junior Tip [why WithSince/WithUntil are refused rather than forwarded,
+// live-proved 2026-09-14]: the same walk answered 5 nodes / 7 edges bare,
+// 0 / 0 with as_of=2026-01-01, and 5 / 7 with since=2026-01-01 — i.e. `since`
+// went over the wire, the server answered HTTP 200, and the filter was dropped.
+// A window nobody applied is indistinguishable from a window that matched
+// everything. "Graph at instant T" is the only semantically clean snapshot of a
+// connected traversal, which is why the handler supports as_of alone
+// (server/handler/record_search_graph.go:32-38).
 func (m *Memory) Walk(ctx context.Context, startID int64, depth int, opts ...ReadOption) (*WalkResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
 	}
 
-	_ = opts
+	cfg := applyReadOptions(opts)
+	if optionErr := rejectUnsupportedReadOptions(cfg, "Walk",
+		"POST /api/v1/walk honours as_of only", "WithAsOf"); optionErr != nil {
+		return nil, optionErr
+	}
 
 	payload := map[string]interface{}{
 		"seed_id":   startID,
 		"depth":     resolveWalkDepth(depth),
 		"direction": "both",
+	}
+	// as_of turns the traversal into a snapshot: every BFS frontier is
+	// materialised with GetRecordsByIDsAsOf, so records created after the
+	// instant — and versions superseded before it — are simply absent.
+	if cfg.asOf != "" {
+		payload["as_of"] = cfg.asOf
 	}
 
 	respBytes, err := m.conn.PostRead(ctx, "/api/v1/walk", payload)

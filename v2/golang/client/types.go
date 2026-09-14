@@ -28,40 +28,14 @@ type RecordSummary struct {
 	Summary string `json:"summary"`
 }
 
-// ProfileResult contains the memory profile for a container tag.
-type ProfileResult struct {
-	Static  map[string]interface{} `json:"static"`
-	Dynamic map[string]interface{} `json:"dynamic"`
-	Stats   map[string]interface{} `json:"stats"`
-	Tag     string                 `json:"tag,omitempty"`
-	Status  string                 `json:"status,omitempty"`
-}
+// ProfileResult and its three blocks live in profile_types.go.
 
 // --------------------------------------------------------------------------
 // Graph traversal types
 // --------------------------------------------------------------------------
 
-// WalkResult contains the graph traversal output from the walk endpoint.
-type WalkResult struct {
-	StartID int64      `json:"start_id"`
-	Depth   int        `json:"depth"`
-	Nodes   []WalkNode `json:"nodes"`
-	Edges   []WalkEdge `json:"edges"`
-}
-
-// WalkNode is a single node in a graph walk result.
-type WalkNode struct {
-	ID      int64  `json:"id"`
-	Type    string `json:"type"`
-	Summary string `json:"summary"`
-}
-
-// WalkEdge is a single edge connecting two nodes in a graph walk.
-// Wire shape matches the REST contract: {"source","target"}.
-type WalkEdge struct {
-	Source int64 `json:"source"`
-	Target int64 `json:"target"`
-}
+// WalkResult and WalkEdge live in graph_walk.go, next to the two methods
+// that produce them. WalkNode was deleted: the server sends FULL records.
 
 // --------------------------------------------------------------------------
 // Topology / context types
@@ -203,7 +177,6 @@ type entitiesResponse struct {
 
 // EntitiesPage carries the paginated /api/v1/entities/list response: a slice
 // of entities for the requested page plus cursor metadata for the next call.
-//
 type EntitiesPage struct {
 	Entities   []Entity `json:"entities"`
 	Count      int      `json:"count"`
@@ -218,35 +191,7 @@ type EntitiesPage struct {
 // File upload types
 // --------------------------------------------------------------------------
 
-// UploadResult is returned by UploadFile — contains the upload ID
-// for status polling. Server returns ``record_id`` (preferred).
-type UploadResult struct {
-	RecordID int64  `json:"record_id"`
-	ID       int64  `json:"id"`
-	Status   string `json:"status,omitempty"`
-	Filename string `json:"filename,omitempty"`
-	UUID     string `json:"uuid,omitempty"`
-}
-
-// UploadID returns the server record id used for UploadStatus polling.
-func (uploadResult UploadResult) UploadID() int64 {
-	if uploadResult.RecordID != 0 {
-		return uploadResult.RecordID
-	}
-	return uploadResult.ID
-}
-
-// UploadStatusResult describes the processing status of a file upload.
-type UploadStatusResult struct {
-	RecordID  int64  `json:"record_id"`
-	ID        int64  `json:"id"`
-	Status    string `json:"status"` // "processing", "completed", "failed", "saved"
-	Completed bool   `json:"completed"`
-	Filename  string `json:"filename,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	Metadata  string `json:"metadata,omitempty"`
-}
+// UploadResult, UploadID() and UploadStatusResult live in upload_types.go.
 
 // --------------------------------------------------------------------------
 // Constructor options
@@ -295,13 +240,11 @@ func WithTimeout(d time.Duration) Option {
 }
 
 // AddOption configures a single Memory.Add call.
-//
 type AddOption func(*addConfig)
 
 // addConfig holds the per-call overrides for Memory.Add. A nil pointer field
 // means "caller did not specify — use the server/SDK default", which is how we
 // keep score/type from being silently forced when the caller omits them.
-//
 type addConfig struct {
 	score     *int
 	memType   *string
@@ -322,7 +265,6 @@ func WithScore(score int) AddOption {
 
 // WithType sets the memory type (e.g. "episodic", "semantic", "procedural").
 // When omitted, the SDK falls back to the historical default of "episodic".
-//
 func WithType(memType string) AddOption {
 	return func(cfg *addConfig) {
 		cfg.memType = &memType
@@ -332,7 +274,6 @@ func WithType(memType string) AddOption {
 // WithMetadata merges caller-supplied keys into the record metadata. The SDK
 // always sets container_tag; caller keys are layered on top (caller wins on a
 // key collision, except container_tag which the SDK owns).
-//
 func WithMetadata(metadata map[string]interface{}) AddOption {
 	return func(cfg *addConfig) {
 		cfg.metadata = metadata
@@ -341,7 +282,6 @@ func WithMetadata(metadata map[string]interface{}) AddOption {
 
 // WithSessionID pins the SESSION (uuid) the ingested record lands in. The tenant
 // comes from the API key; the session is the caller's own unit of conversation.
-//
 func WithSessionID(sessionID string) AddOption {
 	return func(cfg *addConfig) {
 		cfg.sessionID = sessionID
@@ -352,7 +292,6 @@ func WithSessionID(sessionID string) AddOption {
 // (POST /api/v1/ingest — default) and "regular" (POST /api/v1/records as
 // episodic). Callers must register the session via CreateSession before
 // either path succeeds on session-first servers.
-//
 func WithMode(writeMode string) AddOption {
 	return func(cfg *addConfig) {
 		cfg.writeMode = writeMode
@@ -360,11 +299,9 @@ func WithMode(writeMode string) AddOption {
 }
 
 // CreateSessionOption configures Memory.CreateSession.
-//
 type CreateSessionOption func(*createSessionConfig)
 
 // createSessionConfig holds optional overrides for POST /api/v1/sessions.
-//
 type createSessionConfig struct {
 	sessionID string
 	metadata  map[string]interface{}
@@ -375,7 +312,6 @@ type createSessionConfig struct {
 // (parity with Python create_session / TypeScript createSession / MCP).
 // To register a local id: NewSession() then CreateSession(WithCreateSessionID(...))
 // or OpenSession().
-//
 func WithCreateSessionID(sessionID string) CreateSessionOption {
 	return func(cfg *createSessionConfig) {
 		cfg.sessionID = sessionID
@@ -384,7 +320,6 @@ func WithCreateSessionID(sessionID string) CreateSessionOption {
 
 // WithCreateSessionMetadata attaches optional session-level metadata copied
 // onto every record written in this session.
-//
 func WithCreateSessionMetadata(metadata map[string]interface{}) CreateSessionOption {
 	return func(cfg *createSessionConfig) {
 		cfg.metadata = metadata
@@ -407,7 +342,6 @@ func WithUploadMode(uploadMode string) UploadOption {
 }
 
 // createSessionResponse is the wire format returned by POST /api/v1/sessions.
-//
 type createSessionResponse struct {
 	SessionID string          `json:"session_id"`
 	Metadata  json.RawMessage `json:"metadata"`
@@ -431,85 +365,12 @@ type recordCreateResponse struct {
 
 // manifestResponse is the object envelope for GET /api/v1/recent
 // ({"records":[...],"count":N}).
-//
 type manifestResponse struct {
 	Records []models.Record `json:"records"`
 }
 
-// --------------------------------------------------------------------------
-// Parity (2026-06-18) — Create options
-// --------------------------------------------------------------------------
-
-// CreateOption configures a single Memory.Create call. It is the full-fidelity
-// counterpart to AddOption: Create always POSTs to /api/v1/records (no ingest
-// worker override), so every option below is written to the record verbatim.
-//
-type CreateOption func(*createConfig)
-
-// createConfig holds the per-call overrides for Memory.Create. Pointer fields
-// give the same nil/set-to-zero/set three-state as addConfig: score 0 and ""
-// type/status are LEGAL explicit values, so the zero value cannot double as the
-// "unset" sentinel.
-type createConfig struct {
-	memType    *string
-	score      *int
-	status     *string
-	relatedIDs []int64
-	metadata   map[string]interface{}
-	// validFrom is an RFC3339 UTC instant folded into the metadata envelope —
-	// REST create reads valid_from from metadata only.
-	// "" means "not supplied".
-	validFrom string
-}
-
-// WithCreateType sets the record type (e.g. "fact","semantic","decision").
-// Defaults to "episodic" when omitted.
-func WithCreateType(memType string) CreateOption {
-	return func(cfg *createConfig) {
-		cfg.memType = &memType
-	}
-}
-
-// WithCreateScore sets the salience score (typically 0-10). Defaults to 5.
-func WithCreateScore(score int) CreateOption {
-	return func(cfg *createConfig) {
-		cfg.score = &score
-	}
-}
-
-// WithCreateStatus sets the lifecycle status (e.g. "saved","processing").
-// Defaults to "saved".
-func WithCreateStatus(status string) CreateOption {
-	return func(cfg *createConfig) {
-		cfg.status = &status
-	}
-}
-
-// WithCreateRelatedIDs sets the related_ids horizontal-edge array. The server
-// still enforces graph topology on top of these (see service.enforceGraphTopology).
-func WithCreateRelatedIDs(relatedIDs []int64) CreateOption {
-	return func(cfg *createConfig) {
-		cfg.relatedIDs = relatedIDs
-	}
-}
-
-// WithCreateMetadata merges caller-supplied keys into the record metadata. The
-// SDK always sets container_tag (it wins on a collision); caller keys are
-// layered on top, identical to Add's WithMetadata.
-func WithCreateMetadata(metadata map[string]interface{}) CreateOption {
-	return func(cfg *createConfig) {
-		cfg.metadata = metadata
-	}
-}
-
-// WithCreateValidFrom sets the bi-temporal valid_from instant (RFC3339 UTC) for
-// the new record. It is delivered inside the metadata JSON; the REST create
-// route reads valid_from from metadata only.
-func WithCreateValidFrom(validFrom string) CreateOption {
-	return func(cfg *createConfig) {
-		cfg.validFrom = validFrom
-	}
-}
+// CreateOption, createConfig and every WithCreate* constructor live in
+// create_options.go.
 
 // --------------------------------------------------------------------------
 // Parity (2026-06-18) — Query AST (POST /api/v1/query)
@@ -549,7 +410,6 @@ type QueryRequest struct {
 // QueryOp is a per-column operator object for QueryRequest.Filters. Each field
 // maps to one of the server-supported operators; set only the ones you need —
 // the omitempty tags ensure unset operators never reach the wire.
-//
 type QueryOp struct {
 	Eq  interface{}   `json:"$eq,omitempty"`
 	Gt  interface{}   `json:"$gt,omitempty"`
@@ -623,7 +483,6 @@ type queryResponse struct {
 // ManifestPage is the paginated envelope returned by ManifestGlobal and
 // ManifestSession (GET /api/v1/manifest and /api/v1/chats/{uuid}/manifest):
 // a page of records plus the server's pagination cursor.
-//
 type ManifestPage struct {
 	Records []models.Record `json:"records"`
 	Count   int             `json:"count"`

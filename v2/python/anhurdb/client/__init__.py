@@ -11,7 +11,7 @@ import os
 import secrets
 import warnings
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from .connection import HTTPConnection
 from .exceptions import AnhurError, AnhurQueryError, AnhurUploadWaitTimeout
@@ -21,15 +21,22 @@ from .search_parse import (
     _parse_search_results,
     _parse_typed_records,
 )
+from .entities import EntityMixin
+from .manifests import ManifestMixin
+from .profile import ProfileMixin
+from .record_graph import RecordGraphMixin
 from .search_scopes import SearchScopeMixin
 from .session_stats import fetch_all_session_stats
+from .uploads import UploadMixin
 from ..models import (
+    AddResult,
     CreateRequest,
     DeleteFileResult,
     EntityEdge,
     EntityModel,
     MemoryType,
     Record,
+    RecordSummary,
     SearchResult,
     SessionStats,
 )
@@ -149,11 +156,53 @@ def _utc_timestamp() -> str:
     return now.strftime("%Y%m%d-%H%M%S")
 
 
+def _add_result_from_record(
+    data: Any,
+    *,
+    session_id: str,
+    record_type: str,
+    summary: str,
+) -> AddResult:
+    """Normalise a ``POST /api/v1/records`` response into an ``AddResult``.
+
+    Junior Tip [why the SDK synthesises ``records`` here]: ``/records`` echoes
+    the CREATED RECORD, not a write receipt — there is no ``records`` array in
+    its body. ``/ingest`` does send one. Without this adapter the same public
+    method answered with two different shapes depending on which door it took,
+    and ``result["records"][0]`` was a ``KeyError`` waiting for the first
+    caller who pinned a score. The summary and type are the ones WE sent, so
+    the synthesised entry is a faithful description of what was written — not a
+    guess.
+    """
+    record = data if isinstance(data, dict) else {}
+    record_id = record.get("id", 0)
+    return AddResult(
+        session_id=record.get("session_id") or session_id,
+        records=[
+            RecordSummary(
+                id=record_id if isinstance(record_id, int) else 0,
+                type=record.get("type") or record_type,
+                summary=record.get("summary") or summary,
+            )
+        ],
+        mode="oss",
+        id=record_id if isinstance(record_id, int) else None,
+        status=record.get("status"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Memory — the single canonical client (simple ergonomics + full surface)
 # ---------------------------------------------------------------------------
 
-class Memory(SearchScopeMixin):
+class Memory(
+    SearchScopeMixin,
+    RecordGraphMixin,
+    ManifestMixin,
+    UploadMixin,
+    EntityMixin,
+    ProfileMixin,
+):
     """The one AnhurDB client. Dead-simple to start with, complete underneath.
 
     Handles session management, container tagging, and cloud/OSS fallback
@@ -400,7 +449,7 @@ class Memory(SearchScopeMixin):
         type: Optional[MemoryType] = None,
         metadata: Optional[Dict[str, Any]] = None,
         session_id: str = "",
-    ) -> Dict[str, Any]:
+    ) -> AddResult:
         """Store text in the current session (session-first write contract).
 
         Call ``await create_session()`` (or ``await open_session()``) before the
@@ -437,8 +486,12 @@ class Memory(SearchScopeMixin):
             session_id: Override session; defaults to ``self.session_id``.
 
         Returns:
-            Dict with ``session_id``, ``records``, and ``mode``
-            (``"cloud"`` or ``"oss"``).
+            ``AddResult``. ``mode`` tells you WHICH door ran: ``"cloud"``
+            means the server's extraction pipeline accepted the text and
+            ``records`` may hold MORE than one row; ``"oss"`` means the SDK
+            wrote exactly one record directly. Reading ``records`` without
+            reading ``mode`` is how "the extractor found three facts" gets
+            mistaken for "I wrote three records".
 
         Raises:
             ValueError: If ``text`` is empty or ``mode`` is invalid.
@@ -489,54 +542,146 @@ class Memory(SearchScopeMixin):
 
     # ── Memory CRUD ────────────────────────────────────────────────
 
-    async def create(self, req: CreateRequest) -> Dict[str, Any]:
+    async def create(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        type: Optional[Union[MemoryType, str]] = None,
+        score: Optional[int] = None,
+        status: Optional[str] = None,
+        related_ids: Optional[List[int]] = None,
+        valid_from: Optional[str] = None,
+        valid_until: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AddResult:
         """Create exactly one typed record (no extraction).
 
         Agent UX — write path: use when you already know ``type`` + content.
         For raw text use ``add(text, mode="ingest")`` / MCP ``ingest_memory``.
-        Hits ``POST /api/v1/records`` — caller supplies ``session_id`` (or
-        legacy ``uuid``), ``type``, ``score``, ``related_ids``, etc.
+        Hits ``POST /api/v1/records``.
+
+        BREAKING in 3.0.0 — this used to take a single ``CreateRequest``. The
+        migration is mechanical::
+
+            await mem.create(req)
+            # becomes
+            await mem.create(
+                req.session_id or req.uuid,
+                req.content,
+                **req.optional_fields(),
+            )
+
+        Junior Tip [why session and content are required POSITIONALS]:
+        ``POST /api/v1/records`` cannot succeed without an anchor session and a
+        body — a call missing either is an HTTP 422 every single time. Making
+        them positional moves that failure from a network round trip to the
+        function signature, and it is the ONE convention all three SDKs now
+        share (Go ``Create(ctx, sessionUUID, content, opts...)``, TypeScript
+        ``create(sessionUuid, text, options?)``). The previous
+        ``session_id``-or-legacy-``uuid`` guess is gone on purpose: a client
+        that picks between two fields for you is a client that can pick wrong
+        and never tell you.
 
         Args:
-            req: ``CreateRequest`` with ``session_id`` (preferred) or ``uuid``,
-                plus ``content``.
+            session_id:  Session from ``create_session()`` (required).
+            content:     The record body (required).
+            type:        Memory type — a ``MemoryType`` or its plain string
+                         value. Server default ``episodic`` when unset.
+            score:       Importance 1-10. Server default 5 when unset.
+            status:      Record status. Server default ``saved`` when unset.
+            related_ids: Graph edges to sibling records.
+            valid_from:  RFC3339 start of the validity window. Delivered as a
+                         METADATA key — this route ignores the top-level field.
+            valid_until: RFC3339 end of the validity window, same delivery.
+            metadata:    Caller metadata, merged under the SDK container tag.
 
         Returns:
-            Server response dict (the created record). Includes ``id``."""
-        # Inject the SDK-owned container_tag into metadata (same as add() and
-        # the Go/TS create paths) so records stay visible to container-scoped
-        # search/profile.
-        payload = req.model_dump(exclude_none=True)
-        session_id = (req.session_id or req.uuid or "").strip()
-        if not session_id:
+            ``AddResult`` — ``id``/``status`` come from the created record,
+            ``records`` carries the one summary, ``mode`` is ``"oss"`` (this is
+            the direct ``/records`` door, never the extraction pipeline).
+
+        Raises:
+            ValueError: If ``session_id`` or ``content`` is empty.
+            AnhurQueryError: HTTP 422 when the anchor does not exist. Never
+                fabricate a synthetic anchor client-side — 422 stays 422."""
+        resolved_session_id = (session_id or "").strip()
+        if not resolved_session_id:
             raise ValueError(
                 "session_id is required — create a session first "
                 "(await create_session())"
             )
-        # Prefer session_id on the wire; keep uuid for older servers.
-        payload["session_id"] = session_id
-        payload["uuid"] = session_id
-        # Seed weight from score/10 when the caller did not set weight, matching
-        # add()/_create_record and the Go/TS create defaults.
-        if "weight" not in req.model_fields_set:
-            payload["weight"] = round((req.score if req.score is not None else 5) / 10, 4)
-        caller_metadata: Dict[str, Any] = {}
-        existing_metadata = payload.get("metadata")
-        if isinstance(existing_metadata, dict):
-            caller_metadata = existing_metadata
-        elif isinstance(existing_metadata, str) and existing_metadata.strip() not in ("", "{}"):
-            try:
-                parsed_metadata = json.loads(existing_metadata)
-                if isinstance(parsed_metadata, dict):
-                    caller_metadata = parsed_metadata
-            except (ValueError, TypeError):
-                # Non-JSON metadata string: keep it under a key rather than drop it.
-                caller_metadata = {"_raw": existing_metadata}
-        payload["metadata"] = _build_metadata_json(self._container_tag, caller_metadata)
+        if not content:
+            raise ValueError("content cannot be empty")
+
+        # Junior Tip [why the payload is still built through CreateRequest]:
+        # the model owns the server's own defaults (weight seeding, the
+        # embedding fields that must be sent as zero values). Rebuilding the
+        # dict by hand here would fork that knowledge into a second place.
+        request_fields: Dict[str, Any] = {
+            "session_id": resolved_session_id,
+            "content": content,
+            "summary": content[:200] + "..." if len(content) > 200 else content,
+        }
+        if type is not None:
+            request_fields["type"] = type
+        if score is not None:
+            request_fields["score"] = score
+            request_fields["weight"] = round(score / 10, 4)
+        if status is not None:
+            request_fields["status"] = status
+        if related_ids is not None:
+            request_fields["related_ids"] = related_ids
+
+        request = CreateRequest(**request_fields)
+        payload = request.model_dump(exclude_none=True)
+
+        # Junior Tip [the bi-temporal window travels in METADATA on this route]:
+        # ``service/record_create.go`` only reads ``valid_from``/``valid_until``
+        # from the metadata JSON; the top-level fields of the REST create body
+        # are never filled by this handler. A caller who sent them as top-level
+        # keys got HTTP 200 and a record with NO validity window — the pin
+        # evaporated with no error to read. Go folds them into the envelope for
+        # exactly this reason (``golang/client/parity.go:83-98``); Python now
+        # matches, so the same call produces the same record in both arms.
+        window_metadata: Dict[str, Any] = dict(metadata) if metadata else {}
+        if valid_from is not None:
+            window_metadata["valid_from"] = valid_from
+        if valid_until is not None:
+            window_metadata["valid_until"] = valid_until
+
+        # Junior Tip [the legacy ``uuid`` wire alias is GONE, 2026-09-14]: the
+        # server reads ``session_id`` (server/handler/record_create.go); the
+        # duplicate ``uuid`` key was belt-and-braces for a server generation
+        # that no longer exists. Confirmed by a live create against
+        # https://anhurdb.yoven.ai in a disposable ``paridade-`` session before
+        # removal. Sending both is how a stale field survives for years.
+        payload.pop("uuid", None)
+        payload["session_id"] = resolved_session_id
+
+        # Inject the SDK-owned container_tag into metadata (same as add() and
+        # the Go/TS create paths) so records stay visible to container-scoped
+        # search/profile.
+        payload["metadata"] = _build_metadata_json(
+            self._container_tag, window_metadata or None
+        )
 
         # One request. Missing episodic anchor → HTTP 422, surfaced as
         # AnhurQueryError. Never fabricate a synthetic anchor client-side.
-        return await self._connection.post("/api/v1/records", payload)
+        data = await self._connection.post("/api/v1/records", payload)
+        # Junior Tip [read the type back off the VALIDATED model]: callers pass
+        # either ``MemoryType.FACT`` or the plain string ``"fact"`` (this repo's
+        # own AST harness passes strings), and ``type.value`` on a ``str`` is an
+        # AttributeError that only fires on the string path. ``CreateRequest``
+        # has already coerced both into the enum by here, so there is exactly
+        # one shape left to read.
+        resolved_type = request.type
+        return _add_result_from_record(
+            data,
+            session_id=resolved_session_id,
+            record_type=getattr(resolved_type, "value", str(resolved_type)),
+            summary=request_fields["summary"],
+        )
 
     async def get(
         self,
@@ -710,58 +855,6 @@ class Memory(SearchScopeMixin):
             f"/api/v1/records/{record_id}/content",
             raw_text=True,
                     )
-
-    async def get_context(
-        self,
-        record_id: int,
-    ) -> Dict[str, Any]:
-        """Get the topological context (1-hop neighbours) around a record.
-
-        Returns the target record plus its parent, child, and sibling
-        records in the knowledge graph.
-
-        Args:
-            record_id: The record ID to inspect.
-
-        Returns:
-            Dict with ``target`` and ``neighbors``."""
-        return await self._connection.get(
-            f"/api/v1/records/{record_id}/topology",
-                    )
-
-    async def get_grounding(
-        self,
-        record_id: int,
-        max_depth: int = 3,
-    ) -> Dict[str, Any]:
-        """Get the provenance ("grounding") subgraph for a record — the episodic
-        anchors and consolidated stars that this record was derived from.
-
-        Performs a server-side BFS over main_ids/related_ids to surface WHERE a
-        memory came from, with the anchors' raw chat snippets attached.
-
-        Args:
-            record_id: Target record id (must be > 0).
-            max_depth: BFS depth budget, integer 1..5 inclusive (default 3).
-
-        Returns:
-            Dict with ``target``, ``anchors`` (each may carry whitelisted
-            ``content`` keys ``user``/``assistant``/``full_text``),
-            ``consolidations``, ``depth_used``, ``max_depth``, ``found_count``,
-            and the ``anchors_capped`` / ``consolidations_capped`` flags.
-
-        Raises:
-            ValueError: If ``max_depth`` is outside 1..5 (fail fast locally
-                        rather than round-trip to a guaranteed HTTP 400)."""
-        # Validate locally so we fail loud and cheaply — the server enforces the
-        # exact same 1..5 bound and would 400, but a clear ValueError is kinder.
-        if not isinstance(max_depth, int) or max_depth < 1 or max_depth > 5:
-            raise ValueError("max_depth must be an integer between 1 and 5")
-        return await self._connection.get(
-            f"/api/v1/records/{record_id}/grounding",
-            params={"max_depth": str(max_depth)},
-                    )
-
 
     async def query(
         self,
@@ -991,85 +1084,6 @@ class Memory(SearchScopeMixin):
             {"ids": ids, "main_ids_to_append": main_ids_to_append},
         )
 
-    # ── Graph Traversal ────────────────────────────────────────────
-
-    async def walk(
-        self,
-        start_id: int,
-        depth: int = 3,
-    ) -> Dict[str, Any]:
-        """BFS graph traversal from a seed record.
-
-        Follows related_ids and main_ids edges in both directions up to the
-        specified depth.
-
-        Args:
-            start_id:  Record ID to start from.
-            depth:     Maximum hops (default 3).
-
-        Returns:
-            Dict with ``nodes`` and ``edges``."""
-        return await self._connection.post(
-            "/api/v1/walk",
-            {"seed_id": start_id, "depth": depth, "direction": "both"},
-        )
-
-    async def walk_semantic(
-        self,
-        start_id: int,
-        depth: int = 3,
-        *,
-        target: Optional[str] = None,
-        goal_vector: Optional[bytes] = None,
-        target_tag: Optional[str] = None,
-        max_cost: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """Semantic graph walk — follows edges weighted by vector similarity.
-
-        Unlike regular ``walk()``, this prioritises semantically related
-        records rather than just following structural edges. By default the
-        server runs a plain Dijkstra traversal (edge cost ``1 − similarity``).
-
-        Passing ``target`` upgrades the walk to a goal-directed A* search that
-        is steered toward the requested goal:
-
-          - ``"semantic"``: pulls toward the ``goal_vector`` guide embedding
-            (supply raw packed bytes; the SDK base64-encodes them for the wire).
-          - ``"tag"``: pulls toward records carrying ``target_tag``.
-          - ``"recency"``: pulls toward the newest records.
-
-        Args:
-            start_id:    Record ID to start from.
-            depth:       Maximum hops (default 3). Retained for backward
-                         compatibility; the semantic walk is bounded by
-                         ``max_cost``/``max_nodes`` server-side.
-            target:      Goal mode — ``"semantic"``, ``"tag"`` or ``"recency"``.
-                         ``None`` (default) → plain Dijkstra.
-            goal_vector: Guide embedding as raw bytes, required when
-                         ``target="semantic"``; sent base64-encoded.
-            target_tag:  Entity/tag name to steer toward, required when
-                         ``target="tag"``.
-            max_cost:    Optional cost budget (server default 2.0).
-
-        Returns:
-            Dict with ``nodes`` and ``edges``."""
-        # before, then attach only the goal fields the caller actually set. An
-        # unset field is never serialized, so the server sees the identical
-        # payload it received prior to the goal-directed feature.
-        body: Dict[str, Any] = {"seed_id": start_id, "depth": depth}
-        if max_cost is not None:
-            body["max_cost"] = max_cost
-        if target is not None:
-            body["target"] = target
-        if goal_vector is not None:
-            body["vector"] = base64.b64encode(goal_vector).decode("ascii")
-        if target_tag is not None:
-            body["target_tag"] = target_tag
-        return await self._connection.post(
-            "/api/v1/walk/semantic",
-            body,
-                    )
-
     # ── Session Management ─────────────────────────────────────────
 
     def _generate_session_id(self) -> str:
@@ -1173,7 +1187,7 @@ class Memory(SearchScopeMixin):
 
     async def list_sessions(
         self,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SessionStats]:
         """List ALL sessions with aggregate statistics, following pagination.
 
         The endpoint defaults to ``limit=50`` and reports the truncation in
@@ -1182,9 +1196,15 @@ class Memory(SearchScopeMixin):
         ``session_stats.py``.
 
         Returns:
-            One dict per session (``uuid``, ``record_count``, ``types``,
-            ``last_activity``) — the tenant, never a single page."""
-        return await fetch_all_session_stats(self._connection)
+            One ``SessionStats`` per session — the tenant, never a single page.
+
+            Junior Tip [the key is ``last_activity``, not ``last_active``]:
+            the session row and the PROFILE stats block use two different
+            spellings for the same idea, and both are correct on the wire
+            (``database/list_sessions.go:38`` vs ``handler/profile.go:49``).
+            TypeScript had this one wrong and read an always-undefined field."""
+        rows = await fetch_all_session_stats(self._connection)
+        return [SessionStats.model_validate(row) for row in rows]
 
     async def list_chat(
         self,
@@ -1255,87 +1275,6 @@ class Memory(SearchScopeMixin):
         return await self._connection.get(
             f"/api/v1/sessions/{session_uuid}/clusters",
                     )
-
-    async def manifest_global(
-        self,
-        limit: int = 50,
-        offset: int = 0,
-        query: Optional[str] = None,
-        *,
-        as_of: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Cross-session overview of all knowledge, ranked by importance.
-
-        Best tool for RAG context injection — returns the most important
-        records across all sessions.
-
-        Args:
-            limit:     Max records (default 50).
-            offset:    Pagination offset.
-            query:     Optional keyword filter.
-            as_of:     Optional RFC3339 UTC snapshot instant. Mutually
-                       exclusive with ``since``/``until`` (server rejects the
-                       combination with HTTP 400).
-            since:     Optional RFC3339 UTC lower bound (created_at >= since).
-            until:     Optional RFC3339 UTC upper bound (created_at <= until).
-
-        Returns:
-            Dict with ``count``, ``has_more``, ``records``, ``limit``,
-            ``offset``."""
-        params: Dict[str, str] = {"limit": str(limit), "offset": str(offset)}
-        if query:
-            params["q"] = query
-        if as_of:
-            params["as_of"] = as_of
-        if since:
-            params["since"] = since
-        if until:
-            params["until"] = until
-        return await self._connection.get(
-            "/api/v1/manifest", params=params
-        )
-
-    async def manifest_session(
-        self,
-        session_uuid: str,
-        query: Optional[str] = None,
-        *,
-        limit: int = 500,
-        offset: int = 0,
-        as_of: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Get the manifest for a single session (records with metadata).
-
-        Args:
-            session_uuid: The session UUID.
-            query:        Optional keyword filter (sent as ``q``).
-            limit:        Max records (default 500).
-            offset:       Pagination offset.
-            as_of:        Optional RFC3339 UTC snapshot instant. Mutually
-                          exclusive with ``since``/``until``.
-            since:        Optional RFC3339 UTC lower bound.
-            until:        Optional RFC3339 UTC upper bound.
-
-        Returns:
-            Dict with ``records``, ``count``, ``limit``, ``offset``,
-            ``has_more``."""
-        params: Dict[str, str] = {"limit": str(limit), "offset": str(offset)}
-        if query:
-            params["q"] = query
-        if as_of:
-            params["as_of"] = as_of
-        if since:
-            params["since"] = since
-        if until:
-            params["until"] = until
-        return await self._connection.get(
-            f"/api/v1/chats/{session_uuid}/manifest",
-            params=params,
-        )
 
     async def count_by_type(
         self,
@@ -1417,170 +1356,6 @@ class Memory(SearchScopeMixin):
             ``["episodic", "fact", "preference", ...]``."""
         return [member.value for member in MemoryType]
 
-    # ── File Upload ────────────────────────────────────────────────
-
-    async def upload_file(
-        self,
-        filename: str,
-        content: bytes,
-        session_id: Optional[str] = None,
-        linked_episodic_id: Optional[int] = None,
-        mode: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Upload a document for async ingestion.
-
-        Supported formats: PDF, JPEG, PNG, WEBP, GIF, TXT, Markdown,
-        HTML, DOCX.
-
-        Planes:
-            * ``mode="chat"`` (or ``session_id`` set) — attach to a chat
-              session. Requires ``linked_episodic_id``; the file root hangs
-              as a sub-tree of that episodic and the server sets
-              ``has_file=true`` on it.
-            * ``mode="tenant_shared"`` / ``mode="client_shared"`` — Shared Data
-              (no session / episodic).
-
-        The server processes the file asynchronously — use
-        ``upload_status()`` to poll for completion.
-
-        Args:
-            filename: Original filename (used for format detection).
-            content: Raw file bytes.
-            session_id: From ``create_session()`` when uploading via chat.
-            linked_episodic_id: Required for chat — episodic turn record id.
-            mode: ``chat`` | ``tenant_shared`` | ``client_shared``.
-
-        Returns:
-            Dict with ``record_id``, ``uuid``, ``filename``, ``status``.
-
-        Example::
-
-            session_id = await mem.create_session()
-            episodic = await mem.add("see attached report", mode="ingest",
-                                     session_id=session_id)
-            with open("report.pdf", "rb") as handle:
-                result = await mem.upload_file(
-                    "report.pdf", handle.read(),
-                    session_id=session_id,
-                    linked_episodic_id=episodic["id"],
-                )
-            record_id = result["record_id"]"""
-        extra: Dict[str, str] = {}
-        resolved_mode = (mode or "").strip().lower()
-        if session_id and not resolved_mode:
-            resolved_mode = "chat"
-        if resolved_mode == "chat":
-            if not session_id:
-                raise ValueError(
-                    "session_id is required — create a session first "
-                    "(await create_session())"
-                )
-            if linked_episodic_id is None or int(linked_episodic_id) <= 0:
-                raise ValueError(
-                    "linked_episodic_id is required for chat uploads — "
-                    "attach the file to the episodic turn"
-                )
-            extra["mode"] = "chat"
-            extra["session_id"] = session_id
-            extra["linked_episodic_id"] = str(int(linked_episodic_id))
-        elif resolved_mode in ("tenant_shared", "client_shared"):
-            extra["mode"] = resolved_mode
-        elif resolved_mode:
-            raise ValueError(
-                f"invalid mode {mode!r} "
-                "(want chat|tenant_shared|client_shared)"
-            )
-        return await self._connection.post_multipart(
-            "/api/v1/upload",
-            file_field="file",
-            file_data=content,
-            filename=filename,
-            extra_fields=extra or None,
-        )
-
-    async def upload_status(
-        self,
-        upload_id: int,
-    ) -> Dict[str, Any]:
-        """Check the processing status of a file upload.
-
-        Args:
-            upload_id: The upload ID returned by ``upload_file()``.
-
-        Returns:
-            Dict with ``status`` (``"processing"``, ``"completed"``,
-            ``"failed"``)."""
-        return await self._connection.get(
-            f"/api/v1/upload/{upload_id}/status"
-        )
-
-    async def wait_for_upload(
-        self,
-        upload_id: int,
-        timeout: float = 120.0,
-        interval: float = 5.0,
-        not_found_grace: float = 30.0,
-    ) -> Dict[str, Any]:
-        """Poll ``upload_status`` until the upload reaches a terminal state.
-
-        Parity: Go ``WaitForUpload`` / TypeScript ``waitForUpload`` — same
-        state machine, same defaults (PARITY_SPEC.md).
-
-        Junior Tip [por que 404 vira "pendente" no começo — medido
-        2026-08-07]: as leituras do AnhurDB são load-balanced; logo após o
-        POST de upload um follower que ainda não aplicou a entrada devolve
-        404 legítimo por alguns segundos (read-your-writes). Dentro de
-        ``not_found_grace`` o 404 é espera; DEPOIS dela ele re-levanta — um id
-        inválido não pode virar espera infinita (falhar alto, nunca engolir).
-
-        Args:
-            upload_id: The upload ID returned by ``upload_file()``.
-            timeout: Total wait budget in seconds.
-            interval: Pause between polls in seconds.
-            not_found_grace: How long an HTTP 404 counts as "not applied yet".
-
-        Returns:
-            The final status payload — INCLUDING ``status="failed"`` (a failed
-            ingest is terminal data the caller must inspect, not a transport
-            error).
-
-        Raises:
-            AnhurQueryError: the 404 persisted beyond ``not_found_grace``.
-            AnhurUploadWaitTimeout: no terminal status within ``timeout``.
-        """
-        import asyncio
-        import time as _time
-
-        started_at = _time.monotonic()
-        last_status = "never-seen"
-        while True:
-            try:
-                status_payload = await self.upload_status(upload_id)
-            except AnhurQueryError as query_error:
-                if query_error.status_code != 404:
-                    raise
-                if _time.monotonic() - started_at >= not_found_grace:
-                    raise
-                last_status = "not-found-yet"
-            else:
-                if isinstance(status_payload, dict):
-                    status_text = str(status_payload.get("status") or "").lower()
-                    if (
-                        status_payload.get("completed") is True
-                        or status_payload.get("error")
-                        or status_text in ("completed", "saved", "done", "failed")
-                    ):
-                        return status_payload
-                    if status_text:
-                        last_status = status_text
-
-            if _time.monotonic() - started_at + interval > timeout:
-                raise AnhurUploadWaitTimeout(
-                    f"upload {upload_id} not terminal after {timeout}s "
-                    f"(last={last_status})"
-                )
-            await asyncio.sleep(interval)
-
     # ── Temporal Versioning ────────────────────────────────────────
 
     async def supersede(self, old_id: int, new_id: int) -> Dict[str, Any]:
@@ -1601,219 +1376,13 @@ class Memory(SearchScopeMixin):
             {"old_id": old_id, "new_id": new_id},
         )
 
-    # ── Entity Knowledge Graph (Layer 2) ───────────────────────────
-
-    async def search_entities(
-        self,
-        query: Optional[str] = None,
-        entity_type: Optional[str] = None,
-        limit: int = 20,
-    ) -> List[Dict[str, Any]]:
-        """Search named entities (people, organisations, concepts).
-
-        Args:
-            query:       Name or keyword search.
-            entity_type: Filter by entity type (e.g. ``"person"``).
-            limit:       Maximum results (default 20).
-
-        Returns:
-            List of entity dicts."""
-        params: Dict[str, str] = {"limit": str(limit)}
-        if query:
-            params["q"] = query
-        if entity_type:
-            params["type"] = entity_type
-        data = await self._connection.get(
-            "/api/v1/entities", params=params
-        )
-        return data.get("entities", data) if isinstance(data, dict) else data
-
-    async def list_entities(
-        self,
-        limit: int = 200,
-        offset: int = 0,
-    ) -> Dict[str, Any]:
-        """Paginated walk of ALL entities for the tenant, ordered by id ASC.
-
-        Unlike :meth:`search_entities` (keyword LIKE filter, limited match
-        set), this walks every row with a stable cursor — pages never shift
-        under concurrent inserts. Use for analytics, normalization sweeps,
-        exports, or admin dashboards.
-
-        Args:
-            limit:     Page size (default 200, server-clamped to [1, 500]).
-            offset:    0-based offset (default 0).
-
-        Returns:
-            Dict with ``entities``, ``count``, ``total``, ``limit``,
-            ``offset``, ``has_more``, ``next_offset``."""
-        if limit <= 0:
-            limit = 200
-        if limit > 500:
-            limit = 500
-        if offset < 0:
-            offset = 0
-        params = {"limit": str(limit), "offset": str(offset)}
-        return await self._connection.get(
-            "/api/v1/entities/list", params=params
-        )
-
-    async def upsert_entity(
-        self,
-        name: str,
-        entity_type: str = "",
-        summary: str = "",
-        attributes: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Create or update a named entity (idempotent by name).
-
-        Args:
-            name:        Entity name (required).
-            entity_type: Entity type (e.g. ``"person"``, ``"organization"``).
-            summary:     Short description.
-            attributes:  Arbitrary key-value metadata.
-
-        Returns:
-            Dict with entity ``id``."""
-        payload: Dict[str, Any] = {"name": name}
-        if entity_type:
-            payload["entity_type"] = entity_type
-        if summary:
-            payload["summary"] = summary
-        if attributes:
-            payload["attributes"] = attributes
-        return await self._connection.post("/api/v1/entities", payload)
-
-    async def get_entity_graph(
-        self,
-        entity_id: int,
-        depth: int = 2,
-    ) -> Dict[str, Any]:
-        """BFS traversal of entity relationships.
-
-        Starting from an entity, discovers connected entities through
-        typed edges (``works_at``, ``knows``, ``part_of``, etc.).
-
-        Args:
-            entity_id: The starting entity ID.
-            depth:     How many hops to follow (default 2, max 5).
-
-        Returns:
-            Dict with ``entity``, ``nodes``, ``node_count``."""
-        params: Dict[str, str] = {"depth": str(depth)}
-        return await self._connection.get(
-            f"/api/v1/entities/{entity_id}/graph",
-            params=params,
-                    )
-
-    async def entity_graph(
-        self,
-        entity_id: int,
-        depth: int = 2,
-    ) -> Dict[str, Any]:
-        """Alias of :meth:`get_entity_graph` using the canonical ``entity_graph``
-        name (matches the MCP tool ``get_entity_graph`` exposed to the SDKs as
-        ``entity_graph`` / Go ``EntityGraph`` / TS ``entityGraph``)."""
-        return await self.get_entity_graph(entity_id, depth=depth)
-
-    async def entity_timeline(
-        self,
-        entity_id: int,
-    ) -> Dict[str, Any]:
-        """Get the full temporal history of an entity's relationships.
-
-        Shows ALL edges including invalidated ones, ordered by event time.
-        Use to understand how an entity's context evolved over time.
-
-        Args:
-            entity_id: The entity ID.
-
-        Returns:
-            Dict with ``entity``, ``timeline``, ``record_ids``."""
-        return await self._connection.get(
-            f"/api/v1/entities/{entity_id}/timeline",
-                    )
-
-    async def upsert_entity_edge(
-        self,
-        source_id: int,
-        target_id: int,
-        relation: str,
-        event_time: Optional[str] = None,
-        confidence: Optional[float] = None,
-        source_record_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Create or update a typed relationship between two entities.
-
-        Args:
-            source_id:        Source entity ID.
-            target_id:        Target entity ID.
-            relation:         Relationship type (e.g. ``"works_at"``).
-            event_time:       ISO 8601 timestamp when this became true.
-            confidence:       Confidence score (0.0-1.0).
-            source_record_id: Memory record that evidences this relationship.
-
-        Returns:
-            Confirmation dict."""
-        payload: Dict[str, Any] = {
-            "source_id": source_id,
-            "target_id": target_id,
-            "relation": relation,
-        }
-        if event_time:
-            payload["event_time"] = event_time
-        if confidence is not None:
-            payload["confidence"] = confidence
-        if source_record_id is not None:
-            payload["source_record_id"] = source_record_id
-        return await self._connection.post("/api/v1/entities/edges", payload)
-
-    async def link_record_entity(
-        self,
-        record_id: int,
-        entity_id: int,
-        role: str = "",
-    ) -> Dict[str, Any]:
-        """Link a memory record to an entity (cross-layer connection).
-
-        Args:
-            record_id: Memory record ID.
-            entity_id: Entity ID.
-            role:      Optional role description.
-
-        Returns:
-            Confirmation dict."""
-        payload: Dict[str, Any] = {
-            "record_id": record_id,
-            "entity_id": entity_id,
-        }
-        if role:
-            payload["role"] = role
-        return await self._connection.post("/api/v1/entities/link", payload)
-
-    async def get_record_entities(
-        self,
-        record_id: int,
-    ) -> List[Dict[str, Any]]:
-        """Get entities linked to a specific memory record.
-
-        Args:
-            record_id: The record ID.
-
-        Returns:
-            List of entity dicts."""
-        data = await self._connection.get(
-            f"/api/v1/records/{record_id}/entities",
-                    )
-        return data.get("entities", data) if isinstance(data, dict) else data
-
     # ── Caller-owned session writes ────────────────────────────────
 
     async def create_in_session(
         self,
         text: str,
         session_uuid: str,
-    ) -> Dict[str, Any]:
+    ) -> AddResult:
         """Store ``text`` directly as an episodic record under ``session_uuid``.
 
         The session must be registered via ``create_session()`` / POST
@@ -1846,56 +1415,12 @@ class Memory(SearchScopeMixin):
             "status": "saved",
         }
         data = await self._connection.post("/api/v1/records", payload)
-        return {
-            "session_id": session_uuid,
-            "records": [{"id": data.get("id", 0), "type": "episodic", "summary": summary}],
-            "mode": "oss",
-        }
-
-    # ── Profile ────────────────────────────────────────────────────
-
-    async def profile(
-        self,
-        container_tag: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Get the memory profile for a container tag (user/agent).
-
-        Returns profile information including static facts, dynamic state,
-        and aggregate statistics. If the server doesn't support profiles
-        (OSS without agents), returns an empty profile rather than raising.
-
-        Args:
-            container_tag: User/agent identifier; ``None`` = this Memory's tag.
-
-        Returns:
-            Dict with ``static``, ``dynamic``, ``stats`` keys.
-
-        Example::
-
-            prof = await mem.profile()
-            print(prof["static"])  # identity facts"""
-        target_tag = container_tag if container_tag is not None else self._container_tag
-        try:
-            data = await self._connection.get(
-                "/api/v1/profile",
-                params={"tag": target_tag},
-                            )
-            return {
-                "static": data.get("static", {}),
-                "dynamic": data.get("dynamic", {}),
-                "stats": data.get("stats", {}),
-            }
-        except AnhurQueryError as exc:
-            # 404 = server doesn't support profiles (OSS mode).
-            if "404" in str(exc):
-                return {
-                    "static": {},
-                    "dynamic": {},
-                    "stats": {},
-                    "tag": target_tag,
-                    "status": "not_available",
-                }
-            raise
+        return _add_result_from_record(
+            data,
+            session_id=session_uuid,
+            record_type="episodic",
+            summary=summary,
+        )
 
     async def forget(self, memory_id: Optional[int] = None) -> None:
         """Forget a specific memory or trigger cognitive decay.
@@ -1919,7 +1444,7 @@ class Memory(SearchScopeMixin):
         self,
         text: str,
         session_id: str = "",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[AddResult]:
         """Attempt cloud ingest at ``/api/v1/ingest``.
 
         Always sends ``session_id``. Returns None if the endpoint doesn't
@@ -1938,11 +1463,11 @@ class Memory(SearchScopeMixin):
             records = data.get("records", [{"id": data.get("id", 0),
                                              "type": "episodic",
                                              "summary": text[:200]}])
-            return {
-                "session_id": data.get("session_id", effective_session_id),
-                "records": records,
-                "mode": "cloud",
-            }
+            return AddResult(
+                session_id=data.get("session_id", effective_session_id),
+                records=[RecordSummary.model_validate(row) for row in records],
+                mode="cloud",
+            )
         except AnhurQueryError as exc:
             if "404" in str(exc):
                 self._ingest_available = False
@@ -1956,7 +1481,7 @@ class Memory(SearchScopeMixin):
         mem_type: Optional[MemoryType],
         metadata: Optional[Dict[str, Any]],
         session_id: str = "",
-    ) -> Dict[str, Any]:
+    ) -> AddResult:
         """Create a record directly via ``POST /api/v1/records``.
 
         This is the only write path that persists ``score`` and ``type``
@@ -1984,12 +1509,12 @@ class Memory(SearchScopeMixin):
             req.model_dump(exclude_none=True),
         )
 
-        return {
-            "session_id": effective_session_id,
-            "records": [{"id": data.get("id", 0), "type": effective_type.value,
-                          "summary": summary}],
-            "mode": "oss",
-        }
+        return _add_result_from_record(
+            data,
+            session_id=effective_session_id,
+            record_type=effective_type.value,
+            summary=summary,
+        )
 
     @staticmethod
     def _flatten_search_results(data: Any) -> List[Dict[str, Any]]:

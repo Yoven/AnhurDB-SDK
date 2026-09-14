@@ -15,7 +15,7 @@ version out of the package at build time. That copy is locked to this one by
 whose ``User-Agent`` disagreed, silently.
 """
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 # The exact value sent as the HTTP ``User-Agent`` header on every request.
 # Shape mirrors the Go and TypeScript SDKs (``AnhurSDK-Golang/<v>`` and

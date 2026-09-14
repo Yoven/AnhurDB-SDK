@@ -95,10 +95,9 @@ export async function seedAstFixture(label: string): Promise<AstFixture> {
   const typeOf: Record<number, string> = {};
 
   for (const plan of SEED_PLAN) {
-    const created = await memory.create(`ast-teste live ${plan.name}`, {
+    const created = await memory.create(mainSession, `ast-teste live ${plan.name}`, {
       type: plan.type as never,
       score: plan.score,
-      sessionId: mainSession,
     });
     const newId = created.records[0].id;
     ids[plan.name] = newId;
@@ -109,15 +108,15 @@ export async function seedAstFixture(label: string): Promise<AstFixture> {
 
   // A row that must be HIDDEN by the implicit `archived = 0` predicate.
   // DELETE is a SOFT archive: it sets archived=1, status=deleted.
-  const toArchive = await memory.create("ast-teste live to be archived", {
-    type: "fact" as never, score: 4, sessionId: mainSession,
+  const toArchive = await memory.create(mainSession, "ast-teste live to be archived", {
+    type: "fact" as never, score: 4,
   });
   ids.archived4 = toArchive.records[0].id;
   await memory.delete(ids.archived4);
 
   // A row in a DIFFERENT session, to prove `uuid` really confines the result.
-  const inOther = await memory.create("ast-teste live other session", {
-    type: "episodic" as never, score: 5, sessionId: otherSession,
+  const inOther = await memory.create(otherSession, "ast-teste live other session", {
+    type: "episodic" as never, score: 5,
   });
   ids.other5 = inOther.records[0].id;
 

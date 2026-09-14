@@ -1,5 +1,195 @@
 # Python SDK Changelog
 
+## 3.0.0 — SDK parity: twelve untyped responses, one `create()`, the server's own depth (2026-09-14)
+
+The last round of divergence between the three arms. Every verdict below is
+anchored to a handler line AND to a read-only live call against
+`https://anhurdb.yoven.ai`; the write paths were proved in a disposable
+`paridade-` session that was deleted and whose deletion was proved
+(`GET /api/v1/chats/{uuid}` → `count: 0`).
+
+Breaking, hence 3.0.0 and not 2.2.0. Go and TypeScript ship the same number.
+
+### BREAKING — twelve responses are models, not `Dict[str, Any]`
+
+Subscript access stops working; attribute access replaces it. The field sets
+below are the LIVE responses, not inferences from a handler.
+
+| Method | Before | After | Migration |
+|---|---|---|---|
+| `add`, `create`, `create_in_session` | `dict` | `AddResult` | `r["records"][0]["id"]` → `r.records[0].id`; `r["mode"]` → `r.mode` |
+| `profile` | `dict` | `ProfileResult` | `p["static"]` → `p.static`; `p["stats"]["total_records"]` → `p.stats.total_records` |
+| `walk`, `walk_semantic` | `dict` | `WalkResult` | `w["nodes"]` → `w.nodes` (full `Record`s), `w["edges"]` → `w.edges` |
+| `get_context` | `dict` | `ContextResult` | `c["target"]` → `c.target`, `c["neighbors"]` → `c.neighbors` |
+| `get_grounding` | `dict` | `GroundingResult` | `g["anchors"]` → `g.anchors`; `g["depth_used"]` → `g.depth_used` |
+| `list_sessions` | `list[dict]` | `list[SessionStats]` | `s["uuid"]` → `s.uuid`; the key is `last_activity`, not `last_active` |
+| `manifest_global`, `manifest_session` | `dict` | `ManifestResult` | `m["records"]` → `m.records`; `m["has_more"]` → `m.has_more` |
+| `upload_file` | `dict` | `UploadResult` | `u["record_id"]` → `u.record_id` |
+| `upload_status`, `wait_for_upload` | `dict` | `UploadStatusResult` | `s["status"]` → `s.status`; `s["completed"]` → `s.completed` |
+| `search_entities`, `get_record_entities` | `list[dict]` | `list[EntityModel]` | `e["name"]` → `e.name`; the wire key is `entity_type`, never `type` |
+| `upsert_entity` | `dict` | `EntityModel` | `e["id"]` → `e.id` |
+| `list_entities` | `dict` | `EntitiesPage` | `p["entities"]` → `p.entities`; follow `p.next_offset` |
+| `get_entity_graph`, `entity_graph` | `dict` | `EntityGraphResult` | `g["nodes"]` → `g.nodes`; `g["node_count"]` → `g.node_count` |
+| `entity_timeline` | `dict` | `EntityTimelineResult` | `t["timeline"]` → `t.timeline` |
+| `smart_search` | `dict` | `SmartSearchResponse` | `r["results"]` → `r.results` — and see the null below |
+
+Three shapes carry a trap the dicts hid:
+
+- **`SmartSearchResponse.results` is genuinely `None`**, not `[]`, on the
+  ordinary "no matches" answer. The handler marshals a nil Go slice and a nil
+  slice serialises as JSON `null` (`handler/search_smart.go:216-224`). Iterate
+  with `for hit in (response.results or [])`. Same `None != []` discipline
+  `SearchResponse.leg_scores` already keeps.
+- **`WalkResult.truncated` is `None` after `walk_semantic`.** Only
+  `POST /api/v1/walk` emits the flag; `/walk/semantic` answers `{nodes, edges}`
+  and makes no completeness claim. Reporting `False` would invent a guarantee
+  the endpoint never gave.
+- **`SmartSearchHit.relevance` is a LEXICAL score** (BM25 × cognitive decay),
+  not the cosine `SearchResult.similarity`. Different unit, hence a different
+  type — the two must never share a threshold.
+
+Everything still untyped, deliberately and in all three arms: `health()`,
+`get(record_id)`, `batch_read_content()`, `get_session_history()`,
+`get_session_clusters()`, and the `{"message": ...}` write acks. Typing them is
+separate, additive work.
+
+Every model is `ConfigDict(populate_by_name=True, extra="ignore")` — never
+`extra="forbid"` — so a server that adds a field does not break every caller.
+
+### BREAKING — `create(session_id, content, *, ...)` replaces `create(req)`
+
+```python
+# before
+await mem.create(CreateRequest(session_id=s, content=c, type=MemoryType.FACT))
+# after
+await mem.create(s, c, type=MemoryType.FACT)
+```
+
+Session and content are the two things `POST /api/v1/records` cannot succeed
+without (a missing anchor is HTTP 422), so they became required positionals —
+the same convention Go has always had and TypeScript now adopts. The old
+`session_id`-or-legacy-`uuid` guess is gone: a client that picks between two
+fields for you is a client that can pick wrong and never say so.
+
+`CreateRequest` **stays exported** as a typed carrier, and gains
+`optional_fields()` for the migration:
+
+```python
+await mem.create(req.session_id or req.uuid, req.content, **req.optional_fields())
+```
+
+`optional_fields()` returns only what the caller actually SET (`model_fields_set`),
+so an unset field stays unset all the way to the wire instead of pinning today's
+server default forever.
+
+Accepting either a `str` or a `CreateRequest` as argument 1 was considered and
+rejected — that is exactly the guessing this release deletes.
+
+Two further changes inside `create()`:
+
+- **The legacy `uuid` wire alias is gone.** The server field is `session_id`;
+  the duplicate was belt-and-braces for a server generation that no longer
+  exists. Confirmed with one live create in the `paridade-` session before
+  removal, and the outgoing payload is now asserted key-by-key in
+  `tests/test_parity_wire_offline.py`.
+- **`valid_from` / `valid_until` now travel inside `metadata`.** They were sent
+  as top-level payload fields, and `service/record_create.go` reads the
+  bi-temporal window ONLY from the metadata JSON on this route — so the call
+  returned HTTP 200 and a record with no window at all. The pin evaporated with
+  nothing to catch. Go has folded them into the envelope since
+  `parity.go:83-98`; Python now matches, so the same call produces the same
+  record in both arms.
+
+`create()` still never fabricates an episodic anchor client-side. 422 stays 422.
+
+### BREAKING — `get_entity_graph()` / `entity_graph()` default to depth 1
+
+The handler's own default is 1 (`entity.go:280`); this SDK defaulted to 2 and
+SENT it, while Go and TypeScript both omitted the parameter. Live 2026-09-14:
+omitted → `depth:1, node_count:1`; `?depth=2` → `depth:2, node_count:2`.
+
+So the identical call returned a strictly larger graph in Python than in the
+other two arms, and anyone comparing SDKs read "Python finds more entities"
+when the truth was "Python silently asked a different question".
+
+**A caller who never passed `depth` now gets a depth-1 graph where they used to
+get depth-2.** Pass `depth=2` to keep the old result. The parameter is now
+omitted entirely when unset rather than restated as `depth=1` — when the server
+changes its default, the SDK follows instead of pinning yesterday's value.
+
+### `profile()` — the tag is an in-tenant filter, documented and guarded
+
+`profile(container_tag=None)` keeps its signature (Python was the arm that had
+this right; Go and TypeScript gained it). What changed:
+
+- An **empty** tag now raises `ValueError` locally. `GET /api/v1/profile`
+  without a tag is a guaranteed HTTP 400 (`tag: tag is required`); spending a
+  round trip to learn a string we already have is the waste the AST builder
+  already refuses for `$in []`.
+- An **unknown** tag stays what the server says it is: an empty profile with
+  HTTP 200, never an exception. Live, `?tag=totally-not-a-real-tag-xyz`
+  answered 200 with every counter at zero. Raising would hide a typo'd tag
+  behind a fake outage.
+- The tag filters WITHIN the caller's own tenant and cannot reach another one —
+  `profile.go:63-66` resolves the tenant from the auth middleware context and
+  reads `tag` only from the query string. There is no wildcard either: `?tag=*`
+  is a literal tag.
+- On HTTP 404 (an OSS build with no profile engine) the fallback is an
+  all-default `ProfileResult`. The old dict carried `tag` and
+  `status: "not_available"` keys the server has never sent on this route.
+
+### Phantom fields removed
+
+A declared field the server never sends is worse than a missing one: it makes
+unreachable branches read like safety nets.
+
+- `wait_for_upload()` no longer treats a truthy `payload["error"]` as terminal.
+  `GET /upload/{id}/status` is a fixed seven-key map (`upload.go:220-236`) and
+  has never sent an `error` key on any code path. A failed ingest is reported
+  through `status`, and only through `status`.
+- `UploadStatusResult` declares exactly those seven keys — no `id`, no
+  `filename`, no `error`.
+- `UploadResult` has `record_id` and no `id`. Polling with a phantom `id`
+  returns 404 for a file that uploaded perfectly.
+- `ManifestResult` has no `next_offset`. That cursor exists on
+  `/sessions/stats` and `/entities/list`, and on neither manifest route
+  (`search_aux.go:225-229`, `record_session.go:307-311`); modelling one would
+  give every caller a permanently-zero field that reads like page one.
+- `ProfileResult` is exactly `{static, dynamic, stats}` — no `tag`, no `status`.
+
+`tests/test_parity_models_offline.py` now audits this structurally, in both
+directions: every model must declare a SUPERSET of the keys the route can emit
+(a missing field is a silent drop under `extra="ignore"`), and every declared
+field must map to a wire key or be justified in writing in
+`tests/live_field_sets.py`.
+
+### Internals
+
+- `client/__init__.py` was 2058 lines — past the house 300-line cut — so the
+  domains this release touched were SPLIT OUT before they grew:
+  `client/record_graph.py` (walk / topology / grounding),
+  `client/manifests.py`, `client/uploads.py`, `client/entities.py` and
+  `client/profile.py`, each a mixin on `Memory`. The public surface is
+  unchanged: every method is still `Memory.<name>`, and no import path moved.
+- New models live under `anhurdb/models/` by domain — `add.py`, `profile.py`,
+  `graph.py`, `manifest.py`, `upload.py`, `entity.py`, `smart_search.py` —
+  never inside `record.py` or `search.py`, both of which are near the cut.
+- `SessionStats` fields all gained defaults. It is a READ model: one partial
+  row must not raise a `ValidationError` that destroys the entire page of
+  sessions, the same all-or-nothing failure `Record` already guards against.
+- `EntityGraphEdge` is a new READ type distinct from `EntityEdge`. `EntityEdge`
+  is what a caller BUILDS for `upsert_entity_edge` (no `id`, no `ingested_at`,
+  no `weight` — the server assigns all three); `EntityGraphEdge` is what the
+  graph and timeline routes ANSWER with, every field present and defaulted.
+- `create(type=...)` accepts a `MemoryType` **or** its plain string value.
+  Reading `.value` off the argument raised `AttributeError` on the string path
+  only — invisible to every enum-using test, and caught by the live run.
+- New `tests/live_field_sets.py` holds the live field sets ONCE, consumed by
+  both the offline decode suite and the new live contract suite, so the offline
+  one cannot drift into "passing" against a shape the server abandoned.
+- New `tests/test_parity_live_contract.py` (9 cases, gated by
+  `ANHUR_LIVE_AST=1`) re-proves every field set against the running server.
+
 ## 2.1.0 — AST query parity: the four silent divergences (2026-09-14)
 
 Held the 2.1.0 release for these. All four failed with no symptom: the caller
