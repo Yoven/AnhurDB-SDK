@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from ast_live_harness import AstFixture
+from ast_live_harness import _LAST_WIRE, AstFixture
 
 
 @dataclass
@@ -84,3 +84,50 @@ def run_case_against_oracle(fixture: AstFixture, case: str, call_text: str,
                 f"  this is a real drift, not a background rewrite"
             )
     raise AssertionError("unreachable")
+
+
+def run_refused_case(fixture: AstFixture, case: str, call_text: str, build_call,
+                     note: str = "") -> BaseException:
+    """Execute a call the CLIENT must refuse, and PROVE nothing reached the wire.
+
+    ``build_call`` is a zero-argument callable that builds — and, were it not
+    refused, would send — one query. The guards added in 2.1.0 fire while the
+    builder is still assembling the AST, so the refusal happens before any
+    coroutine is created, let alone awaited.
+
+    Junior Tip [why the wire probe, and not just ``pytest.raises``, 2026-09-14]:
+    an exception alone does not say WHERE the refusal happened. A guard that
+    somehow ran after the POST would still raise, and the test would still pass,
+    while the server had already done the work and the caller had already paid
+    the round trip. ``_LAST_WIRE`` is armed to ``None`` immediately before the
+    call and re-read immediately after, so a body appearing there is proof the
+    request shipped. That is the difference between "the SDK complained" and
+    "the SDK refused", and only the second one is the contract.
+
+    Returns:
+        The exception the builder raised, for the caller to assert its type,
+        ``kind``, ``retryable`` and ``status_code`` on.
+    """
+    _LAST_WIRE["body"] = None
+    try:
+        never_sent = build_call()
+    except BaseException as rejection:  # noqa: B036 — the refusal IS the result
+        shipped_body = _LAST_WIRE.get("body")
+        assert shipped_body is None, (
+            f"{case}: the call was refused, but {len(shipped_body)} bytes still "
+            f"reached POST /api/v1/query: {shipped_body}"
+        )
+        fixture.record_case(case, call_text, None, None,
+                            f"CLIENT|{type(rejection).__name__}|{rejection}", note)
+        return rejection
+
+    # Not refused. Close the un-awaited coroutine so the failure message is the
+    # assertion below and not a "coroutine was never awaited" warning on top.
+    close_method = getattr(never_sent, "close", None)
+    if callable(close_method):
+        close_method()
+    raise AssertionError(
+        f"{case}: `{call_text}` was NOT refused client-side. The 2.1.0 guard is "
+        f"gone or unreachable, and this query now costs a round trip to learn "
+        f"nothing."
+    )

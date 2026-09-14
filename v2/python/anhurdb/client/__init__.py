@@ -22,6 +22,7 @@ from .search_parse import (
     _parse_typed_records,
 )
 from .search_scopes import SearchScopeMixin
+from .session_stats import fetch_all_session_stats
 from ..models import (
     CreateRequest,
     DeleteFileResult,
@@ -1173,17 +1174,17 @@ class Memory(SearchScopeMixin):
     async def list_sessions(
         self,
     ) -> List[Dict[str, Any]]:
-        """List all sessions with aggregate statistics.
+        """List ALL sessions with aggregate statistics, following pagination.
 
-        Args:
+        The endpoint defaults to ``limit=50`` and reports the truncation in
+        ``has_more``; this used to ignore it, so a 99-session tenant answered
+        50 and looked complete. Loop and runaway brakes, with the WHY, live in
+        ``session_stats.py``.
 
         Returns:
-            List of dicts with ``uuid``, ``record_count``, ``types``,
-            ``last_activity``."""
-        data = await self._connection.get(
-            "/api/v1/sessions/stats"
-        )
-        return data.get("sessions", data) if isinstance(data, dict) else data
+            One dict per session (``uuid``, ``record_count``, ``types``,
+            ``last_activity``) — the tenant, never a single page."""
+        return await fetch_all_session_stats(self._connection)
 
     async def list_chat(
         self,

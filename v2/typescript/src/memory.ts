@@ -54,6 +54,7 @@ import type {
   WalkResult,
   WalkSemanticOptions,
 } from "./types.js";
+import { fetchAllSessionStats } from "./sessionStats.js";
 
 /** Default cloud endpoint. Self-hosted users pass `url` explicitly. */
 const DEFAULT_CLOUD_URL = "https://anhurdb.yoven.ai";
@@ -940,13 +941,14 @@ export class Memory extends MemorySearchApi {
   }
 
   /**
-   * List all sessions with aggregate statistics.
+   * List ALL sessions with aggregate statistics, following server pagination.
+   *
+   * `/api/v1/sessions/stats` defaults to `limit=50` and reports the truncation
+   * in `has_more`; this used to ignore it, so a 99-session tenant answered 50
+   * and looked complete. Loop and brakes: `sessionStats.ts`.
    */
   async listSessions(): Promise<SessionStats[]> {
-    const data = await this.client.get<{
-      sessions?: SessionStats[];
-    }>("/api/v1/sessions/stats", undefined);
-    return data.sessions ?? [];
+    return fetchAllSessionStats(this.client);
   }
 
   /**

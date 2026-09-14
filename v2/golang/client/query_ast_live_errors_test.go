@@ -168,10 +168,11 @@ var astErrorCases = []astErrorCase{
 		build: func(fixture *astFixture) *QueryRequest {
 			return scoped(fixture).Where("type", QueryOp{In: []interface{}{[]string{"a"}}})
 		},
-		wantClientSide:   false,
-		wantErrSubstring: "expects a single value",
-		wantHTTPStatus:   400,
-		wantKind:         KindInvalidRequest,
+		wantClientSide:   true,
+		wantErrSubstring: `query: filter "type": $in[0] is a []string — $in elements must be scalars`,
+		note: "AMENDED 2026-09-14: this row expected the SERVER to reject it, and was already stale when written — the same commit added the client-side scalar guard that prevents the round trip. " +
+			"The SERVER fact it recorded is still true: a nested array inside $in answers HTTP 400 \"expects a single value\". Go cannot observe that any more (Validate() runs on every path, " +
+			"no raw-AST escape hatch); Python and TypeScript still prove it with a hand-written AST (their query_ast_live_null_contract suites).",
 	},
 	{
 		name:        "request body above the 1 MiB REST cap",
@@ -240,18 +241,22 @@ func runASTErrorMatrix(testHandle *testing.T, harness *astLiveHarness, fixture *
 	}
 }
 
-// assertClientSideErrorsAreUntyped pins a contract difference worth knowing
-// about: the Go builder's own refusals are bare fmt.Errorf values, NOT the
-// *APIError the transport path returns.
+// assertClientSideErrorsAreTypedLikePythonAndTypeScript pins the parity Go
+// reached with newValidationError: a refusal the BUILDER makes is the same
+// *APIError the transport path returns, so one errors.As covers both origins.
 //
-// Junior Tip [why this is a test and not a comment]: a caller that branches on
-// errors.As(err, &APIError{}) — the pattern the SDK's own docs teach for
-// classifying failures — gets `false` for every client-side rejection and so
-// falls into whatever its default branch is. Python and TypeScript raise their
-// one error class for BOTH origins. If someone later makes Validate() return a
-// typed error, this test goes red and the parity note gets updated instead of
-// silently rotting.
-func assertClientSideErrorsAreUntyped(testHandle *testing.T, fixture *astFixture) {
+// AMENDED 2026-09-14: this used to assert the OPPOSITE (bare fmt.Errorf, no
+// status), with its own escape clause — "if someone later makes Validate()
+// return a typed error, this test goes red and the parity note gets updated
+// instead of rotting". That happened; the note is updated rather than the
+// assertion loosened, because the divergence is GONE.
+//
+// Junior Tip [the type alone is not the contract]: callers branch on errors.As,
+// then on Kind() and Retryable(). A typed error with the WRONG Kind is worse
+// than an untyped one — it looks classifiable and classifies wrong. So all
+// three are asserted, plus clientSide: a refusal that reached the server is not
+// a refusal, it is a complaint filed after the fact.
+func assertClientSideErrorsAreTypedLikePythonAndTypeScript(testHandle *testing.T, fixture *astFixture) {
 	testHandle.Helper()
 	request := scoped(fixture).Where("bogus_col", QueryOp{Eq: 1})
 	validationErr := request.Validate()
@@ -259,12 +264,22 @@ func assertClientSideErrorsAreUntyped(testHandle *testing.T, fixture *astFixture
 		testHandle.Fatal("Validate accepted a column outside the whitelist")
 	}
 	var apiError *APIError
-	if errors.As(validationErr, &apiError) {
-		testHandle.Errorf("client-side validation now returns *APIError (%v) — update the parity notes; "+
-			"this test recorded that it did NOT, which is a divergence from Python/TypeScript", apiError)
-		return
+	if !errors.As(validationErr, &apiError) {
+		testHandle.Fatalf("client-side validation returned %T, not *APIError — a caller branching "+
+			"on errors.As cannot classify it, the divergence this test closes", validationErr)
 	}
-	fmt.Printf("AST_CONTRACT client_side_error_is_typed=false err_type=%T\n", validationErr)
+	if apiError.Kind() != KindInvalidRequest {
+		testHandle.Errorf("client-side rejection Kind() = %v, want %v", apiError.Kind(), KindInvalidRequest)
+	}
+	if apiError.Retryable() {
+		testHandle.Error("a malformed query must never report Retryable() true")
+	}
+	if !apiError.clientSide {
+		testHandle.Error("clientSide must be true — the 400 is a prediction of what the server " +
+			"WOULD have answered, not a status it did answer")
+	}
+	fmt.Printf("AST_CONTRACT client_side_error_is_typed=true err_type=%T kind=%v retryable=%v\n",
+		validationErr, apiError.Kind(), apiError.Retryable())
 }
 
 // assertNilRequestIsRefused covers the degenerate call.

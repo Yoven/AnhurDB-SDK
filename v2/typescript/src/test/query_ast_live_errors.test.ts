@@ -1,9 +1,9 @@
 /**
  * LIVE: the AST error contract, and the mistakes the server ACCEPTS in silence.
  *
- * Two different contracts live here and a caller must not confuse them:
+ * Two contracts live here and a caller must not confuse them:
  *
- *   1. REJECTED — HTTP 400, surfaced as `AnhurQueryError` with
+ *   1. REJECTED BY THE SERVER — HTTP 400, surfaced as `AnhurQueryError` with
  *      kind "invalid_request", retryable false, statusCode 400. The server's
  *      own sentence is embedded (escaped) in `.message`.
  *   2. ACCEPTED AND IGNORED — HTTP 200 with a result set that is not the one
@@ -11,6 +11,11 @@
  *      failure wearing a success status. Every case in the second block was
  *      confirmed against production; each is a place where a reasonable person
  *      would have predicted a 400 and does not get one.
+ *
+ * A THIRD contract — refused by the BUILDER, before anything ships — lives in
+ * `query_ast_live_null_contract.test.ts`, together with the server behaviour
+ * each refusal protects the caller from. It was split out on 2026-09-14
+ * because those two halves are only meaningful side by side.
  *
  *     ANHUR_AST_LIVE=1 ANHUR_API_KEY=... npm test
  */
@@ -173,18 +178,6 @@ describe("live AST — error contract", { skip: LIVE_ENABLED ? false : LIVE_SKIP
       assert.deepEqual(ascending(result.records.map((record) => record.id)), fixture.visibleIds);
     });
 
-    it("TRAP: $eq null answers 200 with an empty page, on every column", async () => {
-      // `null` is in the server's scalar set, so it compiles to `col = ?` bound
-      // to NULL — never true in SQL. `superseded_by IS NULL` is pinned on EVERY
-      // returnable row, so the honest answer is "all of them"; the caller gets
-      // zero, with no error. Go cannot express this; TypeScript and Python can,
-      // which makes the trap theirs alone.
-      const result = await fixture.memory.query(
-        fixture.scoped().whereEquals("superseded_by", null).build(),
-      );
-      assert.equal(result.count, 0);
-      assert.deepEqual(result.records, []);
-    });
 
     it("normalises the wire's `records: null` into an empty array", async () => {
       // The server returns a nil Go slice on zero hits, so the wire literally

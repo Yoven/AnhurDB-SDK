@@ -127,22 +127,12 @@ def test_eq_on_each_column_selects_exactly_the_oracle_rows(ast_fixture):
         assert result.id_set, f"$eq on {column} matched nothing — the case is vacuous"
 
 
-def test_eq_null_is_accepted_and_always_matches_nothing(ast_fixture):
-    """The null trap: ``col = NULL`` is never true, so this 200 is always empty.
-
-    Junior Tip [why this deserves its own test]: every row the endpoint can return
-    has ``superseded_by IS NULL`` — the SQL is hard-wired that way — yet asking
-    for ``superseded_by = null`` returns ZERO rows, because SQL equality against
-    NULL is unknown, not true. Python and TypeScript can express this filter; Go
-    cannot. A caller who writes it gets a silently empty page with a 200.
-    """
-    memory = ast_fixture.memory
-    for column in ("superseded_by", "prefix", "valid_from"):
-        result = run_case(ast_fixture, f"eq.{column}_null", f"where(uuid=S, {column}=None)",
-                          lambda c=column: memory.query(scoped(ast_fixture).where(**{c: None})),
-                          note="$eq null compiles to `col = ?` bound to NULL: never true")
-        assert result.status == 200
-        assert result.id_set == [], f"$eq null on {column} unexpectedly matched rows"
+# The ``$eq null`` trap moved to ``test_ast_query_live_null_contract.py`` on
+# 2026-09-14. It no longer belongs here because it is no longer ONE fact: the
+# builder refuses the filter client-side (2.1.0) while the server still answers
+# 200-with-zero-rows to a raw AST that says the same thing. Both halves must be
+# asserted together or the guard looks arbitrary and gets removed. Do not
+# re-add a `where(col=None)` case to this file — it cannot reach the server.
 
 
 def test_dimension_and_prefix_filter_but_are_never_returned(ast_fixture):
@@ -236,9 +226,13 @@ def test_in_operator_boundaries(ast_fixture):
         lambda: memory.query(scoped(ast_fixture).where(id__in=[delta_id, echo_id, 999999999])))
     assert with_unknown.id_set == sorted([delta_id, echo_id])
 
+    # No ``None`` in this list: the 2.1.0 builder refuses a null ELEMENT, so a
+    # case containing one never reaches the server and cannot prove anything
+    # about affinity. The null element's own two-sided contract (client refuses,
+    # server would accept) lives in ``test_ast_query_live_null_contract.py``.
     mixed = run_case(
-        ast_fixture, "in.mixed_scalar_types", "where(uuid=S, score__in=[7,'9',None])",
-        lambda: memory.query(scoped(ast_fixture).where(score__in=[7, "9", None])),
+        ast_fixture, "in.mixed_scalar_types", "where(uuid=S, score__in=[7,'9'])",
+        lambda: memory.query(scoped(ast_fixture).where(score__in=[7, "9"])),
         note="SQLite column affinity converts the TEXT '9' and matches score=9")
     assert mixed.id_set == ast_fixture.expect(lambda row: row["score"] in (7, 9))
 

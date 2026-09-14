@@ -70,7 +70,7 @@ func TestASTQueryLiveAgainstProduction(testHandle *testing.T) {
 	})
 	testHandle.Run("errors", func(subTest *testing.T) {
 		runASTErrorMatrix(subTest, harness, fixture)
-		assertClientSideErrorsAreUntyped(subTest, fixture)
+		assertClientSideErrorsAreTypedLikePythonAndTypeScript(subTest, fixture)
 		assertNilRequestIsRefused(subTest, harness)
 	})
 	testHandle.Run("blind_columns", func(subTest *testing.T) {
