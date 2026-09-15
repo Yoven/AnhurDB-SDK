@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
 )
 
 // Query executes a structured AST query via POST /api/v1/query and returns the

@@ -24,7 +24,7 @@ on `Stop` and `SessionEnd`. That is the entire mechanism; the plugin is how it g
 updated, and shipped, and [installing it](#option-a--the-plugin-recommended) is all you should need to
 do.
 
-The binary **dogfoods the official AnhurDB Go SDK** (`github.com/Yoven/AnhurDB-SDK/v2/golang/v2`), so
+The binary **dogfoods the official AnhurDB Go SDK** (`github.com/Yoven/AnhurDB-SDK/v2/golang/v3`), so
 it inherits the SDK's HTTP transport and error handling, and has **zero runtime dependencies** — no
 python, no jq, no curl, and **no Go toolchain** if you install from the marketplace (prebuilt binaries
 ship for macOS and Linux). The marketplace route also registers the AnhurDB **MCP tools** for explicit

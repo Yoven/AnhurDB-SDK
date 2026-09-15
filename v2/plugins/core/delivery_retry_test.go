@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // delivery_retry_test.go — o disco é último recurso. Cada teste aqui fixa metade

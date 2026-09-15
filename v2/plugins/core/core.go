@@ -1,6 +1,6 @@
 // Package core is the shared engine behind the AnhurDB memory plugins for Claude Code.
 //
-// It dogfoods the official AnhurDB Go SDK (github.com/Yoven/AnhurDB-SDK/v2/golang/v2) instead of poking the
+// It dogfoods the official AnhurDB Go SDK (github.com/Yoven/AnhurDB-SDK/v2/golang/v3) instead of poking the
 // REST API by hand — so it inherits the SDK's HTTP transport and error handling,
 // client contract we ship to users. It compiles into a SINGLE static binary per plugin, which
 // means the hook has ZERO runtime dependencies (no python, no jq, no curl).
@@ -36,7 +36,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // newMemory builds the SDK client. WithUserID sets the container tag the SDK reads/writes under;

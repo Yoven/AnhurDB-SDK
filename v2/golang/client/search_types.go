@@ -9,7 +9,7 @@ package client
 // responsibility a junior can name in one sentence: "what a hit looks like on
 // the wire, and what the server tells you about how it found it."
 
-import "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+import "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
 
 // SearchResult represents a single search hit from the server: the COMPLETE
 // record nested under "record" plus its relevance score under "similarity".

@@ -9,8 +9,8 @@ package probe
 import (
 	"context"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
 )
 
 func mustNotCompile(ctx context.Context, memory *client.Memory) {

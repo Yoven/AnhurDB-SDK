@@ -3,7 +3,7 @@ package client_test
 import (
 	"testing"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // TestHeaderInjectionTenantID validates that CRLF injection in

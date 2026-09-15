@@ -4,7 +4,7 @@ name: Release Go SDK
 # https://github.com/Yoven/AnhurDB-SDK/releases
 #
 # Consumers:
-#   go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.x.y
+#   go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v2.x.y
 # (tag shape: v2/golang/v2.x.y)
 
 permissions:
@@ -72,4 +72,4 @@ jobs:
             --title "Go SDK ${NEW_TAG#${TAG_PREFIX}}" \
             --notes-file /tmp/release-notes.md
           echo "Published GitHub Release: https://github.com/Yoven/AnhurDB-SDK/releases/tag/${NEW_TAG}"
-          echo "Install: go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@${NEW_TAG#${TAG_PREFIX}}"
+          echo "Install: go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@${NEW_TAG#${TAG_PREFIX}}"

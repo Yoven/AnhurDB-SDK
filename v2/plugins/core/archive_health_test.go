@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // archive_health_test.go — a redundância local só conta se alguém souber que ela

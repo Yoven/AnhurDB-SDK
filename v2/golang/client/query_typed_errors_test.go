@@ -17,7 +17,7 @@ import (
 	"errors"
 	"testing"
 
-	client "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	client "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // TestQueryBuilderRejectionsAreTypedInvalidRequest runs one representative of

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // fakeAnhurServer is a minimal session-first AnhurDB: it accepts POST /api/v1/sessions and

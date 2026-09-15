@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // TestFormatMemory_BacklogWarning pins the contract that a stuck disk queue is announced INSIDE the

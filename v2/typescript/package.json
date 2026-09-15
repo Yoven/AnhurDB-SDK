@@ -1,6 +1,6 @@
 {
   "name": "anhurdb",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "TypeScript SDK for AnhurDB \u2014 dead-simple memory for AI agents",
   "author": "Paulo Junior <paulo.junior@yoven.io>",
   "license": "MIT",

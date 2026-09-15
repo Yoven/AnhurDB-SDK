@@ -11,7 +11,7 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.20
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v2.0.20
 ```
 
 > The **source** in this tree is `2.1.0` (`client.Version`), converged with the
@@ -29,7 +29,7 @@ package main
 import (
     "context"
     "fmt"
-    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
 )
 
 func main() {
@@ -226,8 +226,8 @@ Structured filtering via `POST /api/v1/query`. Build a `QueryRequest` directly o
 ```go
 import (
     "context"
-    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
+    "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 mem := anhurdb.NewMemory("anhur_xxx")
@@ -274,7 +274,7 @@ if err != nil {
 The SDK includes a retriever adapter for Go agentic frameworks:
 
 ```go
-import "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/integrations/dspy"
+import "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/integrations/dspy"
 
 retriever := dspy.NewRetriever(mem, 10)
 docs, err := retriever.GetRelevantDocuments(ctx, "user's role?")

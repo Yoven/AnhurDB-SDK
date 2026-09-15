@@ -51,8 +51,8 @@ func TestDeletedSurfaceDoesNotCompile(t *testing.T) {
 	// it would be picked up by `go build ./...` and break the ordinary build.
 	probeDir := t.TempDir()
 	goModContents := "module anhurdb.parity/probe\n\ngo 1.24\n\n" +
-		"require github.com/Yoven/AnhurDB-SDK/v2/golang/v2 v2.0.0\n\n" +
-		"replace github.com/Yoven/AnhurDB-SDK/v2/golang/v2 => " + moduleRoot + "\n"
+		"require github.com/Yoven/AnhurDB-SDK/v2/golang/v3 v3.0.0\n\n" +
+		"replace github.com/Yoven/AnhurDB-SDK/v2/golang/v3 => " + moduleRoot + "\n"
 	if writeErr := os.WriteFile(filepath.Join(probeDir, "go.mod"), []byte(goModContents), 0o644); writeErr != nil {
 		t.Fatalf("writing probe go.mod: %v", writeErr)
 	}

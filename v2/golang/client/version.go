@@ -30,7 +30,7 @@ package client
 // SearchWithRetrieval stopped returning a tuple that could not carry
 // leg_scores. Every removal is a compile error, by design — the old code
 // compiled and lied.
-const Version = "3.0.0"
+const Version = "3.0.1"
 
 // UserAgentPrefix names the SDK in the User-Agent header. Kept separate from
 // Version so the two concerns (who I am / which release I am) never get

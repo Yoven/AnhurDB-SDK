@@ -145,8 +145,8 @@ func TestQueryBuilderExecuteRunsAgainstMemory(t *testing.T) {
 func TestUserAgentIsDerivedFromVersion(t *testing.T) {
 	// The literal moves with the release, and it moves in ALL THREE SDKs in the
 	// same pass — that is the invariant this line pins, not the number itself.
-	if Version != "3.0.0" {
-		t.Fatalf("Version=%q want 3.0.0 (converged with the TypeScript and Python SDKs)", Version)
+	if Version != "3.0.1" {
+		t.Fatalf("Version=%q want 3.0.1 (converged with the TypeScript and Python SDKs)", Version)
 	}
 	if UserAgent != "AnhurSDK-Golang/"+Version {
 		t.Fatalf("UserAgent=%q must be derived from Version, never typed again", UserAgent)

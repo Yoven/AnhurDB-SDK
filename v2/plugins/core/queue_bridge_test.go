@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // selectiveFakeServer is a session-first AnhurDB that can REJECT writes for chosen

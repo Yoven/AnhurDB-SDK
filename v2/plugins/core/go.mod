@@ -4,7 +4,7 @@ go 1.24.0
 
 toolchain go1.24.4
 
-require github.com/Yoven/AnhurDB-SDK/v2/golang/v2 v2.0.6
+require github.com/Yoven/AnhurDB-SDK/v2/golang/v3 v3.0.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -21,5 +21,5 @@ require (
 )
 
 // Local dogfood: build against the canonical SDK that ships in this repo (../../golang). For a
-// standalone/published build, drop this replace and `go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2`.
-replace github.com/Yoven/AnhurDB-SDK/v2/golang/v2 => ../../golang
+// standalone/published build, drop this replace and `go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3`.
+replace github.com/Yoven/AnhurDB-SDK/v2/golang/v3 => ../../golang

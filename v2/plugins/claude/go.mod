@@ -7,7 +7,7 @@ toolchain go1.24.4
 require github.com/anhurdb/anhur-memory-core v0.0.0
 
 require (
-	github.com/Yoven/AnhurDB-SDK/v2/golang/v2 v2.0.6 // indirect
+	github.com/Yoven/AnhurDB-SDK/v2/golang/v3 v3.0.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -26,4 +26,4 @@ require (
 // replace even though it reaches the SDK transitively through the core package.
 replace github.com/anhurdb/anhur-memory-core => ../core
 
-replace github.com/Yoven/AnhurDB-SDK/v2/golang/v2 => ../../golang
+replace github.com/Yoven/AnhurDB-SDK/v2/golang/v3 => ../../golang

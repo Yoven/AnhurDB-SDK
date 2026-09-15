@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // Config is the per-plugin identity — the ONLY thing that differs between the `claude` and `hermes`

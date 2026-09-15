@@ -35,7 +35,7 @@ npm install \
   https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.17/anhurdb-2.0.17.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v2@v2.0.20
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v2.0.20
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
@@ -374,8 +374,8 @@ package main
 import (
     "context"
     "fmt"
-    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v2"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
+    "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 func main() {
@@ -569,7 +569,7 @@ AnhurDB-SDK/
 |       |   +-- types.go     Response types, Entity, Upload, QueryRequest
 |       |   +-- errors.go    Typed error constants
 |       +-- models/          Record and session types
-|       +-- go.mod           github.com/Yoven/AnhurDB-SDK/v2/golang/v2
+|       +-- go.mod           github.com/Yoven/AnhurDB-SDK/v2/golang/v3
 |
 +-- docs/
 |   +-- general/ARCHITECTURE.md

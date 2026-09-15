@@ -24,7 +24,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // maxDeliveryAttempts é o número do dono: três tentativas antes de aceitar o disco.

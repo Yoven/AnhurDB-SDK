@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	client "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 func TestWaitForUpload_ToleratesEarly404ThenCompletes(t *testing.T) {

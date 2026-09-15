@@ -44,7 +44,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
 )
 
 // pinPlaneScope returns the caller's options with the wrapper's plane appended

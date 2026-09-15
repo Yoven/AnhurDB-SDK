@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
 )
 
 // astRawRecord is one record exactly as the server serialised it. Timestamps

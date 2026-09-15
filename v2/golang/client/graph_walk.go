@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
 )
 
 // WalkResult contains the graph traversal output from the walk endpoints.

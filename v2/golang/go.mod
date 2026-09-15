@@ -1,4 +1,4 @@
-module github.com/Yoven/AnhurDB-SDK/v2/golang/v2
+module github.com/Yoven/AnhurDB-SDK/v2/golang/v3
 
 // go 1.24 is the LANGUAGE version this library requires — deliberately the
 // oldest Go it actually compiles under, because a library's `go` directive is a

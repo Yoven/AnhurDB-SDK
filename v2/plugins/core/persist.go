@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // hookInput is the JSON Claude Code pipes to a hook on stdin. Stop hooks include transcript_path;

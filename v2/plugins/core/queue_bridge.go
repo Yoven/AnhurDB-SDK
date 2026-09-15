@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v2/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
 // queueDrainLimit é o teto de itens por dreno. Existe para o dreno não virar uma
