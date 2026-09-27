@@ -3,8 +3,10 @@
 
 The pooled harness (``rbench_sdk.py``) ingests every question's evidence into
 one flat tenant and lets every query fight every other question's sessions.
-That is the paper's protocol: strictly harder than the official one, biased
-downward on purpose. THIS harness measures the other end, for numbers that can
+That is the paper's protocol: harder than the official one for the fused
+pipeline (+14.5 pp r@1 on the 200-question pin, a contrast that also crosses
+corpus variant; the lexical arm does not move significantly), biased downward
+on purpose. THIS harness measures the other end, for numbers that can
 sit next to vendor marketing without a footnote war:
 
   * corpus: ``longmemeval_s`` — the official variant vendors quote, where each

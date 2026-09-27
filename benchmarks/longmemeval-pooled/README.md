@@ -24,12 +24,17 @@ consequences follow, and we state both plainly:
 * Recall measures the **retrieval substrate**, not end-to-end answer quality.
   A system could score well here and still answer badly.
 
-## The pooled protocol (harder than the official one)
+## The pooled protocol (harder than the official one for the fused pipeline)
 
 All evidence sessions are ingested **flat into a single tenant**, so every query
 searches the entire corpus and competes with every other question's evidence.
 The official LongMemEval protocol isolates each question's haystack. Pooling is
-strictly harder and biases our numbers **downward**.
+harder for the fused pipeline and biases its numbers **downward**: on the
+200-question pin, the official isolation over `longmemeval_s`
+(`rbench_isolated.py`, results `iso6-score-20260831T214442Z-*`) scores 14.5 pp
+of r@1 higher, while the lexical arm does not move significantly. The two
+settings also differ in corpus variant (oracle vs `longmemeval_s`), so the gap
+is a difference between settings, not a controlled ablation.
 
 Ingestion is episodic-only: the harness writes **nothing but** episodic records,
 and never creates a consolidated, hub or router node itself. That is a statement
@@ -47,7 +52,11 @@ corpora even when the counts match.
 `rbench_sdk.py` is the only harness. It exercises AnhurDB through the official
 Python SDK — the same client surface a customer uses — always letting the
 **server** embed the query (the product path), and expressing the lexical-only
-leg as `skip_query_embed=True`.
+leg as `skip_query_embed=True`. The isolated protocol runs through its companion
+scripts (`rbench_isolated.py` and `rbench_isolated_ingest.py`), which import the
+contract-pinned session-identity, chunking and record-body functions from it
+instead of copying them. Their per-question scoping and answer key are not
+covered by the contract test.
 
 There used to be a second, REST-speaking harness (`rbench.py`), and the two were
 held to each other by a parity test. It has been retired. What replaced it is
