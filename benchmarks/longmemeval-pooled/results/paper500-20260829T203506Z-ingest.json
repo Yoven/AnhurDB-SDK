@@ -1,0 +1,23 @@
+{
+  "corpus": {
+    "n_per_type": 133,
+    "oracle_file": "longmemeval_oracle.json",
+    "oracle_sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c"
+  },
+  "endpoint": "https://anhurdb.yoven.ai",
+  "finished_at_utc": "2026-08-29T20:55:32Z",
+  "harness": "rbench_sdk",
+  "ingest": {
+    "chatty_chunks": 3,
+    "chatty_sessions": 183,
+    "elapsed_s": 1225.4,
+    "ingest_sleep_ms": 400,
+    "questions": 500,
+    "records_err": 0,
+    "records_ok": 1313,
+    "records_per_s": 1.072
+  },
+  "phase": "ingest",
+  "tag": "paper500-20260829T203506Z",
+  "tenant": "lme-pool"
+}
