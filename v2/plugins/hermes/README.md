@@ -1,5 +1,10 @@
 # AnhurDB memory for Hermes
 
+> **Superado em 2026-10-17 — não é o plugin do Hermes Agent.** Este diretório é um plugin do
+> **Claude Code** apontado para outro container, e o Hermes Agent não consegue carregá-lo. Ele
+> saiu do marketplace `anhur`. Para o Hermes, use o provider Python em
+> [`../hermes-agent/`](../hermes-agent/README.md). Ver `../docs/PLUGIN_PLATFORMS.md`, seção 3.
+
 Give a second, isolated agent identity — **Hermes** — a **persistent, sovereign long-term memory**
 backed by [AnhurDB](https://anhur.yoven.ai).
 

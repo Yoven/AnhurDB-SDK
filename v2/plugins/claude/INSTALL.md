@@ -98,7 +98,8 @@ claude plugin marketplace add /path/to/AnhurDB-SDK      # the REPO ROOT, not v2/
 ```
 
 The manifest is `.claude-plugin/marketplace.json` **at the repo root**; the `anhur` marketplace
-declares both `anhurdb-memory` (this plugin) and `anhurdb-memory-hermes`.
+declares `anhurdb-memory` (this plugin). For the Hermes Agent, use the Python provider in
+`v2/plugins/hermes-agent/` — it is installed with `hermes plugins install`, not from this marketplace.
 
 Check it registered:
 

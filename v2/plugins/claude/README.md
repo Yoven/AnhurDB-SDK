@@ -81,9 +81,6 @@ bundled `.mcp.json`.
 Install at **user scope** unless you have a reason not to: this is a *long-term memory*, and scoping it
 to one repository means it forgets everywhere else.
 
-(The `anhur` marketplace also offers `anhurdb-memory-hermes` — the same engine pointed at a separate
-tenant/container, for a second, isolated agent identity.)
-
 Then [configure the environment](#configure-the-environment) and start a new session.
 
 #### Working on the plugin itself

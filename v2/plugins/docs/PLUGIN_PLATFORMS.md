@@ -615,6 +615,9 @@ sed -n '1548,1568p' $H/hermes_cli/plugins.py        # auto-coerção para kind="
 5. **`anhurdb-memory-hermes` está anunciado no marketplace** (`.claude-plugin/marketplace.json`)
    como identidade isolada, e **não é isolada** (mesma chave/tenant). Ou se cria uma chave de
    tenant dedicada, ou a descrição precisa parar de prometer isolamento.
+   **RESOLVIDO 2026-10-17:** a entrada saiu do `marketplace.json`. O código em
+   `v2/plugins/hermes/` continua no repositório e no gate de CI, mas não é mais anunciado; o
+   plugin do Hermes é o provider Python em `v2/plugins/hermes-agent/`.
 6. **O tenant da chave atual é desconhecido** e só pode ser confirmado por
    `GET /internal/admin/keys` com acesso `MasterOnly` no ambiente hospedado. Nada aqui
    afirma qual é.
