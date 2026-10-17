@@ -27,10 +27,10 @@ import { QueryBuilder } from "../query.js";
 
 /** True when the caller opted in to hitting a real server. */
 export const LIVE_ENABLED =
-  process.env.ANHUR_AST_LIVE === "1" && !!process.env.ANHUR_API_KEY;
+  process.env.ANHUR_LIVE_AST === "1" && !!process.env.ANHUR_API_KEY;
 
 /** Reason string for `describe(..., { skip })` when the opt-in is absent. */
-export const LIVE_SKIP_REASON = "set ANHUR_AST_LIVE=1 and ANHUR_API_KEY to run";
+export const LIVE_SKIP_REASON = "set ANHUR_LIVE_AST=1 and ANHUR_API_KEY to run";
 
 /** Everything a live suite needs to write expectations without guessing. */
 export interface AstFixture {

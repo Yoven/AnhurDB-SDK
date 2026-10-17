@@ -17,7 +17,7 @@
  * each refusal protects the caller from. It was split out on 2026-09-14
  * because those two halves are only meaningful side by side.
  *
- *     ANHUR_AST_LIVE=1 ANHUR_API_KEY=... npm test
+ *     ANHUR_LIVE_AST=1 ANHUR_API_KEY=... npm test
  */
 import { after, before, describe, it } from "node:test";
 import * as assert from "node:assert/strict";

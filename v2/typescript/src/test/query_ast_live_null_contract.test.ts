@@ -20,7 +20,7 @@
  *
  * Those two facts landed in the SAME commit and contradicted each other in the
  * suite: `query_ast_live_errors.test.ts` still asserted a 200 for a call the new
- * guard now stops inside the process. Gated behind `ANHUR_AST_LIVE`, it never
+ * guard now stops inside the process. Gated behind `ANHUR_LIVE_AST`, it never
  * ran in CI, and the contradiction shipped in 2.1.0.
  *
  * Junior Tip [why fact 1 is not simply deleted, 2026-09-14]: a suite that only
@@ -30,7 +30,7 @@
  * the silent empty page. So fact 1 is still proven here — through a RAW AST
  * object, which `Memory.query()` still forwards unvalidated by design.
  *
- *     ANHUR_AST_LIVE=1 ANHUR_API_KEY=... npm test
+ *     ANHUR_LIVE_AST=1 ANHUR_API_KEY=... npm test
  */
 import { after, before, describe, it } from "node:test";
 import * as assert from "node:assert/strict";

@@ -8,7 +8,7 @@
  * `query_ast_live_errors.test.ts`; the byte-level builder pins are offline in
  * `query_builder_wire.test.ts`.
  *
- *     ANHUR_AST_LIVE=1 ANHUR_API_KEY=... npm test
+ *     ANHUR_LIVE_AST=1 ANHUR_API_KEY=... npm test
  */
 import { after, before, describe, it } from "node:test";
 import * as assert from "node:assert/strict";
