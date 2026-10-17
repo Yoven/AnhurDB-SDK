@@ -28,14 +28,16 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.17/anhurdb-2.0.17.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v3.0.1/anhurdb-3.0.1.tgz
 ```
 
-> The **source** in this tree is `2.1.0` (`SDK_VERSION`), converged with the Go
-> and Python SDKs. The pin above deliberately names the newest **published**
-> tarball: pinning a version that is not released yet would 404 for everyone who
-> follows this README. It moves to `v2.1.0` when the tag is pushed. (It was stale
-> at `v2.0.10` — seven releases behind — until 2026-09-05.)
+> The pin above is the newest **published** tarball (`v2/typescript/v3.0.1`) and it
+> matches `SDK_VERSION` in this tree. Go and Python ship the same number.
+>
+> **3.0.0 is breaking.** `create()` takes the session as its first argument,
+> `SessionStats.last_active` is really `last_activity`, and `UploadResult`,
+> `WalkResult` and `ProfileResult` gained the fields the server actually sends.
+> Every break is compile-time. See `CHANGELOG.md`.
 
 ## Usage
 

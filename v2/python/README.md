@@ -25,16 +25,14 @@ Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) 
 
 ```bash
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.20/anhurdb-2.0.20-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
 ```
 
-> The pin above is the newest wheel actually **published**. The source in this
-> repository is already at `3.0.0` (`anhurdb.__version__`); the pin moves when the
-> 3.0.0 release is cut, not before — a doc that pins a version nobody can download
-> is worse than a stale one. (It was stale at `v2.0.12` — eight releases behind —
-> until 2026-09-05.)
+> The pin above is the newest wheel actually **published** (`v2/python/v3.0.1`) and
+> it matches `anhurdb.__version__` in this tree. Go and TypeScript ship the same
+> number.
 >
-> **3.0.0 is a breaking release.** `create()` changed arity, twelve responses
+> **3.0.x is a breaking release.** `create()` changed arity, twelve responses
 > became typed models instead of dicts, and `get_entity_graph()` now defaults to
 > the server's own depth of 1 instead of 2. Read `CHANGELOG.md` before upgrading.
 

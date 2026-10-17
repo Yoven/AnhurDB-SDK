@@ -28,24 +28,33 @@ Packages ship on **[GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releas
 ```bash
 # Python — wheel from the Python SDK release assets
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v2.0.20/anhurdb-2.0.20-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
 
 # TypeScript — tarball from the TypeScript SDK release assets
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v2.0.17/anhurdb-2.0.17.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v3.0.1/anhurdb-3.0.1.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v2.0.20
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v3.0.1
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
 >
-> The three pins above are the **latest published tag of each SDK** as of 2026-09-05
-> (`v2/python/v2.0.20`, `v2/typescript/v2.0.17`, `v2/golang/v2.0.20`) — verified with
-> `git tag -l 'v2/*'`, not copied from another doc. They deliberately do **not** match each
-> other: the tags are per-language and were cut on different days. They also do not match the
-> in-repo source version (2.1.0), because 2.1.0 has not been released — pinning an unpublished
-> version would hand every reader a 404 instead of a stale-but-working install.
+> The three pins above are the **latest published tag of each SDK** as of 2026-09-15
+> (`v2/python/v3.0.1`, `v2/typescript/v3.0.1`, `v2/golang/v3.0.1`) — verified against
+> `git ls-remote --tags`, the release assets, and `proxy.golang.org` for the Go module;
+> not copied from another doc. The three arms now ship the SAME number. `2.1.0` shipped on
+> 2026-09-14 and `3.0.0` superseded it the same day, so pin `3.0.1`, never `2.1.0`.
+>
+> **The Go module path moved to `/v3` in 3.0.0.** Note the path carries TWO `v2`-looking
+> segments: `github.com/Yoven/AnhurDB-SDK/v2/golang/v3`. The first `v2` is this repository's
+> directory layout and never changes; the trailing suffix is the Go major version. Bumping
+> only the version — `.../golang/v2@v3.0.1` — does not resolve, because Go refuses a v3+
+> version on a module path without the matching major suffix.
+>
+> **3.0.x is a breaking release in all three languages.** `create()` takes the session
+> first, several responses became typed, and the entity graph now uses the server's own
+> default depth of 1. Read each SDK's `CHANGELOG.md` before upgrading.
 >
 > These pins are the floor for the features documented below: `delete_file`/`deleteFile`/
 > `DeleteFile`, `expand_related` and `search_with_retrieval`/`searchWithRetrieval`/

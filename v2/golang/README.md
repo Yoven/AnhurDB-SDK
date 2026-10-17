@@ -11,15 +11,23 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v2.0.20
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v3.0.1
 ```
 
-> The **source** in this tree is `2.1.0` (`client.Version`), converged with the
-> TypeScript and Python SDKs. The pin above deliberately names the newest
-> **published** tag: pinning a version that is not released yet would break
-> `go get` for everyone who follows this README. It moves to `v2.1.0` when the
-> tag is pushed. (It was stale at `v2.0.11` — seven releases behind — until
-> 2026-09-05.)
+> The pin above is the newest **published** tag (`v2/golang/v3.0.1`, verified on
+> proxy.golang.org), and it matches `client.Version` in this tree. TypeScript and
+> Python ship the same number.
+>
+> **The module path moved to `/v3` in 3.0.0.** It contains TWO `v2`-looking segments:
+> `github.com/Yoven/AnhurDB-SDK/v2/golang/v3`. The first `v2` is this repository's
+> directory layout — it never changes. The trailing one is the Go major-version
+> suffix. Bumping only the version, `.../golang/v2@v3.0.1`, resolves to nothing:
+> Go refuses a v3+ version on a module path with no matching major suffix, and the
+> error names the path, not the version, so it reads like the module is missing.
+>
+> **3.0.0 is breaking.** Sixteen read methods dropped the `opts ...ReadOption`
+> parameter they silently discarded, `SmartSearch` and `SearchWithRetrieval` return
+> typed envelopes, and `GetSessionClusters` gained two parameters. See `CHANGELOG.md`.
 
 ## Quick Start
 
@@ -43,8 +51,10 @@ func main() {
 
     // Reads do not need CreateSession
     hits, _ := mem.Search(ctx, "what does this user do?", anhurdb.SessionsAll())
-    for _, h := range hits {
-        fmt.Printf("%s (%.2f)\n", h.Summary, h.Similarity)
+    for _, hit := range hits {
+        // A hit is {Record, Similarity}: the summary lives on the RECORD, and
+        // Similarity is its SIBLING, never a field inside it.
+        fmt.Printf("%s (%.2f)\n", hit.Record.Summary, hit.Similarity)
     }
 
     // Get user profile (SDK sends GET /profile?tag=<container_tag>)
