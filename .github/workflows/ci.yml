@@ -82,6 +82,45 @@ jobs:
           poetry install -v
       - run: poetry run pytest -vv tests/
 
+  # Junior Tip [por que os plugins entraram na CI, 2026-10-17]: o provider do
+  # Hermes (Python) e o harness de paridade Go x Python nunca rodavam em CI.
+  # Quando o SDK 3.0 tipou o perfil, o plugin Go quebrou em compilacao e foi
+  # consertado (26fe88c), mas o provider Python passou a montar o bloco de
+  # memoria VAZIO em silencio por um mes: o teste que pegava isso existia e
+  # ninguem o executava. Este job roda os testes do provider contra o SDK
+  # Python DESTE commit, que e o mesmo que o INSTALL manda instalar.
+  test-plugins:
+    name: Test Hermes provider + Go/Python plugin parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Mesma versao que release-plugin.yml usa para os binarios.
+          go-version: "1.24.4"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the Python SDK the provider dogfoods
+        working-directory: v2/python
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+          poetry install -v
+      - name: Hermes provider tests
+        working-directory: v2/plugins/hermes-agent/tests
+        # Junior Tip: NAO usar `poetry -C ../../../python run pytest .` aqui.
+        # O -C muda o diretorio de trabalho, o `.` passa a ser v2/python e o
+        # job roda os testes do SDK, verde, sem tocar no plugin. Chamar o
+        # python do venv pelo caminho absoluto mantem o cwd neste diretorio.
+        run: |
+          set -euo pipefail
+          sdk_python="$(cd ../../../python && poetry env info -p)/bin/python"
+          "$sdk_python" -m pytest -q -rs -p no:cacheprovider .
+      - name: Go/Python plugin parity
+        working-directory: v2/plugins/tests/parity
+        run: ./run_parity.sh
+
   build-ts:
     name: Build TypeScript SDK
     runs-on: ubuntu-latest

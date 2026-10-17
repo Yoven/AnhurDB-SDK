@@ -44,14 +44,17 @@ supported one. The two are unrelated code with unrelated formats.
 ## 1. Install the AnhurDB Python SDK into the Hermes environment
 
 The plugin talks to AnhurDB through the official Python SDK. It is **not** in
-`plugin.yaml`'s `pip_dependencies` (it is not resolvable from a public index in
-every environment), so install it explicitly, into the interpreter that runs
-`hermes`:
+`plugin.yaml`'s `pip_dependencies` (it is not on PyPI; releases ship on GitHub),
+so install it explicitly, into the interpreter that runs `hermes`:
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/python -m pip install -e \
-  /path/to/AnhurDB-SDK/v2/python
+~/.hermes/hermes-agent/venv/bin/python -m pip install \
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
 ```
+
+That is the published wheel of the SDK version this plugin is tested against.
+If you are developing the SDK, install your checkout instead with
+`pip install -e /path/to/AnhurDB-SDK/v2/python`.
 
 Without it the plugin still loads, and `is_available()` returns `False` with the
 reason spelled out — the host then drops the provider with a single DEBUG line.

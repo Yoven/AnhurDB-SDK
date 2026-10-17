@@ -7,7 +7,7 @@
 # so the directory, this manifest, and the config key all read `anhurdb`.
 # See README.md → Install.
 name: anhurdb
-version: 1.0.0
+version: 1.0.1
 description: "AnhurDB sovereign long-term memory — one Hermes session = one AnhurDB session, hybrid recall per turn, and a durable on-disk queue so a turn is never dropped."
 author: "Anhur — Yoven"
 

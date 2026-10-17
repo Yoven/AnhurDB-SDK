@@ -32,8 +32,13 @@ The plugin dogfoods the official SDK (`anhurdb`), and Hermes runs from its own
 virtualenv, so the SDK must be importable **there**:
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/pip install -e /path/to/AnhurDB-SDK/v2/python
+~/.hermes/hermes-agent/venv/bin/pip install \
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
 ```
+
+The SDK is not on PyPI, so `pip install anhurdb` does not work; use the release
+wheel above. Working on the SDK itself? Install your checkout instead:
+`pip install -e /path/to/AnhurDB-SDK/v2/python`.
 
 If you skip this, the plugin still loads and reports the exact command above
 through `is_available()` — it never fails silently.

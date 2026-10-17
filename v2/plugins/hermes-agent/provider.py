@@ -31,7 +31,7 @@ from .delivery_retry import deliver_with_retry
 from .memory_queue import BacklogSummary, DurableTurnQueue, QueueWriteError
 from .queue_store import StateQueue
 from .schemas import MEMORY_TOOL_SCHEMAS
-from .sdk_runtime import AnhurRuntime, AnhurRuntimeError
+from .sdk_runtime import SDK_WHEEL_URL, AnhurRuntime, AnhurRuntimeError
 from .tools import dispatch as dispatch_memory_tool
 from .transcript import (
     build_chunk_header,
@@ -170,9 +170,8 @@ class AnhurDBMemoryProvider(_MemoryProviderBase):  # type: ignore[misc,valid-typ
         if sdk_problem:
             self._availability_reason = (
                 f"the AnhurDB Python SDK is not importable ({sdk_problem}). "
-                "Install it into the Hermes environment, e.g. "
-                "`~/.hermes/hermes-agent/venv/bin/pip install -e "
-                "<path>/AnhurDB-SDK/v2/python`."
+                "Install it into the Hermes environment: "
+                f"`~/.hermes/hermes-agent/venv/bin/pip install {SDK_WHEEL_URL}`."
             )
             self._report_problem("sdk", self._availability_reason)
             return False

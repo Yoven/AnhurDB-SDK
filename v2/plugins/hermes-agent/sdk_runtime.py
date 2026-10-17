@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 # "registered session" state is never consulted. See _ensure_session.
 _SESSION_WILDCARD = "*"
 
+# Where a CUSTOMER gets the SDK. Junior Tip [por que uma URL e nao
+# `pip install anhurdb`, 2026-10-17]: o pacote NAO esta no PyPI (o release
+# publica so no GitHub Releases; PYPI_API_TOKEN nunca foi configurado), entao
+# `pip install anhurdb` falha com "No matching distribution". Esta e a roda
+# publicada que foi instalada e importada num venv limpo. verify.py repete a
+# mesma string porque roda como script solto e nao importa este modulo;
+# tests/test_install_hint.py falha se as duas divergirem. Ao publicar um SDK
+# novo, troque a versao AQUI e la.
+SDK_WHEEL_URL = (
+    "https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl"
+)
+
 
 class AnhurRuntimeError(RuntimeError):
     """Any failure talking to AnhurDB, with the API key stripped out."""
@@ -321,8 +333,22 @@ class AnhurRuntime:
         return self._run(lambda: self._profile(), timeout_seconds)
 
     async def _profile(self) -> Dict[str, Any]:
+        """Fetch the profile and hand the formatter a plain dict.
+
+        Junior Tip [SDK 3.x tipou o perfil, 2026-10-17]: até o SDK 2.x
+        ``client.profile()`` devolvia um dict; o 3.0 passou a devolver um
+        ``ProfileResult`` (pydantic). ``format_profile_block`` testa
+        ``isinstance(profile, dict)`` e, com o objeto tipado, caía no ramo
+        vazio SEM erro: o bloco de memória saía com 0 registros em 0 sessões.
+        É a mesma quebra que o plugin Go teve no 26fe88c. Normalizar aqui,
+        na fronteira com o SDK, mantém os dois formatos funcionando e deixa o
+        formatador sem saber de pydantic.
+        """
         client = await self._ensure_client()
-        return await client.profile()
+        profile = await client.profile()
+        if hasattr(profile, "model_dump"):
+            return profile.model_dump()
+        return profile
 
 
 def _client_timeout(total_seconds: float) -> Any:

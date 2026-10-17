@@ -43,6 +43,11 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 SOURCE_DIR = Path(__file__).resolve().parent
+# Mesma string de sdk_runtime.SDK_WHEEL_URL (este script nao importa o plugin).
+# tests/test_install_hint.py garante que as duas nao divergem.
+SDK_WHEEL_URL = (
+    "https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl"
+)
 
 # Environment marker that stops the re-exec from looping forever.
 REEXEC_MARKER = "ANHUR_VERIFY_REEXECED"
@@ -566,7 +571,7 @@ def step_config(report: Report, provider: Any, hermes_home: Path) -> bool:
     sdk_fix = (
         f'"{sys.executable}" -m pip install -e "{sdk_path}"'
         if (sdk_path / "anhurdb").is_dir()
-        else f'"{sys.executable}" -m pip install anhurdb'
+        else f'"{sys.executable}" -m pip install {SDK_WHEEL_URL}'
     )
 
     if provider.is_available():
