@@ -226,10 +226,12 @@ class SearchScopeMixin(HybridSearchMixin):
         memory_type: Optional[str] = None,
         scope: str = "sessions",
     ) -> SmartSearchResponse:
-        """Full-text search with cognitive weight boosting.
+        """Lexical (FTS) search with cognitive weight boosting.
 
-        Prefer this over ``search()`` for conceptual text queries (no
-        embedding required). Ranks by text relevance × cognitive weight.
+        Lexical only: the server runs SmartSearchFTS, so it matches words,
+        not meaning. For conceptual queries use ``search()`` (hybrid). Use
+        this when exact terms matter and no embedding is wanted. Ranks by
+        text relevance × cognitive weight.
         Same memory-plane ``scope`` as ``search()`` (default ``sessions``).
 
         ``sessions`` is MANDATORY (ADR-0014), exactly as in ``search``.

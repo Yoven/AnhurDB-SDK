@@ -28,11 +28,11 @@ send `X-Tenant-ID`.
 Python / TypeScript / Go SDK ──REST──► smart-router ──► AnhurDB data plane
                                                           ▲
 MCP client (Claude, Cursor, …) ──MCP──► AnhurDB MCP ──gRPC┘
-                                        server (22 tools)
+                                        server (23 tools)
 ```
 
 The **SDKs enter over REST** through the smart-router. The **MCP server talks gRPC**
-to the data plane — since 2026-07-28 that is true for all 22 tools; the last four REST
+to the data plane — since 2026-07-28 that is true for all 23 tools (22 + delete_file); the last four REST
 holdouts (`explain_record`, `query(ast=)`, the `read_entities` walk, `upload_file`)
 migrated in ADR-0013 Fase 5. This is a transport change on the MCP side only; the
 public REST API kept its shape.

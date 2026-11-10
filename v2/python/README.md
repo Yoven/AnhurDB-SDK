@@ -138,7 +138,7 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 | Method | Description |
 |--------|-------------|
 | `search_by_type(type, sessions, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
-| `smart_search(query, sessions, *, limit=10, memory_type=None, scope="sessions")` | Full-text + cognitive weight (prefer for conceptual text). `memory_type` is sent as `?type=`. Returns `SmartSearchResponse`, NOT `list[SearchResult]` — `results` is `None` (not `[]`) when nothing matched, and `relevance` is a LEXICAL score that must never be compared with `SearchResult.similarity` |
+| `smart_search(query, sessions, *, limit=10, memory_type=None, scope="sessions")` | **Lexical only** — full-text relevance × cognitive weight, no embedding. Use it for keywords and identifiers; for conceptual queries use `search()`. `memory_type` is sent as `?type=`. Returns `SmartSearchResponse`, NOT `list[SearchResult]` — `results` is `None` (not `[]`) when nothing matched, and `relevance` is a LEXICAL score that must never be compared with `SearchResult.similarity` |
 | `recall(query, sessions, limit=10)` | Same engine as `search`, MCP naming |
 | `recent(limit=20)` | Most recent records |
 

@@ -96,7 +96,7 @@ mem := anhurdb.NewMemory("key",
 sessionID, err := mem.CreateSession(ctx)               // Required before writes
 result, err := mem.Add(ctx, "text",
     anhurdb.WithMode("ingest"), anhurdb.WithSessionID(sessionID))
-hits, err := mem.Search(ctx, "query", anhurdb.SessionsAll())          // Plane search (query=FTS text; prefer SmartSearch for conceptual RAG)
+hits, err := mem.Search(ctx, "query", anhurdb.SessionsAll())          // Hybrid plane search (lexical + server-side embedding) — the conceptual entry point
 hits, err := mem.Search(ctx, "query", []string{sessionID}, anhurdb.WithLimit(20)) // One chat, with options
 profile, err := mem.Profile(ctx)                       // User profile (?tag=)
 ```
@@ -137,7 +137,7 @@ An unknown mode is refused before the request leaves:
 
 ```go
 hits, err := mem.SearchByType(ctx, "fact", anhurdb.SessionsAll(), 50) // Tenant type filter only — not a Shared Data plane switch
-raw, err := mem.SmartSearch(ctx, "query", anhurdb.SessionsAll(), 10)  // Prefer for conceptual text (weight-boosted FTS)
+raw, err := mem.SmartSearch(ctx, "query", anhurdb.SessionsAll(), 10)  // Lexical only (weight-boosted FTS, no embedding) — keywords/identifiers
 hits, err := mem.Recall(ctx, "query", anhurdb.SessionsAll(), 20)      // Same engine as Search, MCP naming
 records, err := mem.Recent(ctx, 5)                     // Most recent
 ```
@@ -198,7 +198,7 @@ upload, err := mem.UploadFile(ctx, "report.pdf", rawBytes, sessionID, episodicID
 upload, err = mem.UploadFile(ctx, "handbook.pdf", rawBytes, "", 0, anhurdb.WithUploadMode("tenant_shared"))
 
 // Poll processing status
-status, err := mem.UploadStatus(ctx, upload.ID)
+status, err := mem.UploadStatus(ctx, upload.RecordID)
 fmt.Println(status.Status) // "processing", "completed", "failed"
 ```
 
@@ -215,7 +215,7 @@ err = mem.Supersede(ctx, 42, 99)
 sessionID, err := mem.CreateSession(ctx)                   // Required before Add/Create
 sessions, err := mem.ListSessions(ctx)                     // All sessions with stats
 history, err := mem.GetSessionHistory(ctx, "uuid", 50, 0)  // Paginated history
-clusters, err := mem.GetSessionClusters(ctx, "uuid")       // Thematic clusters
+clusters, err := mem.GetSessionClusters(ctx, "uuid", 0, 0) // Thematic clusters (0, 0 = server defaults eps 0.45, min 3)
 localID := mem.NewSession()                                // Local rotate only (not registered)
 _, err = mem.OpenSession(ctx)                              // Local generate + register
 fmt.Println(mem.SessionID(), sessionID, localID)

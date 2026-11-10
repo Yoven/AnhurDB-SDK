@@ -441,7 +441,7 @@ func main() {
     // Sessions
     sessions, _ := mem.ListSessions(ctx)
     history, _ := mem.GetSessionHistory(ctx, "session-uuid", 50, 0)
-    clusters, _ := mem.GetSessionClusters(ctx, "session-uuid")
+    clusters, _ := mem.GetSessionClusters(ctx, "session-uuid", 0, 0) // 0, 0 = server defaults
     // Local rotate only — register with CreateSession(WithCreateSessionID) or OpenSession
     _ = mem.NewSession()
     fmt.Println(mem.SessionID(), mem.ContainerTag())

@@ -100,7 +100,7 @@ Sem plugin, aponte um `.mcp.json` no seu projeto (é exatamente o que o plugin i
 { "mcpServers": { "anhurdb": { "type": "http", "url": "https://anhurdb.yoven.ai/mcp" } } }
 ```
 
-> **A superfície mudou em 2026-07-28.** São **22 tools** (antes 47) — ADR-0013 Fase 4. Nomes que
+> **A superfície mudou em 2026-07-28.** São **22 tools** (antes 47; hoje 23, com `delete_file`) — ADR-0013 Fase 4. Nomes que
 > sumiram (`execute_ast`, `sdk_query`, `semantic_search`, `smart_search`, `semantic_walk`,
 > `get_record`, `read_content`, `search_shared`, `list_entities`, `entity_timeline`, entre outros)
 > foram absorvidos por uma das 22 — o mapa completo 47→22 está em `AnhurDB/docs/MCP_TOOLS.md`, e a
