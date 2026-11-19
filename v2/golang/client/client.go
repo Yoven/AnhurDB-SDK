@@ -93,6 +93,14 @@ func NewMemory(apiKey string, opts ...Option) *Memory {
 	}
 
 	conn := NewConnection(cfg.url, apiKey, cfg.timeout)
+	if cfg.httpClient != nil {
+		injected := *cfg.httpClient // shallow copy: never mutate the caller's client
+		injected.CheckRedirect = conn.HTTPClient.CheckRedirect
+		if injected.Timeout == 0 {
+			injected.Timeout = conn.HTTPClient.Timeout
+		}
+		conn.HTTPClient = &injected
+	}
 	if cfg.tenantID != "" {
 		conn.TenantID = cfg.tenantID
 	}
