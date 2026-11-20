@@ -13,6 +13,7 @@ import base64
 from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
+from .record_scope import resolve_record_scope, scope_params
 from ..models.graph import ContextResult, GroundingResult, WalkResult
 
 
@@ -24,6 +25,8 @@ class RecordGraphMixin:
     async def get_context(
         self,
         record_id: int,
+        *,
+        scope: Optional[str] = None,
     ) -> ContextResult:
         """Get the topological context (1-hop neighbours) around a record.
 
@@ -32,13 +35,18 @@ class RecordGraphMixin:
 
         Args:
             record_id: The record ID to inspect.
+            scope:     Plane the id lives in (``sessions`` | ``tenant_shared`` |
+                       ``tenant_shared_legacy`` | ``client_shared``); see
+                       ``record_scope.py``. ``None`` = your own store.
 
         Returns:
             ``ContextResult`` — ``target`` is a full ``Record`` and
             ``neighbors`` is a list of full ``Record``s. Both are complete
             records, not id stubs."""
+        resolved_scope = resolve_record_scope("get_context", scope)
         data = await self._connection.get(
             f"/api/v1/records/{record_id}/topology",
+            params=scope_params(resolved_scope),
         )
         return ContextResult.model_validate(data if isinstance(data, dict) else {})
 
@@ -46,6 +54,8 @@ class RecordGraphMixin:
         self,
         record_id: int,
         max_depth: int = 3,
+        *,
+        scope: Optional[str] = None,
     ) -> GroundingResult:
         """Get the provenance ("grounding") subgraph for a record — the episodic
         anchors and consolidated stars that this record was derived from.
@@ -56,6 +66,7 @@ class RecordGraphMixin:
         Args:
             record_id: The record whose provenance you want.
             max_depth: BFS depth budget, integer 1..5 inclusive (default 3).
+            scope:     Plane the id lives in (see ``get_context``).
 
         Returns:
             ``GroundingResult``. ``found_count == 0`` with HTTP 200 is the
@@ -69,9 +80,13 @@ class RecordGraphMixin:
         # exact same 1..5 bound and would 400, but a clear ValueError is kinder.
         if not isinstance(max_depth, int) or max_depth < 1 or max_depth > 5:
             raise ValueError("max_depth must be an integer between 1 and 5")
+        resolved_scope = resolve_record_scope("get_grounding", scope)
+        grounding_params = {"max_depth": str(max_depth)}
+        if resolved_scope:
+            grounding_params["scope"] = resolved_scope
         data = await self._connection.get(
             f"/api/v1/records/{record_id}/grounding",
-            params={"max_depth": str(max_depth)},
+            params=grounding_params,
         )
         return GroundingResult.model_validate(data if isinstance(data, dict) else {})
 

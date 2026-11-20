@@ -46,7 +46,7 @@ class TestWaitForUpload(unittest.IsolatedAsyncioTestCase):
         memory = Memory(api_key="test-key-000000000000000000000000")
         state = {"index": 0}
 
-        async def stubbed_upload_status(upload_id: int):
+        async def stubbed_upload_status(upload_id: int, scope=None):  # scope: ADR-0029 kwarg
             current = responses[min(state["index"], len(responses) - 1)]
             state["index"] += 1
             if isinstance(current, Exception):

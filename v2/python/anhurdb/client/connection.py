@@ -196,29 +196,36 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
         self,
         path: str,
         json_data: Any = None,
+        params: Optional[QueryParams] = None,
     ) -> Any:
         """Send a POST request with a JSON body.
 
         Args:
             path:      API path (e.g. ``/api/v1/records``).
             json_data: Request body (dict or Pydantic-serialisable object).
+            params:    Optional query string (e.g. the by-id ``scope``). A
+                       request with params never takes the MCP tunnel, which
+                       has no place to carry them.
 
         Returns:
             Parsed JSON response body."""
-        if self.mode == "mcp" and path in self._MCP_TOOL_MAP:
+        if self.mode == "mcp" and path in self._MCP_TOOL_MAP and not params:
             return await self._mcp_tunnel(path, json_data or {})
-        return await self._request("POST", path, body=json_data)
+        return await self._request("POST", path, params=params, body=json_data)
 
-    async def patch(self, path: str, json_data: Any = None) -> Any:
+    async def patch(
+        self, path: str, json_data: Any = None, params: Optional[QueryParams] = None
+    ) -> Any:
         """Send a PATCH request with a JSON body.
 
         Args:
             path:      API path (e.g. ``/api/v1/records/42``).
             json_data: Partial fields to update.
+            params:    Optional query string (e.g. the by-id ``scope``).
 
         Returns:
             Parsed JSON response body."""
-        return await self._request("PATCH", path, body=json_data)
+        return await self._request("PATCH", path, params=params, body=json_data)
 
     async def delete(
         self,

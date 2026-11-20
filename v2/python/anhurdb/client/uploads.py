@@ -11,6 +11,7 @@ from typing import Dict, Optional
 
 from .connection import HTTPConnection
 from .exceptions import AnhurQueryError, AnhurUploadWaitTimeout
+from .record_scope import resolve_record_scope, scope_params, upload_status_scope
 from ..models.upload import UploadResult, UploadStatusResult
 
 
@@ -66,7 +67,13 @@ class UploadMixin:
                     session_id=session_id,
                     linked_episodic_id=episodic.records[0].id,
                 )
-            record_id = result.record_id"""
+            record_id = result.record_id
+            final = await mem.wait_for_upload(record_id, scope=result.scope)
+
+        ``result.scope`` is the plane the file landed in (``tenant_shared`` by
+        default, ``client_shared``, or ``sessions`` for chat) — the SDK fills
+        it from the mode it sent; pass it to ``upload_status`` /
+        ``wait_for_upload`` so the status is read from THAT store."""
         extra: Dict[str, str] = {}
         resolved_mode = (mode or "").strip().lower()
         if session_id and not resolved_mode:
@@ -99,24 +106,37 @@ class UploadMixin:
             filename=filename,
             extra_fields=extra or None,
         )
-        return UploadResult.model_validate(data if isinstance(data, dict) else {})
+        upload_result = UploadResult.model_validate(data if isinstance(data, dict) else {})
+        upload_result.scope = upload_status_scope(resolved_mode, session_id)
+        return upload_result
 
     async def upload_status(
         self,
         upload_id: int,
+        *,
+        scope: Optional[str] = None,
     ) -> UploadStatusResult:
         """Check the processing status of a file upload.
 
+        Junior Tip [why the poll names the plane — server fix/l2-lib-scope]:
+        a record id is a rowid PER STORE, and uploads now land in the library
+        store ``{c}_{t}_lib`` or in ``{c}_shared``. Without ``scope`` the
+        server searches every plane this caller can upload to and answers
+        ``AnhurUploadStatusAmbiguousError`` (HTTP 409) when the id is a file in
+        more than one (``handler/upload_status_scope.go:143-198``).
+
         Args:
             upload_id: The ``record_id`` returned by ``upload_file()``.
+            scope:     ``upload_result.scope`` — the plane the file landed in.
 
         Returns:
             ``UploadStatusResult``. ``status`` is one of ``processing`` /
             ``completed`` / ``saved`` / ``failed``; ``completed`` is the
             server's own terminal flag and is ``False`` for a ``failed``
             upload (failed is terminal for YOU, not "completed")."""
+        resolved_scope = resolve_record_scope("upload_status", scope)
         data = await self._connection.get(
-            f"/api/v1/upload/{upload_id}/status"
+            f"/api/v1/upload/{upload_id}/status", params=scope_params(resolved_scope)
         )
         return UploadStatusResult.model_validate(data if isinstance(data, dict) else {})
 
@@ -126,6 +146,8 @@ class UploadMixin:
         timeout: float = 120.0,
         interval: float = 2.0,
         not_found_grace: float = 10.0,
+        *,
+        scope: Optional[str] = None,
     ) -> UploadStatusResult:
         """Poll ``upload_status`` until the upload reaches a terminal state.
 
@@ -141,6 +163,7 @@ class UploadMixin:
             timeout: Total wait budget in seconds.
             interval: Seconds between polls.
             not_found_grace: How long an HTTP 404 counts as "not applied yet".
+            scope: ``upload_result.scope`` — forwarded to every poll.
 
         Returns:
             The final ``UploadStatusResult`` — INCLUDING ``status="failed"``
@@ -165,7 +188,7 @@ class UploadMixin:
         last_status = "never-seen"
         while True:
             try:
-                status_payload = await self.upload_status(upload_id)
+                status_payload = await self.upload_status(upload_id, scope=scope)
             except AnhurQueryError as query_error:
                 if query_error.status_code != 404:
                     raise

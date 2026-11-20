@@ -43,6 +43,10 @@ class UploadResult(BaseModel):
     extension: str = Field(default="")
     size_bytes: int = Field(default=0)
     status: str = Field(default="")
+    # Plane the file landed in, filled by ``upload_file`` from the mode it sent
+    # (the server does not echo it). Pass it to ``upload_status`` /
+    # ``wait_for_upload`` so the status is read from THAT store.
+    scope: str = Field(default="", exclude=True)
 
 
 class UploadStatusResult(BaseModel):

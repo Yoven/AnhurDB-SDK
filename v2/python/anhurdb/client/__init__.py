@@ -24,6 +24,8 @@ from .search_parse import (
 from .entities import EntityMixin
 from .manifests import ManifestMixin
 from .profile import ProfileMixin
+from .record_by_id import RecordByIdMixin
+from .record_delete_file import DeleteFileMixin
 from .record_graph import RecordGraphMixin
 from .search_scopes import SearchScopeMixin
 from .session_stats import fetch_all_session_stats
@@ -197,6 +199,8 @@ def _add_result_from_record(
 
 class Memory(
     SearchScopeMixin,
+    RecordByIdMixin,
+    DeleteFileMixin,
     RecordGraphMixin,
     ManifestMixin,
     UploadMixin,
@@ -683,179 +687,6 @@ class Memory(
             summary=request_fields["summary"],
         )
 
-    async def get(
-        self,
-        record_id: int,
-    ) -> Dict[str, Any]:
-        """Get a record's metadata by ID.
-
-        Args:
-            record_id: The record ID.
-
-        Returns:
-            Record metadata dict."""
-        return await self._connection.get(
-            f"/api/v1/records/{record_id}"
-        )
-
-    async def update(self, record_id: int, **fields: Any) -> None:
-        """Partially update a record.
-
-        Args:
-            record_id: The record ID to update.
-            **fields:  Keyword arguments for fields to update
-                       (e.g. ``summary="new"``, ``status="archived"``).
-
-        Raises:
-            ValueError: if ``score`` is among the fields — use
-                :meth:`set_score`, which reaches the endpoint that
-                actually persists it.
-
-        Example::
-
-            await mem.update(42, summary="Updated summary")
-            await mem.set_score(42, 8)"""
-        if "score" in fields:
-            raise ValueError(
-                "update() cannot change score: PATCH /api/v1/records/{id} has no "
-                "score field and answers 200 while dropping the key. Use "
-                "set_score(record_id, score), which posts to "
-                "/api/v1/records/set-score (a replicated command). Measured "
-                "2026-08-15; this call used to succeed and write nothing."
-            )
-        await self._connection.patch(f"/api/v1/records/{record_id}", fields)
-
-    async def set_score(self, record_id: int, score: int) -> None:
-        """Set a record's importance score (1-10) durably.
-
-        ``update(record_id, score=...)`` cannot do this: the PATCH handler has
-        no score field, so it returns success and changes nothing — the same
-        shape as an earlier defect with ``archived``. This method posts to
-        ``/api/v1/records/set-score``, which dispatches a replicated command
-        and invalidates the read cache.
-
-        The score feeds the value term of the cognitive weight, which in turn
-        selects the record's embedding fidelity band — so a correction here
-        propagates to ranking on the next maintenance pass, not instantly.
-
-        Args:
-            record_id: The record ID.
-            score:     Importance, 1-10.
-
-        Raises:
-            ValueError: if ``score`` is outside 1-10.
-
-        Example::
-
-            await mem.set_score(42, 8)"""
-        if score < 1 or score > 10:
-            raise ValueError("score must be between 1 and 10, got %r" % (score,))
-        await self._connection.post(
-            "/api/v1/records/set-score", {"ids": [record_id], "score": score}
-        )
-
-    async def delete(self, record_id: int) -> None:
-        """Archive a record by ID (soft delete — the server sets ``archived=1``
-        and answers "record archived": the record becomes invisible to default
-        queries but is NOT physically removed; no hard-delete route exists for
-        a record id).
-
-        Args:
-            record_id: The record ID to archive."""
-        await self._connection.delete(f"/api/v1/records/{record_id}")
-
-    async def delete_file(
-        self,
-        session_uuid: str,
-        ingest_key_prefix: str,
-        *,
-        dry_run: bool = False,
-    ) -> DeleteFileResult:
-        """Remove EVERY record produced by one ingested file inside a session —
-        root, chapters and satellites — via ``DELETE /api/v1/records/by-file``.
-
-        Junior Tip [por que este método existe — o delete que mentia]:
-        ``delete(id)`` apaga UM record. Um arquivo ingerido vira centenas deles
-        (root + capítulos + satélites), então apagar a ficha do arquivo deixava
-        o CONHECIMENTO vivo: a busca continuava respondendo com o livro
-        "apagado". Sem ``delete_file`` não existe "trocar a edição velha pela
-        nova" — as duas coexistiriam para sempre, disputando a mesma busca.
-
-        A identidade do arquivo é o prefixo ``<checksum16>`` que o file_ingestor
-        grava em ``metadata.ingest_key`` (root: ``"<c16>:root"``; capítulo:
-        ``"<c16>:<total>:<índice>"``) e em ``metadata.chapter_ingest_key``
-        (satélite). Um prefixo alcança as três formas.
-
-        A remoção é soft-delete REPLICADO (tombstone via Raft): o registro fica
-        archived/status=deleted, some da busca e do tier analítico, e continua
-        restaurável — a auditoria não é perdida.
-
-        Junior Tip [dry_run é a rede de segurança, não um detalhe de debug]: com
-        ``dry_run=True`` o servidor resolve o MESMO conjunto e devolve
-        ``matched_count`` sem escrever nada. A interface mostra "isto vai apagar
-        511 registros" ANTES de o usuário confirmar; apagar um documento inteiro
-        é operação de mão pesada, e a contagem prévia é o que separa "removi a
-        edição velha da lei" de "removi a biblioteca".
-
-        Args:
-            session_uuid:      Session that owns the file's records.
-            ingest_key_prefix: The file's ``<checksum16>`` identity.
-            dry_run:           Count only, write nothing (default: False).
-
-        Returns:
-            ``DeleteFileResult`` with ``matched_count`` / ``deleted_count`` —
-            a contagem real, para que "apaguei 0" nunca se disfarce de sucesso.
-
-        Raises:
-            ValueError:      If either argument is empty/blank (fails locally,
-                             without a round trip).
-            AnhurQueryError: HTTP 400 when the prefix is shorter than 8
-                             characters or carries invalid characters — essa
-                             regra vive no servidor, fonte única da verdade.
-
-        Example::
-
-            preview = await mem.delete_file(session, "ef9976f1ef5d5176", dry_run=True)
-            if preview.matched_count and confirmed:
-                await mem.delete_file(session, "ef9976f1ef5d5176")"""
-        # Validação local mínima: o vazio nunca merece uma ida ao servidor, e o
-        # erro local nomeia o argumento do SDK. Tamanho mínimo e conjunto de
-        # caracteres do prefixo continuam a ser do servidor — uma fonte da
-        # verdade só, para os três SDKs não divergirem dela.
-        trimmed_session_uuid = (session_uuid or "").strip()
-        if not trimmed_session_uuid:
-            raise ValueError("delete_file: session_uuid is required")
-        trimmed_ingest_key_prefix = (ingest_key_prefix or "").strip()
-        if not trimmed_ingest_key_prefix:
-            raise ValueError("delete_file: ingest_key_prefix is required")
-
-        response = await self._connection.delete(
-            "/api/v1/records/by-file",
-            params={
-                "session": trimmed_session_uuid,
-                "ingest_key_prefix": trimmed_ingest_key_prefix,
-                "dry_run": "true" if dry_run else "false",
-            },
-        )
-        return DeleteFileResult.model_validate(response or {})
-
-    async def read_content(
-        self,
-        record_id: int,
-    ) -> Any:
-        """Read the full content payload for a record.
-
-        Args:
-            record_id: The record ID to read.
-
-        Returns:
-            The content payload. Type depends on what was stored:
-            a dict for structured records, a string for plain text."""
-        return await self._connection.get(
-            f"/api/v1/records/{record_id}/content",
-            raw_text=True,
-                    )
-
     async def query(
         self,
         ast: Any,
@@ -909,25 +740,6 @@ class Memory(
         return await self.query(filter_builder, session_uuid)
 
     # ── Batch Operations ───────────────────────────────────────────
-
-    async def batch_read_content(
-        self,
-        ids: List[int],
-    ) -> Dict[str, Any]:
-        """Fetch full content for multiple records in a single call (max 100).
-
-        Eliminates the N+1 pattern of calling ``read_content`` in a loop.
-
-        Args:
-            ids:       List of record IDs (max 100).
-
-        Returns:
-            Dict mapping ``record_id → content_payload``."""
-        data = await self._connection.post(
-            "/api/v1/records/batch-content",
-            {"ids": ids},
-                    )
-        return data if isinstance(data, dict) else {}
 
     async def batch_update_status(self, ids: List[int], status: str) -> Dict[str, Any]:
         """Update the status for a batch of records at once.
@@ -1355,26 +1167,6 @@ class Memory(
             List of type value strings, e.g.
             ``["episodic", "fact", "preference", ...]``."""
         return [member.value for member in MemoryType]
-
-    # ── Temporal Versioning ────────────────────────────────────────
-
-    async def supersede(self, old_id: int, new_id: int) -> Dict[str, Any]:
-        """Mark an old record as superseded by a new one.
-
-        This implements temporal versioning — the old record remains in the
-        graph but is annotated with ``superseded_by`` pointing to the new
-        record. Search results prefer the newer version.
-
-        Args:
-            old_id: The record being superseded.
-            new_id: The replacement record.
-
-        Returns:
-            Confirmation dict."""
-        return await self._connection.post(
-            "/api/v1/records/supersede",
-            {"old_id": old_id, "new_id": new_id},
-        )
 
     # ── Caller-owned session writes ────────────────────────────────
 

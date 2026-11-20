@@ -42,6 +42,7 @@ from .models import (
     RetrievalMeta,
     CreateRequest,
     DeleteFileResult,
+    DeleteFileLeg,
     SessionStats,
     EntityModel,
     EntityEdge,
@@ -83,6 +84,18 @@ from .client.exceptions import (
     AnhurConnectionError,
     AnhurUploadWaitTimeout,
     AnhurSessionRecordLimitError,
+    AnhurTenantLibraryCollisionError,
+    AnhurUploadStatusAmbiguousError,
+    AnhurLibraryDeletePartialError,
+)
+from .client.record_scope import (
+    RECORD_SCOPES,
+    SCOPE_CLIENT_SHARED,
+    SCOPE_SESSIONS,
+    SCOPE_TENANT_SHARED,
+    SCOPE_TENANT_SHARED_LEGACY,
+    tenant_shared_scope_for_hit,
+    upload_status_scope,
 )
 from .client.search_mode import (
     SEARCH_MODES,
@@ -119,6 +132,7 @@ __all__ = [
     "RetrievalMeta",
     "CreateRequest",
     "DeleteFileResult",
+    "DeleteFileLeg",
     "SessionStats",
     "EntityModel",
     "EntityEdge",
@@ -170,4 +184,15 @@ __all__ = [
     "AnhurConnectionError",
     "AnhurSessionRecordLimitError",
     "AnhurUploadWaitTimeout",
+    # L2 tenant library (ADR-0029) — typed refusals and the by-id scope.
+    "AnhurTenantLibraryCollisionError",
+    "AnhurUploadStatusAmbiguousError",
+    "AnhurLibraryDeletePartialError",
+    "RECORD_SCOPES",
+    "SCOPE_SESSIONS",
+    "SCOPE_TENANT_SHARED",
+    "SCOPE_TENANT_SHARED_LEGACY",
+    "SCOPE_CLIENT_SHARED",
+    "tenant_shared_scope_for_hit",
+    "upload_status_scope",
 ]

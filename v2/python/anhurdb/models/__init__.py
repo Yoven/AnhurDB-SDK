@@ -34,6 +34,7 @@ from .profile import (
 )
 from .record import (
     CreateRequest,
+    DeleteFileLeg,
     DeleteFileResult,
     EntityEdge,
     EntityModel,
@@ -63,6 +64,7 @@ __all__ = [
     "RetrievalMeta",
     "CreateRequest",
     "DeleteFileResult",
+    "DeleteFileLeg",
     "SessionStats",
     "EntityModel",
     "EntityEdge",

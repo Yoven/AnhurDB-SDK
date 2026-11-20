@@ -144,3 +144,50 @@ class AnhurSessionRecordLimitError(AnhurQueryError):
         self.count = count
         self.server_message = server_message
         self.code = self.CODE
+
+
+class AnhurTenantLibraryCollisionError(AnhurQueryError):
+    """The caller's tenant library store ``{c}_{t}_lib`` is the registered store
+    of ANOTHER tenant (a legacy tenant named ``<t>_lib``), so the server refuses
+    every tenant_shared search, by-id call, upload and delete for this caller
+    (ADR-0029). HTTP 409 — or 400 on upload, where the server wraps it in a
+    validation error. Parity: Go ``*TenantLibraryCollisionError`` /
+    ``ErrTenantLibraryCollision``, TypeScript ``AnhurTenantLibraryCollisionError``.
+
+    ``retryable`` is always False: the same request is refused until an operator
+    renames one of the two tenants. It is never the session-record-limit 409.
+    """
+
+    def __init__(self, message: str, status_code: int, server_message: str = ""):
+        super().__init__(message, status_code=status_code)
+        self.server_message = server_message
+        self.retryable = False
+
+
+class AnhurUploadStatusAmbiguousError(AnhurQueryError):
+    """An unscoped upload-status poll matched a file row in more than one plane
+    (HTTP 409). Pass ``scope=upload_result.scope``. Not retryable. Parity: Go
+    ``*UploadStatusAmbiguousError``, TypeScript ``AnhurUploadStatusAmbiguousError``.
+    """
+
+    def __init__(self, message: str, server_message: str = ""):
+        super().__init__(message, status_code=409, kind=AnhurError.KIND_CONFLICT)
+        self.server_message = server_message
+
+
+class AnhurLibraryDeletePartialError(AnhurError):
+    """A tenant-library ``delete_file`` ran on its two stores (two Raft groups,
+    no cross-group transaction) and at least one failed: HTTP 500 with
+    ``partial: true``. ``legs`` holds EVERY leg's outcome (``DeleteFileLeg``),
+    the successful ones too. Parity: Go ``*LibraryDeletePartialError``,
+    TypeScript ``AnhurLibraryDeletePartialError``.
+
+    Junior Tip [retryable on purpose]: the server's delete is keyed by
+    (session, prefix) and is idempotent, and a leg already emptied is not
+    dispatched again, so repeating the same call is the documented recovery.
+    """
+
+    def __init__(self, message: str, legs: Optional[list] = None, server_message: str = ""):
+        super().__init__(message, status_code=500, kind=AnhurError.KIND_SERVER)
+        self.legs = list(legs or [])
+        self.server_message = server_message

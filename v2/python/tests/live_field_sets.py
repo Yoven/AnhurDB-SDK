@@ -128,6 +128,10 @@ WIRE_CONTRACTS: List[Tuple[Any, List[str], str]] = [
 JUSTIFIED_EXTRA_FIELDS: Dict[str, Dict[str, str]] = {
     "AddResult": {},
     "SmartSearchHit": {},
+    # SDK-filled, never decoded from the wire (exclude=True): the plane the file
+    # was SENT to, which the server does not echo but the status poll needs
+    # (?scope=, server/handler/upload_status_scope.go). 2026-11-20, ADR-0029.
+    "UploadResult": {"scope": "SDK-filled upload plane for the status poll"},
 }
 
 

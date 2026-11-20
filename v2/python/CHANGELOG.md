@@ -1,5 +1,38 @@
 # Python SDK Changelog
 
+## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
+
+Additive (keyword-only arguments; existing calls unchanged). Go, Python and
+TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
+
+- **New:** keyword-only `scope=` (`"sessions"`, `"tenant_shared"`,
+  `"tenant_shared_legacy"`, `"client_shared"`) on `get`, `read_content`,
+  `get_context`, `get_grounding`, `batch_read_content`, `update`, `delete`,
+  `supersede`, `upload_status`, `wait_for_upload` (sent as `?scope=`). `None` =
+  unchanged request; `shared_all`/unknown values raise `AnhurQueryError`
+  (invalid_request) before any request.
+- **New helpers:** `tenant_shared_scope_for_hit(uuid)` (`tenant_shared` when the
+  hit's uuid ends in `_lib`, else `tenant_shared_legacy`),
+  `upload_status_scope(mode, session_id)`, and the `SCOPE_*` / `RECORD_SCOPES`
+  constants, all exported from `anhurdb`.
+- **Upload plane travels to the status poll:** `UploadResult.scope` (SDK-filled,
+  excluded from `model_dump`). New `AnhurUploadStatusAmbiguousError` for the
+  server's 409 "file upload in more than one plane".
+- **Delete-by-file:** `delete_file(..., scope="tenant_shared"|"client_shared")`
+  (session may be empty with tenant_shared), `DeleteFileResult.legs`
+  (`DeleteFileLeg`), and `AnhurLibraryDeletePartialError` (`.legs`, HTTP 500
+  `partial: true`, retryable — the server delete is idempotent).
+- **New typed refusal:** `AnhurTenantLibraryCollisionError` (409 on
+  search/by-id/delete, 400 on upload), non-retryable; the session-record-limit
+  409 is checked first and stays distinct.
+- **Fix:** the multipart transport now sets `status_code` on 400/422/404
+  (it was `None`, so `kind` read `transport` and `retryable` True).
+- `HTTPConnection.post` / `patch` accept `params=`.
+- **Moved (house 300-line cut, bodies unchanged apart from `scope`):**
+  `get`/`read_content`/`batch_read_content`/`update`/`set_score`/`delete`/
+  `supersede` to `client/record_by_id.py`, `delete_file` to
+  `client/record_delete_file.py`. Tests: `tests/test_record_scope.py`.
+
 ## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
 
 Additive; no version number assigned yet (not published). Go, Python and

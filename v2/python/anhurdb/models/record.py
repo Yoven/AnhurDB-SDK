@@ -172,6 +172,37 @@ class DeleteFileResult(BaseModel):
     deleted_ids: List[int] = Field(default_factory=list)
     dry_run: bool = Field(default=False)
     raft_index: int = Field(default=0)
+    # Present only for a tenant-library delete (one entry per library store,
+    # generation "primary" = {c}_{t}_lib, "legacy" = pre-migration rows).
+    legs: List["DeleteFileLeg"] = Field(default_factory=list)
+
+
+class DeleteFileLeg(BaseModel):
+    """One library store's part of a delete-by-file answer.
+
+    Server truth: ``service.DeleteFileLegOutcome``
+    (``server/service/record_delete_file_library.go:34-44``).
+
+    Junior Tip [why the legs matter]: during the L2 migration a library file can
+    live in either store, and the two stores are two Raft groups with no shared
+    transaction. ``skipped`` = the store does not exist on that node;
+    ``dispatch_skipped`` = it held no match while the other leg did, so nothing
+    was proposed there. A leg with ``error`` set failed — see
+    ``AnhurLibraryDeletePartialError``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    generation: str = Field(default="")
+    session_uuid: str = Field(default="")
+    skipped: bool = Field(default=False)
+    dispatch_skipped: bool = Field(default=False)
+    matched_count: int = Field(default=0)
+    deleted_count: int = Field(default=0)
+    error: str = Field(default="")
+
+
+DeleteFileResult.model_rebuild()
 
 
 class EntityModel(BaseModel):

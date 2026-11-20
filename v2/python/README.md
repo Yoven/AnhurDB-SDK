@@ -99,7 +99,8 @@ async with AnhurClient(api_key="anhur_xxx") as client:
     with open("report.pdf", "rb") as f:
         pdf_bytes = f.read()
     upload = await client.upload_file("report.pdf", pdf_bytes)
-    status = await client.upload_status(upload.record_id)
+    # upload.scope = the plane it landed in (tenant_shared by default)
+    status = await client.upload_status(upload.record_id, scope=upload.scope)
 
     # Temporal versioning
     await client.supersede(old_id=42, new_id=99)
@@ -179,7 +180,13 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 | Method | Description |
 |--------|-------------|
 | `upload_file(filename, content)` | Upload document for async ingestion |
-| `upload_status(upload_id)` | Poll file ingestion status |
+| `upload_status(upload_id, scope=upload.scope)` | Poll file ingestion status in the plane the file landed in |
+| `wait_for_upload(upload_id, scope=upload.scope)` | Poll until terminal |
+
+`upload_file` fills `UploadResult.scope` (`tenant_shared` by default,
+`client_shared`, or `sessions` for chat). Without `scope` the server looks in
+every plane you can upload to and raises `AnhurUploadStatusAmbiguousError`
+(HTTP 409) when the id is a file in more than one — record ids are per store.
 
 ### Temporal Versioning
 
@@ -194,6 +201,41 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 | `update(record_id, **fields)` | Partial update — **raises on `score`** (see below) |
 | `set_score(record_id, score)` | Set importance 1-10 durably (`POST /records/set-score`) |
 | `delete(record_id)` | **Soft delete** — archives the record (`archived=1`, `status='deleted'`); it disappears from reads but is not erased |
+
+### By-id scope (records from a shared plane, ADR-0029)
+
+A record id is a rowid **per store**. An id that came from a shared-plane
+search or upload must be read and changed in THAT store, or the call addresses
+an unrelated record with the same number in your chat store. Every by-id
+method takes a keyword-only `scope=`: `get`, `read_content`, `get_context`,
+`get_grounding`, `batch_read_content`, `update`, `delete`, `supersede`,
+`upload_status`, `wait_for_upload`. `None` = your own store (unchanged).
+
+| `scope` | Store |
+|---|---|
+| `"sessions"` | your chat store, shared-* rows excluded |
+| `"tenant_shared"` | tenant library `{c}_{t}_lib` (uploads after the L2 switch) |
+| `"tenant_shared_legacy"` | pre-migration library rows in `{c}_{t}` |
+| `"client_shared"` | client library `{c}_shared` |
+
+```python
+from anhurdb import sessions_all, tenant_shared_scope_for_hit
+
+hits = await mem.search("refund policy", sessions_all(), scope="tenant_shared")
+hit = hits[0].record
+# one tenant_shared search reads BOTH library stores: pick the store per hit
+body = await mem.read_content(hit.id, scope=tenant_shared_scope_for_hit(hit.uuid))
+```
+
+`shared_all` (or any unknown value) is refused locally (`AnhurQueryError`,
+`invalid_request`). A row outside the named plane is HTTP 404, exactly like a
+missing id; `batch_read_content` omits it.
+
+`delete_file(session, prefix, scope="tenant_shared")` deletes in both library
+stores (the session may be empty) and fills `DeleteFileResult.legs`;
+`scope="client_shared"` targets the client library. A failure in one library
+store raises `AnhurLibraryDeletePartialError` with `.legs` (every leg); retrying
+the same call is safe (idempotent).
 
 ### Session Management
 
@@ -351,6 +393,15 @@ except AnhurQueryError as bad_query:
 Before 2.1.0 the client-side half raised `ValueError` / `TypeError` /
 `RuntimeError` instead, so a caller who wrote only the obvious `except
 AnhurQueryError` silently missed it.
+
+### Tenant library collision (`AnhurTenantLibraryCollisionError`)
+
+When your tenant library store id collides with another registered tenant's
+store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
+search, by-id call, upload and delete: HTTP 409 (400 on upload). The SDK raises
+`AnhurTenantLibraryCollisionError` (an `AnhurQueryError`), **non-retryable**; it
+heals only when an operator renames one of the tenants. It is never the
+session-record-limit 409.
 
 ## Search controls (ADR-0031)
 

@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 
 from ..version import USER_AGENT
 from .connection_guards import read_capped_body
+from .scope_errors import scope_error_from_response
 from .session_limit import session_record_limit_from_response
 from .connection_host import MultipartUploadHost
 from .exceptions import (
@@ -96,9 +97,16 @@ class MultipartUploadMixin:
                 if response.status in (401, 403):
                     raise AnhurAuthError(f"Authentication failed (HTTP {response.status})")
                 elif response.status in (400, 422):
-                    raise AnhurQueryError(f"Invalid request (HTTP {response.status}): {body_text[:500]}")
+                    # An upload refused by the tenant-library collision guard is a 400.
+                    scope_error = scope_error_from_response(response.status, body_text)
+                    if scope_error is not None:
+                        raise scope_error
+                    raise AnhurQueryError(
+                        f"Invalid request (HTTP {response.status}): {body_text[:500]}",
+                        status_code=response.status,
+                    )
                 elif response.status == 404:
-                    raise AnhurQueryError(f"Resource not found (HTTP 404): {path}")
+                    raise AnhurQueryError(f"Resource not found (HTTP 404): {path}", status_code=404)
                 elif response.status == 409:
                     limit_error = session_record_limit_from_response(409, body_text)
                     if limit_error is not None:
