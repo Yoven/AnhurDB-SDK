@@ -69,13 +69,17 @@ type SessionRecordLimitError struct {
 
 // Error renders the refusal with every number the server gave, and says
 // "unknown" for the ones an old server did not send — never a fake zero.
+//
+// Junior Tip [server sentence FIRST]: log readers and notifiers truncate (the
+// plugin's watcher keeps ~200 characters). The server's own words are what a
+// human recognises, so they come right after the status; the details follow.
 func (limitError *SessionRecordLimitError) Error() string {
 	sessionText := limitError.SessionUUID
 	if sessionText == "" {
 		sessionText = "unknown"
 	}
-	return fmt.Sprintf("AnhurDB API error (HTTP 409): session record limit reached (session=%s, limit=%s, count=%s): %s",
-		sessionText, optionalIntText(limitError.Limit), optionalIntText(limitError.Count), limitError.ServerMessage)
+	return fmt.Sprintf("AnhurDB API error (HTTP 409): %s (session record limit: session=%s, limit=%s, count=%s)",
+		limitError.ServerMessage, sessionText, optionalIntText(limitError.Limit), optionalIntText(limitError.Count))
 }
 
 // Unwrap lets errors.Is(err, ErrSessionRecordLimit) and

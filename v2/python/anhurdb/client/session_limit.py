@@ -71,10 +71,12 @@ def session_record_limit_from_response(
     session_value = parsed.get("session_uuid")
     session_uuid = session_value if isinstance(session_value, str) and session_value else None
 
+    # Server sentence first: log readers truncate, and it is what a human
+    # recognises. Same layout as the Go and TypeScript SDKs.
     message = (
-        "Conflict (HTTP 409): session record limit reached "
-        f"(session={session_uuid or 'unknown'}, limit={_text(limit)}, "
-        f"count={_text(count)}): {server_message[:500]}"
+        f"Conflict (HTTP 409): {server_message[:500]} (session record limit: "
+        f"session={session_uuid or 'unknown'}, limit={_text(limit)}, "
+        f"count={_text(count)})"
     )
     return AnhurSessionRecordLimitError(
         message,

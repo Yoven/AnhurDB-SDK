@@ -89,9 +89,11 @@ export function sessionRecordLimitFromResponse(
     limit = limitText === null ? null : Number(limitText);
   }
   const text = (value: number | null) => (value === null ? "unknown" : String(value));
+  // Server sentence first: log readers truncate, and it is what a human
+  // recognises. Same layout as the Go and Python SDKs.
   return new AnhurSessionRecordLimitError(
-    `Conflict (HTTP 409): session record limit reached (session=${sessionUuid ?? "unknown"}, ` +
-      `limit=${text(limit)}, count=${text(count)}): ${serverMessage}`,
+    `Conflict (HTTP 409): ${serverMessage} (session record limit: ` +
+      `session=${sessionUuid ?? "unknown"}, limit=${text(limit)}, count=${text(count)})`,
     { sessionUuid, limit, count, serverMessage },
   );
 }
