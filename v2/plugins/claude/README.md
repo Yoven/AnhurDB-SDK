@@ -371,8 +371,8 @@ By hand, the same thing:
 ```bash
 claude plugin list | grep -A3 anhurdb-memory          # 1. is the plugin even loaded?
 tail -n 15 ~/.anhur-claude-memory/plugin.log          # 2. what does the engine say? (UTC stamps)
-ls -1 ~/.anhur-claude-memory/queue/*.txt | wc -l      # 3. anything stuck? (queued ≠ lost)
-ls -1 ~/.anhur-claude-memory/queue/quarantine/*.txt | wc -l   # 4. anything a human must resolve?
+bin/anhur-claude-memory status                        # 3. anything stuck or quarantined? offline, keyless;
+                                                      #    names any FULL session (queued ≠ lost)
 ```
 
 **Never `cat` `~/.anhur-claude-memory/env`.** Check its mode with `ls -l`, and list the variable
@@ -397,7 +397,7 @@ precisely where an API key must never be.
 | **A. Plugin not loaded** | `claude plugin list` shows `✘ failed to load` or nothing, and no new log line at session start | no hook is registered; nothing recalls, nothing saves. Usually a dangling `directory` marketplace |
 | **B. Hooks not firing** | plugin enabled, but a new session adds no log line, while running the binary by hand does | wrong binary path/arch, lost exec bit, or a hand-wired hook fighting the plugin |
 | **C. Key not readable** | `ANHUR_API_KEY not set … MEMORY IS NOT BEING SAVED` in the log | the 2026-07 blackout. Transcripts are still archived to disk; recall is dead until fixed |
-| **D. AnhurDB unreachable/rejecting** | `profile failed`, `CreateSession failed`, `flush still failing`, and `queue/` growing | degraded, **not** lost: every persist and every session start retries the queue |
+| **D. AnhurDB unreachable/rejecting** | `profile failed`, `CreateSession failed`, `flush still failing`, `chunk not delivered`, and `status` showing a backlog | degraded, **not** lost: every persist and every session start retries the queue. `SESSION RECORD LIMIT: session=… limit=… count=…` = that session is full (ADR-0033): kept and retried, but it will not drain until the cap changes |
 | **E. Green but empty** | successful calls in the log, thin `<anhur-memory>` block | `ANHUR_CONTAINER` changed (old memories are under the old name), or Smart Units are off |
 
 ### What each artifact proves, and what it does not

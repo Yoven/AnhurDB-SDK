@@ -213,6 +213,33 @@ assert_equals "healthy lines produce no notification" "" "$success_only"
 queued_only=$(printf '2026-07-30T17:56:47Z queued chunk -> /home/u/.anhur-claude-memory/queue/x.txt\n' | run_filter)
 assert_equals "a queued chunk alone is not an alarm" "" "$queued_only"
 
+# A FULL session (ADR-0033), copied from what plugins/core writes. Before 2026-11-20 the
+# first-attempt refusal matched nothing: the alarm waited for the NEXT persist's flush line.
+first_attempt_refusal=$(printf '%s\n' \
+    '2026-11-20T10:00:00Z deliver: chunk not delivered after 1 attempt(s) (server refused; retrying would not help) — queueing: AnhurDB API error (HTTP 409): session has reached the maximum of 500 records (session record limit: session=unknown, limit=500, count=unknown)' |
+    run_filter)
+assert_contains "first-attempt refusal notifies" "MEMORY FAILURE" "$first_attempt_refusal"
+assert_contains "first-attempt refusal quotes the cap" "session has reached the maximum" "$first_attempt_refusal"
+session_limit_line=$(printf '%s\n' \
+    '2026-11-20T10:00:00Z SESSION RECORD LIMIT: session=sess-full limit=500 count=503 — AnhurDB refuses new records for this session; the chunk stays in the local queue and is retried with backoff (never dropped, never written to another session)' |
+    run_filter)
+assert_contains "session-limit line notifies with the numbers" "session=sess-full limit=500 count=503" "$session_limit_line"
+flat_file_fallback=$(
+    {
+        printf '2026-11-20T10:00:01Z queue store unavailable, using flat file (memory still safe): queue store: open: disk I/O error\n'
+        printf '2026-11-20T10:00:02Z queue enqueue FAILED, using flat file: queue store: enqueue: database is locked\n'
+    } | run_filter
+)
+assert_equals "both flat-file fallbacks notify" "2" "$(printf '%s\n' "$flat_file_fallback" | grep -c .)"
+refusal_dir="$fixture_root/refusal"
+mkdir -p "$refusal_dir"
+{
+    printf '2026-11-20T09:00:00Z persist: lines 1-40 (session=abc, chunks=1 sent=1 queued=0)\n'
+    printf '2026-11-20T10:00:00Z deliver: chunk not delivered after 1 attempt(s) (server refused; retrying would not help) — queueing: session has reached the maximum of 500 records\n'
+} >"$refusal_dir/plugin.log"
+assert_contains "startup assessment sees a first-attempt refusal" "1 failure line(s)" \
+    "$(run_assessment "$refusal_dir/plugin.log")"
+
 # The line that ran 743 times in silence.
 key_missing=$(printf '2026-07-30T10:00:00Z ANHUR_API_KEY not set (env file: /home/u/.anhur-claude-memory/env, 0 vars loaded) — MEMORY IS NOT BEING SAVED\n' | run_filter)
 assert_contains "missing key notifies" "MEMORY FAILURE" "$key_missing"

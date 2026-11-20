@@ -68,26 +68,25 @@ max_notifications="${ANHUR_WATCH_MAX_NOTIFICATIONS:-40}"
 
 # ── the log vocabulary ───────────────────────────────────────────────────────
 #
-# Junior Tip [match the REAL log lines, not invented ones]: every alternative below is copied
-# from a logLine() call site in plugins/core/core.go. Guessing here would reproduce the very
-# bug this component exists to catch — a safety net that silently matches nothing. When
-# core.go adds or renames a failure line, this pattern must change in the same commit.
-#
+# Junior Tip [match the REAL log lines]: each alternative is copied from a logLine() call in
+# plugins/core/*.go; a guessed one is a net that silently matches nothing. Rename = same commit.
 #   ANHUR_API_KEY not set / MEMORY IS NOT BEING SAVED  → Run(), missing key (the 2026-07 blackout)
 #   panic recovered                                    → Run(), recovered panic
 #   profile failed                                     → cmdRecall(), AnhurDB unreachable
 #   transcript not found / cannot read transcript      → cmdPersist(), nothing was persisted
 #   CreateSession failed                               → cmdPersist()/flushQueue(), write blocked
 #   flush still failing                                → flushQueue(), a queued chunk keeps failing
+#   chunk not delivered                                → deliverSessionText(), FIRST attempt failed
+#   SESSION RECORD LIMIT                               → session_limit.go, AnhurDB refuses a FULL session
+#   using flat file                                    → queueChunk(), state queue down; flat-file floor
 #   queue write FAILED                                 → queueChunk(), data at risk on disk
 #   ERROR:                                             → quarantine paths (never self-healing)
 #   " archive: " / archive without key                 → archiveTranscript(), lossless copy failed
 #   unknown subcommand / usage: anhur                  → the hook is invoking the binary wrong
 #
-# Deliberately NOT matched: "queued chunk -> …" and "persist: … queued=N". A queued chunk is
-# the no-silent-loss path WORKING, and it always accompanies a CreateSession/flush failure
-# line that IS matched, so matching it too would double every outage.
-failure_pattern='ANHUR_API_KEY not set|MEMORY IS NOT BEING SAVED|panic recovered|profile failed|transcript not found|cannot read transcript|CreateSession failed|flush still failing|queue write FAILED|ERROR:| archive: |archive without key|unknown subcommand|usage: anhur'
+# NOT matched: "queued chunk" / "queued=N" — the no-silent-loss path WORKING, always next to a
+# matched failure line (the first-attempt one since 2026-11-20); matching it would double alarms.
+failure_pattern='ANHUR_API_KEY not set|MEMORY IS NOT BEING SAVED|panic recovered|profile failed|transcript not found|cannot read transcript|CreateSession failed|flush still failing|chunk not delivered|SESSION RECORD LIMIT|using flat file|queue write FAILED|ERROR:| archive: |archive without key|unknown subcommand|usage: anhur'
 
 # Proof that the engine actually reached AnhurDB: a persist that sent at least one chunk, a
 # drained queue chunk, or a recall that rendered a block (which requires a successful Profile).

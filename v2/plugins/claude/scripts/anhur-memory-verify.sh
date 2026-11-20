@@ -795,7 +795,7 @@ if [ -n "$installed_dir" ] && [ -f "$installed_dir/scripts/anhur-memory-watch.sh
     . "$installed_dir/scripts/anhur-memory-watch.sh"
     unset ANHUR_WATCH_DEFINE_ONLY
 else
-    failure_pattern='ANHUR_API_KEY not set|MEMORY IS NOT BEING SAVED|panic recovered|profile failed|transcript not found|cannot read transcript|CreateSession failed|flush still failing|queue write FAILED|ERROR:'
+    failure_pattern='ANHUR_API_KEY not set|MEMORY IS NOT BEING SAVED|panic recovered|profile failed|transcript not found|cannot read transcript|CreateSession failed|flush still failing|chunk not delivered|SESSION RECORD LIMIT|using flat file|queue write FAILED|ERROR:'
     success_pattern='sent=[1-9]|flushed queued chunk|wrote memory block to stdout'
     record_info "installed snapshot has no monitor script — using a reduced failure vocabulary"
 fi

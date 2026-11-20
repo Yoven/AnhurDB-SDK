@@ -103,8 +103,8 @@ verbatim transcripts sat in `~/.anhur-claude-memory/archive/` the whole time.
 `flush still failing`, and `~/.anhur-claude-memory/queue/` is growing.
 
 ```bash
-grep -E 'profile failed|CreateSession failed|flush still failing' ~/.anhur-claude-memory/plugin.log | tail -n 5
-ls -1 ~/.anhur-claude-memory/queue/*.txt 2>/dev/null | wc -l
+grep -E 'profile failed|CreateSession failed|flush still failing|chunk not delivered|SESSION RECORD LIMIT' ~/.anhur-claude-memory/plugin.log | tail -n 5
+"${CLAUDE_SKILL_DIR}/../../bin/anhur-claude-memory" status   # offline queue report + verdict
 ```
 
 Read the error text at the end of those lines:
@@ -112,8 +112,10 @@ Read the error text at the end of those lines:
   env file; check the endpoint from a browser or `curl -I`).
 - `authentication failed: invalid API key` → the key was rotated or belongs to another
   deployment.
-- `HTTP 409 … session has reached the maximum of N records` → a permanent rejection that will
-  retry forever. It needs a decision, not patience.
+- `SESSION RECORD LIMIT: session=… limit=… count=…` (or the older raw `HTTP 409 … session has
+  reached the maximum of N records`) → that session is FULL. A permanent rejection that will
+  retry forever with backoff; it needs a decision on the server side (the per-session cap,
+  ADR-0033), not patience — and never a move into another session.
 
 **Queued turns are not lost.** Every `persist` and every session start retries them, oldest
 first, back into their original session. Say that plainly — the user's first fear is loss.

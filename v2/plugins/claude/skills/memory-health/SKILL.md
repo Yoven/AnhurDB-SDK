@@ -45,20 +45,33 @@ when this session started.
 
 - A line at this session's start (`recall:` …) = the SessionStart hook fired.
 - `ANHUR_API_KEY not set … MEMORY IS NOT BEING SAVED` = **DEAD** (key not readable).
-- `profile failed`, `CreateSession failed`, `flush still failing` = **DEGRADED** (AnhurDB
-  unreachable or rejecting; turns are queued, not lost).
+- `profile failed`, `CreateSession failed`, `flush still failing`, `chunk not delivered`
+  = **DEGRADED** (AnhurDB unreachable or rejecting; turns are queued, not lost).
+- `SESSION RECORD LIMIT: session=… limit=… count=…` = **DEGRADED** — AnhurDB refuses new
+  records for that FULL session. Name the session and the numbers (see check 3).
 - `ERROR: … quarantined` = **DEGRADED and not self-healing** — needs a human.
 - Nothing newer than hours/days ago while sessions have been running = hooks are not firing.
 
-**3. Is anything stuck on disk?**
+**3. Is anything stuck on disk?** (offline: no network, no key read, changes nothing)
 
 ```bash
-ls -1 ~/.anhur-claude-memory/queue/*.txt 2>/dev/null | wc -l
-ls -1 ~/.anhur-claude-memory/queue/quarantine/*.txt 2>/dev/null | wc -l
+"${CLAUDE_SKILL_DIR}/../../bin/anhur-claude-memory" status
 ```
 
-- Queue > 0: turns that never reached AnhurDB. **They are not lost** — every `persist` and
-  every session start retries them. Report the number and that it should drain by itself.
+Read the `verdict:` line, not the exit code (always 0). Do not count `queue/*.txt` by hand:
+since 2026-07-31 the queue lives in `queue.db`, and a `.txt` count reads 0 over a stuck queue.
+
+- `verdict: OK` = nothing held locally.
+- `SESSION RECORD LIMIT: session=<id> chunks=<k> limit=<N> count=<M>` = **DEGRADED, and it
+  will not drain by itself.** Report it by name: "AnhurDB refuses new records for session
+  `<id>` (count `<M>` of limit `<N>`); `<k>` chunk(s) are kept locally and retried with
+  backoff — not lost". `unknown` means the server did not send that number (older server).
+  Clearing it needs a human decision on the server side (the tenant's per-session cap,
+  ADR-0033). **Never** suggest writing those chunks into another session: 1 Claude session =
+  1 AnhurDB session, inviolable.
+- Other pending chunks: turns that never reached AnhurDB. **They are not lost** — every
+  `persist` and every session start retries them. Report the number and that it should
+  drain by itself.
 - Quarantine > 0: chunks whose originating session could not be proven. These are **never**
   retried automatically, by design: writing them anywhere else would merge two conversations
   (1 Claude session = 1 AnhurDB session, inviolable). Only a human can resolve them — say so
@@ -116,7 +129,7 @@ that never fires leaves no trace at all — and you are the only witness to it.
 | Verdict | Evidence |
 | --- | --- |
 | `ALIVE` | plugin enabled, a `recall:` line at this session's start, empty queue, block present in context |
-| `DEGRADED` | engine running but queue/quarantine non-empty, or AnhurDB failing — say what is stuck, and that queued turns are retried, not lost |
+| `DEGRADED` | engine running but queue/quarantine non-empty, or AnhurDB failing — say what is stuck, and that queued turns are retried, not lost. A `SESSION RECORD LIMIT` line makes it DEGRADED by itself: name the session, limit and count |
 | `DEAD` | plugin not loaded, key missing, or no log line for this session — nothing is being saved right now |
 
 Finish with the single next action. If the verdict is not `ALIVE`, that action is
