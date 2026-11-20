@@ -1,5 +1,25 @@
 # Go SDK Changelog
 
+## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
+
+Additive; no version number assigned yet (not published). Go, Python and
+TypeScript ship it together.
+
+- **New:** `client.SessionRecordLimitError` + sentinel `client.ErrSessionRecordLimit`. Raised when a write hits a session that already holds its
+  maximum number of records — `SessionUUID`, `Limit *int`, `Count *int`, `ServerMessage`; `Kind()` conflict, `Retryable()` false, `StatusCode()` 409. `Unwrap()` returns both the sentinel and the original `*APIError`, so `errors.As(err, &apiErr)` with `StatusCode == 409` keeps matching.
+- **Both server generations recognised:** new servers send HTTP 409 with
+  `code: "session_record_limit"` plus `limit`/`count`/`session_uuid`; old
+  servers send only `{"error": "session has reached the maximum of N records"}`.
+  Missing fields are null (never a fake zero); `limit` is read back from the
+  server's own sentence when the field is absent. Any other 409 keeps the
+  generic error.
+- **Non-retryable**, and that does not mean "drop it": keep the write and
+  retry later; never write it into another session to dodge the cap.
+- **No gRPC path:** the SDK has no gRPC transport; the gRPC form of the
+  contract (ResourceExhausted / legacy AlreadyExists) is documented in
+  `v2/SDK_ERROR_CONTRACT.md` for any future transport.
+- Code: `client/response.go` (split out of `connection.go`, house 300-line cut) and `client/session_limit.go`; tests in `client/session_limit_test.go`.
+
 ## 3.0.0 — SDK parity: nineteen discarded options, two lying return types, three dead models (2026-09-14)
 
 The release that stops the Go SDK compiling calls it does not honour. Every

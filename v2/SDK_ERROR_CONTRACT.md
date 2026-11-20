@@ -161,6 +161,45 @@ linguagens têm exatamente essa forma de armadilha.
 
 ---
 
+## Recusa tipada: limite de records por sessão (2026-11-20, ADR-0033)
+
+Um 409 **não** é como os outros. "A sessão está cheia" é uma recusa que nunca
+melhora repetindo na mesma sessão, e um cliente que só vê `HTTP 409` não a
+distingue de um conflito qualquer — foi assim que uma sessão cheia passou 10 dias
+parecendo queda no plugin de memória. Os três SDKs agora levantam um erro
+**tipado**, subclasse do erro de 409 que já existia (nenhum `catch` antigo quebra):
+
+| SDK | Tipo | Campos |
+|---|---|---|
+| Go | `*client.SessionRecordLimitError` + sentinela `client.ErrSessionRecordLimit` | `SessionUUID string`, `Limit *int`, `Count *int`, `ServerMessage string`; `Kind()=conflict`, `Retryable()=false`, `StatusCode()=409`; `Unwrap()` devolve a sentinela **e** o `*APIError` 409 |
+| Python | `AnhurSessionRecordLimitError(AnhurQueryError)` | `session_uuid`, `limit`, `count` (`Optional[int]`), `server_message`, `code`; `kind="conflict"`, `retryable=False`, `status_code=409` |
+| TypeScript | `AnhurSessionRecordLimitError extends AnhurError` | `sessionUuid`, `limit`, `count` (`number \| null`), `serverMessage`, `code`; `kind="conflict"`, `retryable=false`, `statusCode=409` |
+
+**Reconhecimento — as duas gerações de servidor:**
+
+- servidor NOVO: HTTP 409 com `{"error": "session has reached the maximum of N records ...", "code": "session_record_limit", "limit": N, "count": M, "session_uuid": "..."}`;
+- servidor ANTIGO (produção até o deploy): HTTP 409 com só `{"error": "session has reached the maximum of N records"}` (ou o mesmo texto cru).
+
+Casa por `code == "session_record_limit"` **ou** pelo prefixo de texto
+`"session has reached the maximum of"`, e **só** em HTTP 409. Campo ausente vira
+`nil`/`None`/`null`, nunca zero inventado — com uma exceção declarada: `limit` é
+relido da própria frase do servidor ("maximum of N records") quando o campo falta,
+porque o número está no texto que ele mandou. `count` e `session_uuid` não têm
+essa fonte e ficam nulos.
+
+**gRPC:** o contrato do servidor é `codes.ResourceExhausted` + `google.rpc.ErrorInfo`
+(reason `SESSION_RECORD_LIMIT`, domain `anhurdb`, metadata `session_uuid`/`limit`/`count`),
+e servidores antigos mandam `codes.AlreadyExists` com o mesmo texto. **Nenhum dos
+três SDKs tem transporte gRPC hoje** (todos falam REST), então não há caminho gRPC a
+classificar; um transporte gRPC futuro TEM de reconhecer os dois códigos.
+
+**Não-retryable não é "descarte".** Repetir na mesma sessão dá a mesma recusa até o
+teto mudar no servidor. Quem não pode perder a escrita guarda e tenta DEPOIS; gravar
+em outra sessão para driblar o teto fundiria conversas (no plugin de memória:
+1 sessão Claude = 1 sessão AnhurDB, inviolável).
+
+---
+
 ## Testes que provam o contrato
 
 Um por SDK, tabela única, sem servidor:
@@ -173,6 +212,7 @@ Um por SDK, tabela única, sem servidor:
 6. timeout → `kind=timeout`, `retryable=true`, `status` **ausente**, **`message` não-vazia** (regressão do defeito nº 1)
 7. conexão recusada → `kind=transport`, `retryable=true`, `status` ausente
 8. corpo de erro contendo `10.20.1.2:19090` → o endereço **não** aparece em `message`
+9. 409 de sessão cheia — corpo NOVO estruturado e corpo ANTIGO só-texto → erro tipado de limite de sessão, `retryable=false`, campos ausentes nulos; um 409 genérico continua genérico (`session_limit_test.go`, `test_session_record_limit.py`, `session_record_limit.test.ts`)
 
 O teste 8 é o que impede que "melhorar as mensagens de erro" vire vazamento de
 topologia. O servidor já retém esse corpo; o SDK não pode reintroduzi-lo por

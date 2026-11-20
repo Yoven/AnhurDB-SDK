@@ -11,6 +11,7 @@
  */
 
 import { AnhurAuthError, AnhurError, AnhurQueryError } from "./types.js";
+import { sessionRecordLimitFromResponse } from "./sessionLimit.js";
 
 /** Maximum response body size: 100 MB (memory-exhaustion protection). */
 export const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
@@ -102,6 +103,10 @@ export function typedErrorForResponse(
       statusCode,
     );
   }
+  // A full session (ADR-0033) is a typed, non-retryable refusal; any other
+  // 409 keeps the generic shape below.
+  const sessionLimitError = sessionRecordLimitFromResponse(statusCode, bodyExcerpt);
+  if (sessionLimitError !== null) return sessionLimitError;
   return new AnhurError(
     `Server error (HTTP ${statusCode}): ${bodyExcerpt}`,
     statusCode,

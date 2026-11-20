@@ -82,6 +82,7 @@ from .client.exceptions import (
     AnhurQueryError,
     AnhurConnectionError,
     AnhurUploadWaitTimeout,
+    AnhurSessionRecordLimitError,
 )
 from .client.search_mode import (
     SEARCH_MODES,
@@ -167,5 +168,6 @@ __all__ = [
     "AnhurAuthError",
     "AnhurQueryError",
     "AnhurConnectionError",
+    "AnhurSessionRecordLimitError",
     "AnhurUploadWaitTimeout",
 ]

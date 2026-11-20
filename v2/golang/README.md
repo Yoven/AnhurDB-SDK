@@ -279,6 +279,25 @@ if err != nil {
 }
 ```
 
+### Full session (HTTP 409, `session_record_limit`)
+
+A write into a session that already holds its maximum number of records is
+refused with a typed, **non-retryable** `*client.SessionRecordLimitError`
+(old servers that send only the text are recognised too). Retrying the same
+session gets the same answer; keep the data and retry later — never write it
+into another session to dodge the cap.
+
+```go
+var limitErr *client.SessionRecordLimitError
+if errors.As(err, &limitErr) { // or errors.Is(err, client.ErrSessionRecordLimit)
+    // Limit/Count are *int: nil when an old server omitted them.
+    log.Printf("session %s is full (limit=%v count=%v)", limitErr.SessionUUID, limitErr.Limit, limitErr.Count)
+}
+```
+
+`errors.As(err, &apiErr)` still finds the underlying `*APIError` with
+`StatusCode == 409`, so existing code keeps working.
+
 ## DSPy/LangChain Integration
 
 The SDK includes a retriever adapter for Go agentic frameworks:

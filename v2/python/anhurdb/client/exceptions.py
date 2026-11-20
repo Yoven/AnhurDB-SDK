@@ -106,3 +106,41 @@ class AnhurUploadWaitTimeout(AnhurError):
     status within the timeout. Parity: Go ``ErrUploadWaitTimeout`` /
     TypeScript ``AnhurUploadWaitTimeout``."""
     pass
+
+
+class AnhurSessionRecordLimitError(AnhurQueryError):
+    """Raised when AnhurDB refuses a write because the target session already
+    holds its maximum number of records (ADR-0033). Parity: Go
+    ``*SessionRecordLimitError`` / ``ErrSessionRecordLimit``, TypeScript
+    ``AnhurSessionRecordLimitError``.
+
+    Recognised on both server generations: the new structured 409 body
+    (``code == "session_record_limit"`` plus ``limit``/``count``/``session_uuid``)
+    and the old text-only 409 (``"session has reached the maximum of N records"``).
+    ``session_uuid`` and ``count`` are ``None`` when an old server omitted them;
+    ``limit`` is read back from the server's own sentence when the field is absent.
+
+    Junior Tip [non-retryable is not "drop it"]: repeating the same write into
+    the same session gets the same refusal until the cap changes server-side,
+    so ``retryable`` is False. A caller that must not lose the write keeps it
+    and retries LATER; writing it into another session to dodge the cap would
+    merge two conversations. Subclassing ``AnhurQueryError`` keeps every
+    existing ``except AnhurQueryError`` / ``status_code == 409`` branch working.
+    """
+
+    CODE = "session_record_limit"
+
+    def __init__(
+        self,
+        message: str,
+        session_uuid: Optional[str] = None,
+        limit: Optional[int] = None,
+        count: Optional[int] = None,
+        server_message: str = "",
+    ):
+        super().__init__(message, status_code=409, kind=AnhurError.KIND_CONFLICT)
+        self.session_uuid = session_uuid
+        self.limit = limit
+        self.count = count
+        self.server_message = server_message
+        self.code = self.CODE

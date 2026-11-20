@@ -129,3 +129,6 @@ export {
   // `instanceof` the one error the upload wait can produce.
   AnhurUploadWaitTimeout,
 } from "./types.js";
+// Typed per-session record cap refusal (ADR-0033). Exported from errors.ts
+// directly so the oversized types.ts does not grow.
+export { AnhurSessionRecordLimitError } from "./errors.js";

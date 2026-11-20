@@ -129,3 +129,46 @@ export class AnhurUploadWaitTimeout extends AnhurError {
     this.name = "AnhurUploadWaitTimeout";
   }
 }
+
+/** Raised when AnhurDB refuses a write because the target session already
+ * holds its maximum number of records (ADR-0033). Parity: Go
+ * `*SessionRecordLimitError` / `ErrSessionRecordLimit`, Python
+ * `AnhurSessionRecordLimitError`.
+ *
+ * Recognised on both server generations: the new structured 409 body
+ * (`code: "session_record_limit"` plus `limit`/`count`/`session_uuid`) and the
+ * old text-only 409 (`"session has reached the maximum of N records"`).
+ * `sessionUuid` and `count` are `null` when an old server omitted them; `limit`
+ * is read back from the server's own sentence when the field is absent.
+ *
+ * Junior Tip [non-retryable is not "drop it"]: repeating the same write into
+ * the same session gets the same refusal until the cap changes server-side, so
+ * `retryable` is false. A caller that must not lose the write keeps it and
+ * retries LATER; writing it into another session to dodge the cap would merge
+ * two conversations. It extends `AnhurError` (what every 409 already was), so
+ * existing `instanceof AnhurError` / `statusCode === 409` checks keep working. */
+export class AnhurSessionRecordLimitError extends AnhurError {
+  static readonly CODE = "session_record_limit";
+  readonly code = AnhurSessionRecordLimitError.CODE;
+  readonly sessionUuid: string | null;
+  readonly limit: number | null;
+  readonly count: number | null;
+  readonly serverMessage: string;
+
+  constructor(
+    message: string,
+    details: {
+      sessionUuid: string | null;
+      limit: number | null;
+      count: number | null;
+      serverMessage: string;
+    },
+  ) {
+    super(message, 409, "conflict");
+    this.name = "AnhurSessionRecordLimitError";
+    this.sessionUuid = details.sessionUuid;
+    this.limit = details.limit;
+    this.count = details.count;
+    this.serverMessage = details.serverMessage;
+  }
+}

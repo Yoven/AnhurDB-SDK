@@ -317,6 +317,21 @@ except AnhurQueryError as e:
     print(f"Bad request: {e}")
 ```
 
+A write into a full session raises `AnhurSessionRecordLimitError` (a subclass
+of `AnhurQueryError`, HTTP 409, `retryable == False`) on both the new structured
+server answer and the old text-only one. `session_uuid` and `count` are `None`
+when an old server omitted them. Keep the data and retry later — never write it
+into another session to dodge the cap:
+
+```python
+from anhurdb import AnhurSessionRecordLimitError
+
+try:
+    await mem.add("turn", mode="ingest", session_id=session_id)
+except AnhurSessionRecordLimitError as full:
+    print(f"session {full.session_uuid} is full: {full.count}/{full.limit}")
+```
+
 Query rejections are **one type on both sides of the wire**. A bad column, a
 `None` operand, an empty `$in`, a bad sort direction, an out-of-range `limit`, a
 non-AST argument and `execute()` without an executor all raise `AnhurQueryError`

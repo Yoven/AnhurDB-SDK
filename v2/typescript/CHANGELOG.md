@@ -1,5 +1,25 @@
 # TypeScript SDK Changelog
 
+## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
+
+Additive; no version number assigned yet (not published). Go, Python and
+TypeScript ship it together.
+
+- **New:** `AnhurSessionRecordLimitError` (extends `AnhurError`, exported from the package root). Raised when a write hits a session that already holds its
+  maximum number of records — `sessionUuid`, `limit`, `count` (`number | null`), `serverMessage`, `code`; `kind` conflict, `retryable` false, `statusCode` 409. JSON and multipart paths both throw it.
+- **Both server generations recognised:** new servers send HTTP 409 with
+  `code: "session_record_limit"` plus `limit`/`count`/`session_uuid`; old
+  servers send only `{"error": "session has reached the maximum of N records"}`.
+  Missing fields are null (never a fake zero); `limit` is read back from the
+  server's own sentence when the field is absent. Any other 409 keeps the
+  generic error.
+- **Non-retryable**, and that does not mean "drop it": keep the write and
+  retry later; never write it into another session to dodge the cap.
+- **No gRPC path:** the SDK has no gRPC transport; the gRPC form of the
+  contract (ResourceExhausted / legacy AlreadyExists) is documented in
+  `v2/SDK_ERROR_CONTRACT.md` for any future transport.
+- Code: `src/sessionLimit.ts`; tests in `src/test/session_record_limit.test.ts`.
+
 ## 3.0.0 — SDK parity: the types stop lying (2026-09-14)
 
 Released together with Go and Python at the SAME number. This round closes the

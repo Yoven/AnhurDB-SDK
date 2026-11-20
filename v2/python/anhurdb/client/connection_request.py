@@ -26,6 +26,7 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 from .connection_guards import QueryParams, read_capped_body
+from .session_limit import session_record_limit_from_response
 from .connection_host import RequestExecutionHost
 from .exceptions import (
     AnhurError,
@@ -124,6 +125,10 @@ class RequestExecutionMixin:
                         status_code=404,
                     )
                 elif response.status == 409:
+                    # A full session (ADR-0033) is typed; any other 409 is not.
+                    limit_error = session_record_limit_from_response(409, body_text)
+                    if limit_error is not None:
+                        raise limit_error
                     raise AnhurQueryError(
                         f"Conflict (HTTP 409): {body_text[:500]}",
                         status_code=409,

@@ -109,56 +109,6 @@ func (c *HTTPConnection) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 }
 
-// handleResponse reads the response body and maps HTTP errors to typed errors.
-//
-// Security:
-//   - Response body is capped at maxResponseSize (100 MB).
-//   - Error messages never include the API key.
-//   - Redirect responses (3xx) are treated as errors.
-func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
-	defer resp.Body.Close()
-
-	// SECURITY: Cap response body to prevent memory exhaustion.
-	limitedReader := io.LimitReader(resp.Body, maxResponseSize+1)
-	body, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-	if int64(len(body)) > maxResponseSize {
-		return nil, fmt.Errorf("response exceeds maximum size (%d MB)",
-			maxResponseSize/(1024*1024))
-	}
-
-	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return body, nil
-	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		return nil, ErrUnauthorized
-	case resp.StatusCode == 404:
-		return nil, ErrNotFound
-	case resp.StatusCode >= 300 && resp.StatusCode < 400:
-		// Redirect responses — blocked for security.
-		return nil, fmt.Errorf(
-			"server returned redirect (HTTP %d); redirects are disabled "+
-				"to prevent credential leakage", resp.StatusCode)
-	case resp.StatusCode == 400 || resp.StatusCode == 422:
-		// Truncate body in error to prevent oversized log entries.
-		truncated := string(body)
-		if len(truncated) > 500 {
-			truncated = truncated[:500]
-		}
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: truncated}
-	case resp.StatusCode >= 500:
-		truncated := string(body)
-		if len(truncated) > 500 {
-			truncated = truncated[:500]
-		}
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: truncated}
-	default:
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
-	}
-}
-
 // Get sends a GET request to the given path with optional query parameters.
 func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values) ([]byte, error) {
 	fullURL := c.BaseURL + path

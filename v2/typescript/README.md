@@ -383,6 +383,24 @@ try {
 }
 ```
 
+A write into a full session throws `AnhurSessionRecordLimitError` (extends
+`AnhurError`, HTTP 409, `retryable === false`) on both the new structured
+server answer and the old text-only one. `sessionUuid` and `count` are `null`
+when an old server omitted them. Keep the data and retry later — never write it
+into another session to dodge the cap:
+
+```typescript
+import { AnhurSessionRecordLimitError } from "anhurdb";
+
+try {
+  await mem.add("turn", { mode: "ingest", sessionId });
+} catch (err) {
+  if (err instanceof AnhurSessionRecordLimitError) {
+    console.error(`session ${err.sessionUuid} is full: ${err.count}/${err.limit}`);
+  }
+}
+```
+
 ## License
 
 MIT

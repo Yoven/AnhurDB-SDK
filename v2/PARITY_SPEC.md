@@ -88,6 +88,7 @@ API. This document is the public contract; deviations are bugs.
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |
 | `query` AST validation | Since 2026-07-28 the server rejects a malformed filter with a **named HTTP 400** instead of dropping the predicate: bare value instead of an operator object, empty operator object `{}`, empty `$in`, unknown operator, and a non-scalar operator value. The dropped predicate used to widen the result set and answer 200 — a silent wrong answer. Client-side pre-validation reached parity in Go SDK v2.0.13 (2026-07-30); one narrow, structural residual difference remains — see "Known parity gaps". |
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |
+| Session record limit (2026-11-20, ADR-0033) | A write into a full session returns HTTP 409. All three SDKs raise a TYPED, non-retryable refusal — Go `*SessionRecordLimitError` (+ `ErrSessionRecordLimit`), Python `AnhurSessionRecordLimitError`, TypeScript `AnhurSessionRecordLimitError` — carrying session uuid, limit and count (`nil`/`None`/`null` when an old server omitted them; `limit` is read back from the server's sentence). Recognised by `code == "session_record_limit"` OR the text prefix `session has reached the maximum of`, on HTTP 409 only; any other 409 stays the generic error. No SDK has a gRPC transport, so the gRPC form (ResourceExhausted / legacy AlreadyExists) has no SDK path today. Contract: `SDK_ERROR_CONTRACT.md`. |
 
 ## Known parity gaps
 

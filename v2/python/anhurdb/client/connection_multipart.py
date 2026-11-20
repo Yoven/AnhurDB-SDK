@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 
 from ..version import USER_AGENT
 from .connection_guards import read_capped_body
+from .session_limit import session_record_limit_from_response
 from .connection_host import MultipartUploadHost
 from .exceptions import (
     AnhurError,
@@ -99,6 +100,9 @@ class MultipartUploadMixin:
                 elif response.status == 404:
                     raise AnhurQueryError(f"Resource not found (HTTP 404): {path}")
                 elif response.status == 409:
+                    limit_error = session_record_limit_from_response(409, body_text)
+                    if limit_error is not None:
+                        raise limit_error
                     raise AnhurQueryError(f"Conflict (HTTP 409): {body_text[:500]}", status_code=409)
                 elif response.status == 415:
                     raise AnhurQueryError(f"Unsupported media type (HTTP 415): {body_text[:500]}", status_code=415)
