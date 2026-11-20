@@ -142,8 +142,17 @@ func deliverSessionText(ctx context.Context, cfg config, mem *client.Memory,
 	}
 
 	sent, queued := 0, 0
+	// sessionFullCause, once set, sends the remaining chunks of this session straight to
+	// the queue: a full session refuses every one of them, and asking again per chunk
+	// only spends the hook's time to log the same refusal N times.
+	sessionFullCause := ""
 	for chunkIndex, body := range chunks {
 		chunk := buildChunk(chunkIndex, body)
+		if sessionFullCause != "" {
+			queueChunkWithCause(cfg, chunk, sessionFullCause)
+			queued++
+			continue
+		}
 		// Junior Tip [tenant + session, 2026-07-08]: pin the record to THIS
 		// conversation's session (sessionID), NOT the container. The tenant comes
 		// from the API key; each Claude Code conversation is its own session, so
@@ -161,7 +170,12 @@ func deliverSessionText(ctx context.Context, cfg config, mem *client.Memory,
 		if outcome.err != nil {
 			logLine(cfg, fmt.Sprintf("deliver: chunk not delivered after %d attempt(s) (%s) — queueing: %v",
 				outcome.attemptsMade, terminalityLabel(outcome.terminal), outcome.err))
-			queueChunk(cfg, chunk) // fila; o próximo persist ou recall drena (sem perda silenciosa)
+			// Sessão cheia (ADR-0033): uma linha clara, e o motivo vai junto com o chunk.
+			limitCause, isSessionLimit := noteSessionLimit(cfg, sessionID, outcome.err)
+			if isSessionLimit {
+				sessionFullCause = limitCause
+			}
+			queueChunkWithCause(cfg, chunk, limitCause) // fila; o próximo persist ou recall drena (sem perda silenciosa)
 			queued++
 		} else {
 			sent++

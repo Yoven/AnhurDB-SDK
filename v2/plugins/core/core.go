@@ -5,12 +5,14 @@
 // client contract we ship to users. It compiles into a SINGLE static binary per plugin, which
 // means the hook has ZERO runtime dependencies (no python, no jq, no curl).
 //
-// Two subcommands, wired to Claude Code hooks:
+// Two subcommands wired to Claude Code hooks, plus one diagnostic:
 //
 //	<binary> recall    # SessionStart: flush any queued writes, then print the agent's AnhurDB
 //	                   # profile so Claude Code injects it as context.
 //	<binary> persist   # Stop / SessionEnd: drain the queue, then ingest the transcript delta
 //	                   # since the last run; on failure, queue to disk.
+//	<binary> status    # memory-health: offline, keyless report of the local queue and a
+//	                   # verdict line, naming any session AnhurDB refuses as full (status.go).
 //
 // Design principle (mirrors AnhurDB's #1 rule — no silent loss): a turn we cannot persist is
 // queued to disk and recovered by the next persist or the next session start — whichever comes
@@ -66,7 +68,13 @@ func Run(args []string, plugin Config) {
 	_ = os.MkdirAll(cfg.cursorDir(), 0o755)
 
 	if len(args) < 2 {
-		logLine(cfg, "usage: "+plugin.BinaryName+" <recall|persist>")
+		logLine(cfg, "usage: "+plugin.BinaryName+" <recall|persist|status>")
+		return
+	}
+	// status is offline and keyless BY DESIGN — see status.go. It must run before the
+	// key guard: a missing key is exactly when the local backlog matters most.
+	if args[1] == "status" {
+		cmdStatus(cfg, os.Stdout)
 		return
 	}
 	// Junior Tip [a chave ausente agora GRITA, e o arquivo é salvo antes —

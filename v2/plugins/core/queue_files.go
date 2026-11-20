@@ -169,6 +169,7 @@ func flushQueueFiles(ctx context.Context, cfg config, mem *client.Memory) queueB
 			// the queue sat "still failing" for 10 days before anyone saw the 409.
 			// The queue must never drop chunks, but it must FAIL LOUD about why.
 			logLine(cfg, fmt.Sprintf("flush still failing for %s (retried on every persist): %v", path, addErr))
+			noteSessionLimit(cfg, queuedSessionID, addErr)
 			noteStuck(entry.Name(), addErr)
 		}
 	}
