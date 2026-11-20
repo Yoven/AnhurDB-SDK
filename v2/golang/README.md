@@ -255,7 +255,7 @@ takes `client.WithRecordScope(...)`: `Get`, `ReadContent`, `GetContext`,
 hits, _ := mem.SearchTenantShared(ctx, "refund policy", client.SessionsAll())
 hit := hits[0].Record
 // one tenant_shared search reads BOTH library stores: pick the store per hit
-body, _ := mem.ReadContent(ctx, hit.ID, client.WithRecordScope(client.TenantSharedScopeForHit(hit.UUID)))
+body, _ := mem.ReadContent(ctx, int64(hit.ID), client.WithRecordScope(client.TenantSharedScopeForHit(hit.UUID)))
 ```
 
 `shared_all` (or any other value) is refused locally: an id names one store. A
