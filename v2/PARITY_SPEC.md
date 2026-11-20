@@ -90,6 +90,28 @@ API. This document is the public contract; deviations are bugs.
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |
 | Session record limit (2026-11-20, ADR-0033) | A write into a full session returns HTTP 409. All three SDKs raise a TYPED, non-retryable refusal — Go `*SessionRecordLimitError` (+ `ErrSessionRecordLimit`), Python `AnhurSessionRecordLimitError`, TypeScript `AnhurSessionRecordLimitError` — carrying session uuid, limit and count (`nil`/`None`/`null` when an old server omitted them; `limit` is read back from the server's sentence). Recognised by `code == "session_record_limit"` OR the text prefix `session has reached the maximum of`, on HTTP 409 only; any other 409 stays the generic error. No SDK has a gRPC transport, so the gRPC form (ResourceExhausted / legacy AlreadyExists) has no SDK path today. Contract: `SDK_ERROR_CONTRACT.md`. |
 
+## By-id scope — L2 tenant library (2026-11-20, ADR-0029)
+
+Server: AnhurDB `fix/l2-lib-scope`. A record id is a rowid **per store**; since
+tenant-library uploads land in `{c}_{t}_lib`, an id from a shared-plane hit must
+be addressed to its store or the call reads/mutates an unrelated chat row with
+the same number. All three SDKs, same semantics:
+
+| Topic | Go / Python / TypeScript |
+|---|---|
+| Scope values | `RecordScope*` consts / `SCOPE_*` / `RecordScope` union: `sessions`, `tenant_shared`, `tenant_shared_legacy`, `client_shared`. `shared_all` and unknown values refused **locally** (invalid_request, 400-classified, no request sent) |
+| Carrier | `WithRecordScope(s)` (variadic `...ByIDOption`) / keyword-only `scope=` / trailing `{ scope }` |
+| Methods | `Get`, `ReadContent`, `GetContext`, `GetGrounding`, `BatchReadContent`, `Update`, `Delete`, `Supersede`, `UploadStatus`, `WaitForUpload` — sent as `?scope=` on the REST route (PATCH/POST/DELETE too). No scope = request byte-identical to before |
+| Hit → scope | `TenantSharedScopeForHit` / `tenant_shared_scope_for_hit` / `tenantSharedScopeForHit`: uuid ends in `_lib` → `tenant_shared`, else `tenant_shared_legacy` |
+| Upload plane | `UploadResult.Scope` / `.scope` / `.scope`, SDK-filled from the mode sent (default & `tenant_shared` → `tenant_shared`, `client_shared` → `client_shared`, chat/session → `sessions`); helper `UploadStatusScope` / `upload_status_scope` / `uploadStatusScope`. Pass it to the status poll |
+| Delete-by-file | scope `tenant_shared` (session may be empty; server deletes both library stores) or `client_shared`; other values refused locally. Result gains `legs[]` `{generation, session_uuid, skipped, dispatch_skipped, matched_count, deleted_count, error}` |
+| `WaitForUpload` | returns/raises at once on a non-retryable error (Go changed to match Python/TS, which already did) |
+
+Not exposed by any SDK: `GET /records/{id}/explain` (the server honours `?scope=`
+there too; no SDK method exists) and gRPC (no SDK has a gRPC transport; the
+server's `UpdateRecordRequest.scope=14`, `DeleteRecordRequest.scope=2`,
+`SupersedeRequest.scope=3`, and the read requests' `scope=11` are for a future one).
+
 ## Known parity gaps
 
 Deviations from this contract are bugs (see Principles). These are the open ones,

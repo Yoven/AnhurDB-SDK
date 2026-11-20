@@ -139,9 +139,12 @@ describe("UploadResult — no `id`, and five fields that were missing", () => {
     // OLD TYPE declared `id?: number`, making `upload.id ?? upload.record_id`
     // compile as a careful-looking fallback whose first branch is dead.
     assert.equal("id" in value, false);
+    // `scope` is SDK-filled (the plane the file was SENT to, ADR-0029), never
+    // read from the wire — the server keys stay exactly the handler's nine.
+    assert.equal(value.scope, "tenant_shared");
     assert.deepEqual(Object.keys(value).sort(), [
       "extension", "filename", "message", "mime", "mime_detected",
-      "record_id", "size_bytes", "status", "uuid",
+      "record_id", "scope", "size_bytes", "status", "uuid",
     ]);
   });
 });

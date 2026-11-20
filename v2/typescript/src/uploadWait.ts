@@ -16,6 +16,7 @@
 
 import { AnhurError, AnhurUploadWaitTimeout } from "./types.js";
 import type { UploadStatusResult } from "./types.js";
+import type { RecordScope } from "./recordScope.js";
 
 /** Timings of {@link pollUploadUntilTerminal}. All optional. */
 export interface UploadWaitOptions {
@@ -25,6 +26,12 @@ export interface UploadWaitOptions {
   intervalMs?: number;
   /** How long an HTTP 404 still counts as "not visible yet". Default 30s. */
   notFoundGraceMs?: number;
+  /**
+   * Plane the upload landed in (`upload.scope`), forwarded to every poll by
+   * `Memory.waitForUpload`. Omitted: the server looks in every plane this
+   * caller can upload to and may answer `AnhurUploadStatusAmbiguousError`.
+   */
+  scope?: RecordScope;
 }
 
 /** Statuses the server uses to say "this upload will not change again". */

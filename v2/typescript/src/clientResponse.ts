@@ -12,6 +12,7 @@
 
 import { AnhurAuthError, AnhurError, AnhurQueryError } from "./types.js";
 import { sessionRecordLimitFromResponse } from "./sessionLimit.js";
+import { scopeErrorFromResponse } from "./scopeErrors.js";
 
 /** Maximum response body size: 100 MB (memory-exhaustion protection). */
 export const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
@@ -21,6 +22,17 @@ export const MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
  * Bounded because a server stack trace is diagnostic, not a payload.
  */
 const ERROR_BODY_EXCERPT_CHARS = 500;
+
+/**
+ * How much of a FAILED response body is READ for classification.
+ *
+ * Junior Tip [read more than you quote, 2026-11-20]: a partial tenant-library
+ * delete (HTTP 500, ADR-0029) carries one outcome per library store, and the
+ * server's sentence alone can pass 500 characters — reading only the quoted
+ * excerpt cut the JSON short and lost every leg. Classification reads up to
+ * 64 KiB (still bounded); messages still quote 500 characters.
+ */
+const ERROR_BODY_READ_CHARS = 64 * 1024;
 
 /**
  * Read a failed response's body, bounded, never throwing.
@@ -35,7 +47,7 @@ const ERROR_BODY_EXCERPT_CHARS = 500;
 export async function readErrorBodyExcerpt(response: Response): Promise<string> {
   return response
     .text()
-    .then((bodyText) => bodyText.slice(0, ERROR_BODY_EXCERPT_CHARS))
+    .then((bodyText) => bodyText.slice(0, ERROR_BODY_READ_CHARS))
     .catch(() => "");
 }
 
@@ -78,13 +90,15 @@ export async function readCappedText(response: Response): Promise<string> {
  * @param statusCode  - The HTTP status of the failed response.
  * @param requestPath - Path of the request, quoted in the 404 message. Never
  *                      the full URL: it can carry credentials into a log.
- * @param bodyExcerpt - Bounded body text from {@link readErrorBodyExcerpt}.
+ * @param bodyText    - Bounded body text from {@link readErrorBodyExcerpt};
+ *                      quoted in messages only up to 500 characters.
  */
 export function typedErrorForResponse(
   statusCode: number,
   requestPath: string,
-  bodyExcerpt: string,
+  bodyText: string,
 ): AnhurError {
+  const bodyExcerpt = bodyText.slice(0, ERROR_BODY_EXCERPT_CHARS);
   if (statusCode === 401 || statusCode === 403) {
     return new AnhurAuthError(
       `Authentication failed (HTTP ${statusCode})`,
@@ -92,6 +106,9 @@ export function typedErrorForResponse(
     );
   }
   if (statusCode === 400 || statusCode === 422) {
+    // The tenant-library collision guard answers an upload with 400.
+    const scopeError = scopeErrorFromResponse(statusCode, bodyText);
+    if (scopeError !== null) return scopeError;
     return new AnhurQueryError(
       `Invalid request (HTTP ${statusCode}): ${bodyExcerpt}`,
       statusCode,
@@ -105,8 +122,12 @@ export function typedErrorForResponse(
   }
   // A full session (ADR-0033) is a typed, non-retryable refusal; any other
   // 409 keeps the generic shape below.
-  const sessionLimitError = sessionRecordLimitFromResponse(statusCode, bodyExcerpt);
+  const sessionLimitError = sessionRecordLimitFromResponse(statusCode, bodyText);
   if (sessionLimitError !== null) return sessionLimitError;
+  // L2 library answers: collision / ambiguous upload id (409), partial library
+  // delete (500, decoded from the full body so every leg survives).
+  const scopeError = scopeErrorFromResponse(statusCode, bodyText);
+  if (scopeError !== null) return scopeError;
   return new AnhurError(
     `Server error (HTTP ${statusCode}): ${bodyExcerpt}`,
     statusCode,

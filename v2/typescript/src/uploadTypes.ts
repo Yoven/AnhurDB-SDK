@@ -9,6 +9,8 @@
  * @module
  */
 
+import type { RecordScope } from "./recordScope.js";
+
 /**
  * Result of `POST /api/v1/upload` — the file was ACCEPTED, not processed.
  *
@@ -46,6 +48,13 @@ export interface UploadResult {
   size_bytes?: number;
   /** Initial ingest status, e.g. `"processing"`. */
   status?: string;
+  /**
+   * Plane the file landed in — filled by `uploadFile` from the mode it SENT
+   * (the server does not echo it). Pass it to `uploadStatus` / `waitForUpload`
+   * (`{ scope: upload.scope }`) so the status is read from THAT store: record
+   * ids are per store (ADR-0029, `server/handler/upload_status_scope.go`).
+   */
+  scope?: RecordScope;
 }
 
 /**

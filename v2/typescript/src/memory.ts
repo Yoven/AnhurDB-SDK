@@ -9,10 +9,8 @@
  */
 
 import { HttpClient } from "./client.js";
-import { MemorySearchApi } from "./search.js";
+import { MemoryFilesApi } from "./filesApi.js";
 import { AnhurError } from "./types.js";
-import { pollUploadUntilTerminal } from "./uploadWait.js";
-import type { UploadWaitOptions } from "./uploadWait.js";
 import {
   appendSessionsQueryParam,
   normalizeSessions,
@@ -22,15 +20,11 @@ import type {
   AddResult,
   AstQuery,
   BatchUpdateResult,
-  ContextResult,
   CreateOptions,
   CreateSessionOptions,
-  DeleteFileOptions,
-  DeleteFileResult,
   EntityGraphResult,
   EntityRecord,
   EntityTimelineResult,
-  GroundingResult,
   IngestPayload,
   ListChatOptions,
   ListChatResult,
@@ -47,8 +41,6 @@ import type {
   TypeListingResult,
   SearchScope,
   SessionStats,
-  UploadResult,
-  UploadStatusResult,
   UpsertEntityEdgeOptions,
   UpsertEntityOptions,
   WalkResult,
@@ -169,7 +161,7 @@ function buildMetadataJson(
  * between cloud (`/api/v1/ingest`) and OSS (`/api/v1/records`)
  * automatically.
  */
-export class Memory extends MemorySearchApi {
+export class Memory extends MemoryFilesApi {
   private readonly client: HttpClient;
   private readonly derivedContainerTag: string;
   private sessionUuid: string;
@@ -711,37 +703,6 @@ export class Memory extends MemorySearchApi {
     ];
   }
 
-  /**
-   * Build the provenance grounding of a record via
-   * `GET /api/v1/records/{id}/grounding`.
-   *
-   * Walks the graph (BFS) back to the source episodic anchors and the
-   * consolidations that summarise the record — the "why does the DB believe
-   * this" trail.
-   *
-   * the ONLY query param is `max_depth`, an integer 1..5 inclusive (default 3);
-   * anything outside that range is HTTP 400 server-side. `anchors`/
-   * `consolidations` are always present arrays (may be empty). A missing/
-   * archived/superseded target is HTTP 404. Mirrors Python `get_grounding` and
-   * Go `GetGrounding`.
-   *
-   * @param recordId - The target record ID (must be > 0).
-   * @param maxDepth - BFS depth budget 1..5 (default server-side: 3).
-   */
-  async getGrounding(
-    recordId: number,
-    maxDepth?: number): Promise<GroundingResult> {
-    if (recordId <= 0) {
-      throw new Error("getGrounding: recordId must be > 0");
-    }
-    const params: Record<string, string> = {};
-    if (maxDepth !== undefined) params.max_depth = String(maxDepth);
-
-    return this.client.get<GroundingResult>(
-      `/api/v1/records/${recordId}/grounding`,
-      Object.keys(params).length > 0 ? params : undefined);
-  }
-
   // ══════════════════════════════════════════════════════════════
   // EXTENDED METHODS — Graph Traversal
   // ══════════════════════════════════════════════════════════════
@@ -814,32 +775,6 @@ export class Memory extends MemorySearchApi {
     return this.client.postRead<WalkResult>(
       "/api/v1/walk/semantic",
       payload);
-  }
-
-  /**
-   * Get the topological context (neighbours) around a specific record.
-   *
-   * @param recordId - The record ID to inspect.
-   */
-  async getContext(
-    recordId: number): Promise<ContextResult> {
-    return this.client.get<ContextResult>(
-      `/api/v1/records/${recordId}/topology`,
-      undefined);
-  }
-
-  /**
-   * Read the full content body of a specific record.
-   *
-   * @param recordId - The record ID whose content to retrieve.
-   */
-  async readContent(
-    recordId: number): Promise<string> {
-    // text/plain body — use getText (raw), not JSON parse. Matches Go raw
-    // bytes and Python raw_text=True.
-    return this.client.getText(
-      `/api/v1/records/${recordId}/content`,
-      undefined);
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -982,164 +917,9 @@ export class Memory extends MemorySearchApi {
     return this.client.get<Record<string, unknown>>("/api/v1/health");
   }
 
-  /**
-   * Fetch record metadata by ID via `GET /api/v1/records/{id}`.
-   *
-   * Junior Tip [vs readContent]: returns JSON metadata; use `readContent`
-   * for the full text body.
-   */
-  async get(recordId: number): Promise<Record<string, unknown>> {
-    if (recordId <= 0) {
-      throw new Error("get: recordId must be > 0");
-    }
-    return this.client.get<Record<string, unknown>>(
-      `/api/v1/records/${recordId}`);
-  }
-
-  /**
-   * Partially update a record.
-   *
-   * `score` is NOT accepted here. `PATCH /api/v1/records/{id}` has no score
-   * field, so the server answers 200 and drops the key — the same shape as an
-   * earlier defect with `archived`. Succeeding silently while writing nothing
-   * is worse than throwing, so this throws and names `setScore`.
-   * Measured 2026-08-15.
-   */
-  async update(
-    recordId: number,
-    fields: Partial<{
-      summary: string;
-      metadata: string;
-      status: string;
-      type: string;
-    }> & { score?: never }): Promise<void> {
-    if (fields && Object.prototype.hasOwnProperty.call(fields, "score")) {
-      throw new Error(
-        "update: cannot change score — PATCH /api/v1/records/{id} has no score " +
-        "field and drops the key while answering 200; use setScore(recordId, score)");
-    }
-    await this.client.patch(`/api/v1/records/${recordId}`, fields);
-  }
-
-  /**
-   * Set a record's importance score (1-10) durably.
-   *
-   * `update` cannot do this — see its note. This posts to
-   * `/api/v1/records/set-score`, which dispatches a replicated command and
-   * invalidates the read cache.
-   *
-   * The score feeds the value term of the cognitive weight, and the weight
-   * selects the record's embedding fidelity band, so the correction reaches
-   * ranking on the next maintenance pass rather than immediately.
-   *
-   * @param recordId - The record ID.
-   * @param score - Importance, 1-10.
-   */
-  async setScore(recordId: number, score: number): Promise<void> {
-    if (recordId <= 0) {
-      throw new Error("setScore: recordId must be > 0");
-    }
-    if (!Number.isInteger(score) || score < 1 || score > 10) {
-      throw new Error(`setScore: score must be an integer between 1 and 10, got ${score}`);
-    }
-    await this.client.post("/api/v1/records/set-score", { ids: [recordId], score });
-  }
-
-  /**
-   * Delete a specific record by ID (hard delete).
-   *
-   * For soft delete, use `update(id, { status: "archived" })` instead.
-   *
-   * @param recordId - The record ID to delete.
-   */
-  async delete(recordId: number): Promise<void> {
-    await this.client.delete(`/api/v1/records/${recordId}`);
-  }
-
-  /**
-   * Remove EVERY record produced by one ingested file inside a session — the
-   * root record, every chapter and every satellite — via
-   * `DELETE /api/v1/records/by-file`.
-   *
-   * Junior Tip [por que este método existe — o delete que mentia]: `delete(id)`
-   * apaga UM record. Um arquivo ingerido vira centenas deles (root + capítulos
-   * + satélites), então apagar a ficha do arquivo deixava o CONHECIMENTO vivo:
-   * a busca continuava respondendo com o livro "apagado". Sem `deleteFile` não
-   * existe "trocar a edição velha pela nova" — as duas coexistiriam para
-   * sempre, disputando a mesma busca.
-   *
-   * A identidade do arquivo é o prefixo `<checksum16>` que o file_ingestor
-   * grava em `metadata.ingest_key` (root: `"<c16>:root"`; capítulo:
-   * `"<c16>:<total>:<índice>"`) e em `metadata.chapter_ingest_key` (satélite).
-   * Um prefixo alcança as três formas.
-   *
-   * A remoção é soft-delete REPLICADO (tombstone via Raft): o registro fica
-   * archived/status=deleted, some da busca e do tier analítico, e continua
-   * restaurável — a auditoria não é perdida.
-   *
-   * Passe `{ dryRun: true }` para contar sem apagar — a rede de segurança que a
-   * interface mostra antes de o usuário confirmar.
-   *
-   * O tamanho mínimo (8) e o conjunto de caracteres do prefixo são validados no
-   * SERVIDOR (fonte única da verdade) e chegam como `AnhurQueryError` HTTP 400.
-   *
-   * @param sessionUuid     - Session that owns the file's records.
-   * @param ingestKeyPrefix - The file's `<checksum16>` identity.
-   * @param options         - `{ dryRun }` — count only, write nothing.
-   * @throws Error when either argument is empty/blank (fails locally, without a
-   *         round trip).
-   *
-   * @example
-   * ```ts
-   * const preview = await mem.deleteFile(sessionId, "ef9976f1ef5d5176", { dryRun: true });
-   * if (preview.matched_count > 0 && confirmed) {
-   *   await mem.deleteFile(sessionId, "ef9976f1ef5d5176");
-   * }
-   * ```
-   */
-  async deleteFile(
-    sessionUuid: string,
-    ingestKeyPrefix: string,
-    options: DeleteFileOptions = {}): Promise<DeleteFileResult> {
-    // Validação local mínima: o vazio nunca merece uma ida ao servidor, e o
-    // erro local nomeia o argumento do SDK.
-    const trimmedSessionUuid = (sessionUuid ?? "").trim();
-    if (!trimmedSessionUuid) {
-      throw new Error("deleteFile: sessionUuid is required");
-    }
-    const trimmedIngestKeyPrefix = (ingestKeyPrefix ?? "").trim();
-    if (!trimmedIngestKeyPrefix) {
-      throw new Error("deleteFile: ingestKeyPrefix is required");
-    }
-
-    return this.client.delete<DeleteFileResult>(
-      "/api/v1/records/by-file",
-      {
-        session: trimmedSessionUuid,
-        ingest_key_prefix: trimmedIngestKeyPrefix,
-        dry_run: options.dryRun === true ? "true" : "false",
-      });
-  }
-
   // ══════════════════════════════════════════════════════════════
   // BATCH OPERATIONS
   // ══════════════════════════════════════════════════════════════
-
-  /**
-   * Fetch full content for multiple records in a single call (max 100).
-   *
-   * Eliminates the N+1 pattern of calling `readContent()` in a loop.
-   *
-   * @param ids - Array of record IDs (max 100).
-   * @returns Map of `record_id → content_payload`.
-   */
-  async batchReadContent(
-    ids: number[]): Promise<Record<string, unknown>> {
-    // Read-shaped POST endpoint.
-    return this.client.postRead<Record<string, unknown>>(
-      "/api/v1/records/batch-content",
-      { ids });
-  }
 
   /**
    * Update status for multiple records at once.
@@ -1155,134 +935,8 @@ export class Memory extends MemorySearchApi {
       { ids, status });
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // TEMPORAL VERSIONING
-  // ══════════════════════════════════════════════════════════════
-
-  /**
-   * Mark an old record as superseded by a new one.
-   *
-   * The old record remains in the graph but search results prefer the
-   * newer version. This implements temporal versioning — a killer
-   * feature that no competitor (Mem0, Zep, LangMem) offers.
-   *
-   * @param oldId - The record being superseded.
-   * @param newId - The replacement record.
-   */
-  async supersede(oldId: number, newId: number): Promise<void> {
-    await this.client.post("/api/v1/records/supersede", {
-      old_id: oldId,
-      new_id: newId,
-    });
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // FILE UPLOAD
-  // ══════════════════════════════════════════════════════════════
-
-  /**
-   * Upload a document for async ingestion (multipart/form-data).
-   *
-   * Supported formats: PDF, JPEG, PNG, WEBP, GIF, TXT, Markdown,
-   * HTML, DOCX.
-   *
-   * The server processes the file asynchronously — use
-   * `uploadStatus()` to poll for completion.
-   *
-   * @param filename  - Original filename (used for format detection).
-   * @param content   - Raw file bytes (`Uint8Array` / `Buffer`) or UTF-8 text.
-   * @param options   - Chat: `{ sessionId, linkedEpisodicId }` (both required).
-   *                    Shared: `{ mode: "tenant_shared" | "client_shared" }`.
-   *
-   * Chat uploads hang the file as a sub-tree of the episodic and set `has_file=true`.
-   */
-  async uploadFile(
-    filename: string,
-    content: Uint8Array | ArrayBuffer | string,
-    options?: {
-      sessionId?: string;
-      linkedEpisodicId?: number;
-      mode?: "chat" | "tenant_shared" | "client_shared";
-    }): Promise<UploadResult> {
-    const form = new FormData();
-    let blobParts: BlobPart[];
-    if (typeof content === "string") {
-      blobParts = [content];
-    } else if (content instanceof ArrayBuffer) {
-      blobParts = [content];
-    } else {
-      // Uint8Array — copy into a plain ArrayBuffer slice for BlobPart typing.
-      blobParts = [content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer];
-    }
-    form.append("file", new Blob(blobParts), filename);
-    let mode = options?.mode;
-    if (options?.sessionId && !mode) {
-      mode = "chat";
-    }
-    if (mode === "chat") {
-      if (!options?.sessionId) {
-        throw new Error(
-          "session_id is required — create a session first (POST /api/v1/sessions)",
-        );
-      }
-      if (options.linkedEpisodicId === undefined || options.linkedEpisodicId <= 0) {
-        throw new Error(
-          "linked_episodic_id is required for chat uploads — attach the file to the episodic turn",
-        );
-      }
-      form.append("mode", "chat");
-      form.append("session_id", options.sessionId);
-      form.append("linked_episodic_id", String(options.linkedEpisodicId));
-    } else if (mode === "tenant_shared" || mode === "client_shared") {
-      form.append("mode", mode);
-    }
-    return this.client.postMultipart<UploadResult>("/api/v1/upload", form);
-  }
-
-  /**
-   * Check the processing status of a file upload.
-   *
-   * @param uploadId - The upload ID returned by `uploadFile()`.
-   */
-  async uploadStatus(
-    uploadId: number): Promise<UploadStatusResult> {
-    return this.client.get<UploadStatusResult>(
-      `/api/v1/upload/${uploadId}/status`,
-      undefined);
-  }
-
-  /**
-   * Poll `uploadStatus` until the upload reaches a terminal state.
-   *
-   * Parity: Go `WaitForUpload` / Python `wait_for_upload` — same state
-   * machine, same defaults (PARITY_SPEC.md).
-   *
-   * Junior Tip [por que 404 vira "pendente" no começo — medido 2026-08-07]:
-   * as leituras do AnhurDB são load-balanced; logo após o POST de upload um
-   * follower que ainda não aplicou a entrada devolve 404 legítimo por alguns
-   * segundos (read-your-writes). Dentro de `notFoundGraceMs` o 404 é espera;
-   * DEPOIS dela ele re-lança — um id inválido não pode virar espera infinita
-   * (falhar alto, nunca engolir).
-   *
-   * Returns the final payload — INCLUDING `status="failed"` (a failed ingest
-   * is terminal data the caller must inspect, not a transport error). Throws
-   * `AnhurQueryError` when the 404 persists beyond the grace window, and
-   * `AnhurUploadWaitTimeout` when no terminal status arrives in time.
-   */
-  async waitForUpload(
-    uploadId: number,
-    options?: UploadWaitOptions,
-  ): Promise<UploadStatusResult> {
-    // The state machine lives in uploadWait.ts (house cut). It is handed a
-    // CLOSURE over `this.uploadStatus` rather than the client, so the polling
-    // logic depends on one behaviour only — that a missing upload arrives as an
-    // AnhurError with statusCode 404 — and on nothing else about transport.
-    return pollUploadUntilTerminal(
-      () => this.uploadStatus(uploadId),
-      uploadId,
-      options,
-    );
-  }
+  // By-id reads/writes (scope-aware, ADR-0029) live in recordsApi.ts; delete-
+  // by-file and upload live in filesApi.ts — both are base classes of Memory.
 
   // ══════════════════════════════════════════════════════════════
   // ENTITY KNOWLEDGE GRAPH (Layer 2)

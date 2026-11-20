@@ -214,9 +214,15 @@ await mem.uploadFile("handbook.pdf", fileBytes, { mode: "tenant_shared" });
 
 // Poll processing status. The polling key is `record_id` — there is no `id`
 // on the upload ack (handler/upload.go:109-119 sends a fixed nine-key map).
-const status = await mem.uploadStatus(upload.record_id!);
+// `upload.scope` is the plane the file landed in (SDK-filled: tenant_shared by
+// default, client_shared, or sessions for chat) — record ids are per store.
+const status = await mem.uploadStatus(upload.record_id!, { scope: upload.scope });
 console.log(status.status); // "processing" | "completed" | "failed"
+const final = await mem.waitForUpload(upload.record_id!, { scope: upload.scope });
 ```
+
+Without a scope the server looks in every plane you can upload to and throws
+`AnhurUploadStatusAmbiguousError` (HTTP 409) when the id is a file in more than one.
 
 ### Temporal Versioning
 
@@ -272,9 +278,44 @@ const created = await mem.create(sessionId, "Ship the parity release", {
 await mem.update(42, { summary: "Updated", status: "archived" });
 await mem.setScore(42, 8); // score NAO passa pelo update — ver nota abaixo
 
-// Hard delete
+// Archive (soft delete)
 await mem.delete(42);
 ```
+
+### By-id scope (records from a shared plane, ADR-0029)
+
+A record id is a rowid **per store**. An id that came from a shared-plane
+search or upload must be read and changed in THAT store, or the call addresses
+an unrelated record with the same number in your chat store. Every by-id method
+takes `{ scope }` as its last argument: `get`, `readContent`, `getContext`,
+`getGrounding`, `batchReadContent`, `update`, `delete`, `supersede`,
+`uploadStatus` (and `waitForUpload`). Omitted = your own store (unchanged).
+
+| `scope` | Store |
+|---|---|
+| `"sessions"` | your chat store, shared-* rows excluded |
+| `"tenant_shared"` | tenant library `{c}_{t}_lib` (uploads after the L2 switch) |
+| `"tenant_shared_legacy"` | pre-migration library rows in `{c}_{t}` |
+| `"client_shared"` | client library `{c}_shared` |
+
+```typescript
+import { sessionsAll, tenantSharedScopeForHit } from "anhurdb";
+
+const hits = await mem.search("refund policy", sessionsAll(), { scope: "tenant_shared" });
+const hit = hits[0].record;
+// one tenant_shared search reads BOTH library stores: pick the store per hit
+const body = await mem.readContent(hit.id, { scope: tenantSharedScopeForHit(hit.uuid) });
+```
+
+`shared_all` (or any unknown value) is refused locally (`AnhurQueryError`,
+`invalid_request`). A row outside the named plane is HTTP 404, exactly like a
+missing id; `batchReadContent` omits it.
+
+`deleteFile(session, prefix, { scope: "tenant_shared" })` deletes in both
+library stores (session may be empty) and fills `result.legs`;
+`{ scope: "client_shared" }` targets the client library. A failure in one
+library store throws `AnhurLibraryDeletePartialError` with `.legs`; retrying the
+same call is safe (idempotent).
 
 ### Query Builder (AST)
 
@@ -400,6 +441,14 @@ try {
   }
 }
 ```
+
+### Tenant library collision (`AnhurTenantLibraryCollisionError`)
+
+When your tenant library store id collides with another registered tenant's
+store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
+search, by-id call, upload and delete: HTTP 409 (400 on upload). The SDK throws
+`AnhurTenantLibraryCollisionError`, **non-retryable**; it heals only when an
+operator renames one of the tenants. It is never the session-record-limit 409.
 
 ## License
 

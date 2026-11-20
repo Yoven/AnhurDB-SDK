@@ -1,5 +1,36 @@
 # TypeScript SDK Changelog
 
+## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
+
+Additive (optional trailing `options`; existing calls unchanged). Go, Python and
+TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
+
+- **New:** `RecordScope` (`"sessions" | "tenant_shared" | "tenant_shared_legacy" |
+  "client_shared"`) and `ByIdOptions { scope }` on `get`, `readContent`,
+  `getContext`, `getGrounding`, `batchReadContent`, `update`, `delete`,
+  `supersede`, `uploadStatus` (sent as `?scope=`), plus `waitForUpload`
+  (`UploadWaitOptions.scope`). Omitted = unchanged request; `shared_all`/unknown
+  values throw `AnhurQueryError` (invalid_request) before any request.
+- **New helpers:** `tenantSharedScopeForHit(uuid)`, `uploadStatusScope(mode, sessionId)`,
+  `RECORD_SCOPES`.
+- **Upload plane travels to the status poll:** `UploadResult.scope` (SDK-filled).
+  New `AnhurUploadStatusAmbiguousError` for the server's 409.
+- **Delete-by-file:** `DeleteFileOptions.scope` (`tenant_shared` | `client_shared`;
+  session may be empty with tenant_shared), `DeleteFileResult.legs`
+  (`DeleteFileLeg`), and `AnhurLibraryDeletePartialError` (`.legs`, HTTP 500
+  `partial: true`, retryable — the server delete is idempotent).
+- **New typed refusal:** `AnhurTenantLibraryCollisionError` (409 on
+  search/by-id/delete, 400 on upload), non-retryable; the session-record-limit
+  409 is checked first and stays distinct.
+- **Transport:** failed bodies are now READ up to 64 KiB for classification
+  (messages still quote 500 characters) — the 500-char read cut the partial
+  delete JSON short and lost its legs.
+- **Moved (house 300-line cut):** by-id methods to `src/recordsApi.ts`
+  (`MemoryRecordsApi`), upload + `deleteFile` to `src/filesApi.ts`
+  (`MemoryFilesApi`); `Memory` extends them, surface unchanged. Delete-file
+  types to `src/deleteFileTypes.ts` (re-exported from `types.ts`). Tests:
+  `src/test/record_scope.test.ts`.
+
 ## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
 
 Additive; no version number assigned yet (not published). Go, Python and

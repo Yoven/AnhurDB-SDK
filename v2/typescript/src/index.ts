@@ -114,6 +114,7 @@ export type {
   // Delete file (whole ingested document)
   DeleteFileOptions,
   DeleteFileResult,
+  DeleteFileLeg,
   // Failure classification carried by every AnhurError
   AnhurErrorKind,
 } from "./types.js";
@@ -132,3 +133,16 @@ export {
 // Typed per-session record cap refusal (ADR-0033). Exported from errors.ts
 // directly so the oversized types.ts does not grow.
 export { AnhurSessionRecordLimitError } from "./errors.js";
+// L2 tenant library (ADR-0029): by-id scope and its typed refusals. Exported
+// from their own modules so the oversized types.ts does not grow.
+export {
+  RECORD_SCOPES,
+  tenantSharedScopeForHit,
+  uploadStatusScope,
+} from "./recordScope.js";
+export type { ByIdOptions, RecordScope } from "./recordScope.js";
+export {
+  AnhurTenantLibraryCollisionError,
+  AnhurUploadStatusAmbiguousError,
+  AnhurLibraryDeletePartialError,
+} from "./scopeErrors.js";
