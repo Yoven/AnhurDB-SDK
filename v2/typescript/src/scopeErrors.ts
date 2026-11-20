@@ -5,33 +5,40 @@
  * on one of its two stores. Parity: Go `client/scope_errors.go`, Python
  * `anhurdb/client/scope_errors.py`.
  *
- * Wire shapes (AnhurDB fix/l2-lib-scope):
- *  - collision: `{"error": "...tenant library store id is a registered tenant;
- *    rename one of the two tenants before using tenant_shared"}` — HTTP 409 on
- *    search, by-id and delete-by-file (`handler/search_scope_request.go:35-44`),
- *    HTTP 400 on upload (`service/upload_destination.go:154-167`).
+ * Wire shapes (AnhurDB fix/l2-lib-scope, 4574c4d):
+ *  - collision: HTTP 409 `{"error": "...tenant library store id is a registered
+ *    tenant; rename one of the two tenants before using tenant_shared", "code":
+ *    "tenant_library_collision"}` on EVERY door — search, by-id, delete-by-file
+ *    and upload (`handler/search_scope_request.go` writeScopeLegError). Older
+ *    servers sent no code and answered the upload with 400; both are still
+ *    recognised by the sentence. An unreadable tenant registry is HTTP 503
+ *    (upload included) and stays the ordinary retryable unavailable error.
  *  - ambiguous upload status: HTTP 409 `{"error": "record N is a file upload in
  *    more than one plane; pass ?scope=..."}` (`handler/upload_status_scope.go:186-191`).
  *  - partial delete: HTTP 500 `{"error", "partial": true, "legs": [...]}`
  *    (`handler/record_delete_file_library.go:53-57`).
  *
- * Junior Tip [why the collision is matched by TEXT]: the server sends no
- * machine code for it, only `ErrTenantLibraryCollision`'s sentence. The
- * session-record-limit 409 has its own `code` and prefix and is checked FIRST
- * in clientResponse.ts, so the two can never be confused.
+ * Junior Tip [the code first, the sentence only as a fallback]: the sentence
+ * names the store and the fix and may be reworded; the `code` is the contract.
+ * The sentence match stays ONLY for servers older than 4574c4d, which sent no
+ * code. The session-record-limit 409 has its own code and prefix and is checked
+ * FIRST in clientResponse.ts, so the two can never be confused.
  */
 
 import { AnhurError, AnhurQueryError } from "./errors.js";
 import type { DeleteFileLeg } from "./deleteFileTypes.js";
 
+/** The machine-readable `code` of the collision refusal (server
+ * `service.TenantLibraryCollisionErrorCode`). */
+export const TENANT_LIBRARY_COLLISION_CODE = "tenant_library_collision";
 const TENANT_LIBRARY_COLLISION_TEXT = "tenant library store id is a registered tenant";
 const UPLOAD_STATUS_AMBIGUOUS_TEXT = "is a file upload in more than one plane";
 const MESSAGE_EXCERPT_CHARS = 500;
 
 /** The tenant library store `{c}_{t}_lib` is another registered tenant's
  * store; every tenant_shared call is refused. Never retryable: it heals only
- * when an operator renames one of the two tenants. `statusCode` is 409, or 400
- * on upload. */
+ * when an operator renames one of the two tenants. `statusCode` is 409 (400 on
+ * upload from servers older than 4574c4d). */
 export class AnhurTenantLibraryCollisionError extends AnhurQueryError {
   readonly serverMessage: string;
 
@@ -86,6 +93,15 @@ function parseErrorBody(bodyText: string): Record<string, unknown> {
   return { error: bodyText };
 }
 
+/** Code first; the sentence only when the body carries NO code (an older
+ * server). A body whose code names another refusal is never re-read by its text. */
+function isTenantLibraryCollision(fields: Record<string, unknown>, serverMessage: string): boolean {
+  if (typeof fields.code === "string" && fields.code !== "") {
+    return fields.code === TENANT_LIBRARY_COLLISION_CODE;
+  }
+  return serverMessage.includes(TENANT_LIBRARY_COLLISION_TEXT);
+}
+
 /**
  * Return the typed L2 error for (status, FULL body), or null. The caller passes
  * the untruncated body: partial-delete legs can exceed the message excerpt.
@@ -95,7 +111,7 @@ export function scopeErrorFromResponse(statusCode: number, bodyText: string): An
   const fields = parseErrorBody(bodyText);
   const serverMessage = typeof fields.error === "string" ? fields.error.trim() : "";
   const excerpt = serverMessage.slice(0, MESSAGE_EXCERPT_CHARS);
-  if ((statusCode === 400 || statusCode === 409) && serverMessage.includes(TENANT_LIBRARY_COLLISION_TEXT)) {
+  if ((statusCode === 400 || statusCode === 409) && isTenantLibraryCollision(fields, serverMessage)) {
     return new AnhurTenantLibraryCollisionError(
       `AnhurDB refused the tenant library (HTTP ${statusCode}): ${excerpt} ` +
         "(not retryable: rename one of the two tenants)",

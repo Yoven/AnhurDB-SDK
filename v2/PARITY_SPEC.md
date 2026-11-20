@@ -106,6 +106,8 @@ the same number. All three SDKs, same semantics:
 | Upload plane | `UploadResult.Scope` / `.scope` / `.scope`, SDK-filled from the mode sent (default & `tenant_shared` → `tenant_shared`, `client_shared` → `client_shared`, chat/session → `sessions`); helper `UploadStatusScope` / `upload_status_scope` / `uploadStatusScope`. Pass it to the status poll |
 | Delete-by-file | scope `tenant_shared` (session may be empty; server deletes both library stores) or `client_shared`; other values refused locally. Result gains `legs[]` `{generation, session_uuid, skipped, dispatch_skipped, matched_count, deleted_count, error}` |
 | `WaitForUpload` | returns/raises at once on a non-retryable error (Go changed to match Python/TS, which already did) |
+| Collision refusal | HTTP 409 `code == "tenant_library_collision"` on every door, upload included (server 4574c4d) → `*TenantLibraryCollisionError` / `AnhurTenantLibraryCollisionError` (conflict, non-retryable). Classified by `code` FIRST; the sentence `"tenant library store id is a registered tenant"` is matched only when the body has NO code (older server: 409, or 400 on upload). Checked after the session-record-limit 409 (`code == "session_record_limit"`), so the two never mix |
+| Registry unavailable | HTTP 503 (upload too, was 400) → the ordinary `unavailable` error, retryable, untyped |
 
 Not exposed by any SDK: `GET /records/{id}/explain` (the server honours `?scope=`
 there too; no SDK method exists) and gRPC (no SDK has a gRPC transport; the

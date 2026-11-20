@@ -398,10 +398,13 @@ AnhurQueryError` silently missed it.
 
 When your tenant library store id collides with another registered tenant's
 store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
-search, by-id call, upload and delete: HTTP 409 (400 on upload). The SDK raises
+search, by-id call, upload and delete: HTTP 409 with `"code":
+"tenant_library_collision"` (servers older than 4574c4d sent no code and used 400
+on upload; still recognised by the sentence). The SDK raises
 `AnhurTenantLibraryCollisionError` (an `AnhurQueryError`), **non-retryable**; it
 heals only when an operator renames one of the tenants. It is never the
-session-record-limit 409.
+session-record-limit 409. An unreadable tenant registry is HTTP 503 (upload
+included) — the ordinary retryable `AnhurError` with kind `unavailable`.
 
 ## Search controls (ADR-0031)
 

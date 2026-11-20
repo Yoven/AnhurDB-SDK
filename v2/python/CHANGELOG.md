@@ -22,9 +22,13 @@ TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
   (session may be empty with tenant_shared), `DeleteFileResult.legs`
   (`DeleteFileLeg`), and `AnhurLibraryDeletePartialError` (`.legs`, HTTP 500
   `partial: true`, retryable — the server delete is idempotent).
-- **New typed refusal:** `AnhurTenantLibraryCollisionError` (409 on
-  search/by-id/delete, 400 on upload), non-retryable; the session-record-limit
-  409 is checked first and stays distinct.
+- **New typed refusal:** `AnhurTenantLibraryCollisionError`: HTTP 409
+  `"code": "tenant_library_collision"` on every door, upload included (server
+  4574c4d). Classified by the code first; the sentence is a fallback only for a
+  body without a code (older servers, incl. their 400 on upload).
+  Non-retryable; the session-record-limit 409 is checked first and stays
+  distinct. An unreadable tenant registry (503, upload too) stays the plain
+  retryable `unavailable` error.
 - **Fix:** the multipart transport now sets `status_code` on 400/422/404
   (it was `None`, so `kind` read `transport` and `retryable` True).
 - `HTTPConnection.post` / `patch` accept `params=`.

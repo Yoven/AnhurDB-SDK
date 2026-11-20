@@ -10,8 +10,11 @@
  *    server/handler/record_scoped_by_id.go:54,75; batch-content / supersede:
  *    server/handler/record_batch.go, server/handler/record_supersede.go.
  *  - upload status ?scope= and the ambiguous 409: server/handler/upload_status_scope.go:147,188-189.
- *  - collision sentence: server/service/search_scope_admit.go:29,57 (409 via
- *    handler/search_scope_request.go:35-44); upload 400: service/upload_destination.go:163-165.
+ *  - collision (4574c4d): server/service/search_scope_admit.go sentence + code
+ *    "tenant_library_collision", HTTP 409 on every door including upload
+ *    (handler/search_scope_request.go writeScopeLegError, handler/upload.go);
+ *    legacy bodies (no code; 400 on upload) prove the sentence fallback.
+ *    Registry unavailable on upload: HTTP 503.
  *  - partial delete: server/handler/record_delete_file_library.go:53-57, legs
  *    from server/service/record_delete_file_library.go:34-44.
  */
@@ -31,8 +34,10 @@ import {
 } from "../index.js";
 import type { RecordScope } from "../index.js";
 
-const COLLISION_409 = JSON.stringify({ error: "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
-const COLLISION_400 = JSON.stringify({ error: "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
+const COLLISION_409 = JSON.stringify({ error: "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", code: "tenant_library_collision" });
+const COLLISION_UPLOAD_409 = JSON.stringify({ error: "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", code: "tenant_library_collision" });
+const LEGACY_COLLISION_409 = JSON.stringify({ error: "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
+const LEGACY_COLLISION_400 = JSON.stringify({ error: "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
 const AMBIGUOUS_409 = JSON.stringify({ error: "record 42 is a file upload in more than one plane; pass ?scope=sessions|tenant_shared|tenant_shared_legacy|client_shared" });
 const PARTIAL_500 = JSON.stringify({
   error: "tenant library delete-by-file partially failed — retry is safe (idempotent): primary deleted=3 matched=3; legacy FAILED: " + "x".repeat(600),
@@ -172,7 +177,7 @@ describe("L2 typed errors (ADR-0029)", () => {
     });
   });
 
-  it("collision is typed on 409 (search, by-id, delete) and 400 (upload)", async () => {
+  it("collision is typed on 409 on every door, upload included", async () => {
     await withStub(409, COLLISION_409, async (memory) => {
       for (const call of [
         memory.search("q", ["*"], { scope: "tenant_shared" }),
@@ -187,12 +192,45 @@ describe("L2 typed errors (ADR-0029)", () => {
         assert.ok(!(thrown instanceof AnhurSessionRecordLimitError));
       }
     });
-    await withStub(400, COLLISION_400, async (memory) => {
+    await withStub(409, COLLISION_UPLOAD_409, async (memory) => {
+      const thrown = await caught(memory.uploadFile("a.txt", "hi", { mode: "tenant_shared" }));
+      assert.ok(thrown instanceof AnhurTenantLibraryCollisionError, String(thrown));
+      assert.equal(thrown.statusCode, 409);
+      assert.equal(thrown.kind, "conflict");
+      assert.equal(thrown.retryable, false);
+    });
+  });
+
+  it("collision code wins over the sentence", async () => {
+    await withStub(409, JSON.stringify({ error: "library store is taken", code: "tenant_library_collision" }), async (memory) => {
+      assert.ok(await caught(memory.get(42, { scope: "tenant_shared" })) instanceof AnhurTenantLibraryCollisionError);
+    });
+    await withStub(409, JSON.stringify({ error: "tenant library store id is a registered tenant", code: "something_else" }), async (memory) => {
+      assert.ok(!(await caught(memory.get(42)) instanceof AnhurTenantLibraryCollisionError));
+    });
+  });
+
+  it("legacy collision without a code is still typed (409, and 400 on upload)", async () => {
+    await withStub(409, LEGACY_COLLISION_409, async (memory) => {
+      assert.ok(await caught(memory.get(42, { scope: "tenant_shared" })) instanceof AnhurTenantLibraryCollisionError);
+    });
+    await withStub(400, LEGACY_COLLISION_400, async (memory) => {
       const thrown = await caught(memory.uploadFile("a.txt", "hi", { mode: "tenant_shared" }));
       assert.ok(thrown instanceof AnhurTenantLibraryCollisionError);
       assert.equal(thrown.statusCode, 400);
       assert.equal(thrown.kind, "invalid_request");
       assert.equal(thrown.retryable, false);
+    });
+  });
+
+  it("upload with the tenant registry down is a plain retryable 503", async () => {
+    await withStub(503, JSON.stringify({ error: "tenant_shared upload: tenant library store c1_t1_lib: tenant registry unavailable: database is locked" }), async (memory) => {
+      const thrown = await caught(memory.uploadFile("a.txt", "hi", { mode: "tenant_shared" }));
+      assert.ok(thrown instanceof AnhurError);
+      assert.ok(!(thrown instanceof AnhurTenantLibraryCollisionError));
+      assert.equal(thrown.statusCode, 503);
+      assert.equal(thrown.kind, "unavailable");
+      assert.equal(thrown.retryable, true);
     });
   });
 

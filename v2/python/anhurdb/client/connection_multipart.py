@@ -97,7 +97,7 @@ class MultipartUploadMixin:
                 if response.status in (401, 403):
                     raise AnhurAuthError(f"Authentication failed (HTTP {response.status})")
                 elif response.status in (400, 422):
-                    # An upload refused by the tenant-library collision guard is a 400.
+                    # Servers older than 4574c4d refused a colliding upload with 400.
                     scope_error = scope_error_from_response(response.status, body_text)
                     if scope_error is not None:
                         raise scope_error
@@ -111,6 +111,10 @@ class MultipartUploadMixin:
                     limit_error = session_record_limit_from_response(409, body_text)
                     if limit_error is not None:
                         raise limit_error
+                    # The tenant-library collision refuses an upload with 409 + code.
+                    scope_error = scope_error_from_response(409, body_text)
+                    if scope_error is not None:
+                        raise scope_error
                     raise AnhurQueryError(f"Conflict (HTTP 409): {body_text[:500]}", status_code=409)
                 elif response.status == 415:
                     raise AnhurQueryError(f"Unsupported media type (HTTP 415): {body_text[:500]}", status_code=415)

@@ -116,7 +116,7 @@ class RequestExecutionMixin:
                         status_code=response.status,
                     )
                 elif response.status in (400, 422):
-                    # The tenant-library collision guard answers an upload with 400.
+                    # Servers older than 4574c4d refused a colliding upload with 400.
                     scope_error = scope_error_from_response(response.status, body_text)
                     if scope_error is not None:
                         raise scope_error

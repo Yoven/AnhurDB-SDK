@@ -208,7 +208,7 @@ casando só por `code`/prefixo próprios — as duas recusas 409 nunca se confun
 
 | Resposta do servidor | Go | Python | TypeScript | kind / retryable |
 |---|---|---|---|---|
-| Colisão: `error` contém `"tenant library store id is a registered tenant"` — HTTP **409** em busca/by-id/delete-by-file (`handler/search_scope_request.go:35-44`), HTTP **400** no upload (`service/upload_destination.go:163-165`, embrulhado como `ValidationError`) | `*TenantLibraryCollisionError` + `ErrTenantLibraryCollision` | `AnhurTenantLibraryCollisionError(AnhurQueryError)` | `AnhurTenantLibraryCollisionError` | conflict (409) ou invalid_request (400) / **false** |
+| Colisão: HTTP **409** `{"error":"<frase>","code":"tenant_library_collision"}` em **todas** as portas — busca, by-id, delete-by-file **e upload** (servidor 4574c4d, `handler/search_scope_request.go` `writeScopeLegError`). Os SDKs ramificam **primeiro no `code`**; a frase `"tenant library store id is a registered tenant"` é só fallback para corpo **sem** `code` (servidor anterior a 4574c4d, que respondia o upload com **400**). Corpo com outro `code` nunca é relido pela frase | `*TenantLibraryCollisionError` + `ErrTenantLibraryCollision` (const `TenantLibraryCollisionCode`) | `AnhurTenantLibraryCollisionError(AnhurQueryError)` | `AnhurTenantLibraryCollisionError` | conflict (409; invalid_request só no 400 legado) / **false** |
 | Upload status ambíguo: 409 `"record N is a file upload in more than one plane; ..."` (`handler/upload_status_scope.go:186-191`) | `*UploadStatusAmbiguousError` + `ErrUploadStatusAmbiguous` | `AnhurUploadStatusAmbiguousError` | `AnhurUploadStatusAmbiguousError` | conflict / false |
 | Delete-by-file parcial: 500 `{"error","partial":true,"legs":[...]}` (`handler/record_delete_file_library.go:53-57`) | `*LibraryDeletePartialError` (`.Legs`) + `ErrLibraryDeletePartial` | `AnhurLibraryDeletePartialError` (`.legs`) | `AnhurLibraryDeletePartialError` (`.legs`) | server / **true** (o delete é idempotente; repetir é a recuperação documentada) |
 
@@ -219,7 +219,12 @@ INTEIRO (TS passou a ler até 64 KiB do corpo de erro; a mensagem continua citan
 500 caracteres), porque a frase do servidor sozinha pode passar de 500.
 
 `ErrTenantRegistryUnavailable` (o servidor não conseguiu ler `api_keys` para provar
-que não há colisão) chega como 503 e continua `unavailable` / retryable — não é tipado.
+que não há colisão) chega como 503 em todas as portas — **inclusive o upload**, que
+antes respondia 400 — e continua o erro comum `unavailable` / retryable; não é tipado.
+
+gRPC (nenhum SDK tem transporte gRPC hoje): a colisão é `FAILED_PRECONDITION` com
+`ErrorInfo{reason: "TENANT_LIBRARY_COLLISION", domain: "anhurdb"}` — o mesmo formato
+do limite de sessão. Um transporte gRPC futuro deve ramificar no `reason`.
 
 ## Testes que provam o contrato
 
@@ -234,7 +239,7 @@ Um por SDK, tabela única, sem servidor:
 7. conexão recusada → `kind=transport`, `retryable=true`, `status` ausente
 8. corpo de erro contendo `10.20.1.2:19090` → o endereço **não** aparece em `message`
 9. 409 de sessão cheia — corpo NOVO estruturado e corpo ANTIGO só-texto → erro tipado de limite de sessão, `retryable=false`, campos ausentes nulos; um 409 genérico continua genérico (`session_limit_test.go`, `test_session_record_limit.py`, `session_record_limit.test.ts`)
-10. Recusas L2 (colisão 409/400, upload ambíguo 409, delete parcial 500 com pernas além do excerto) — tipadas, e um 409 genérico/sessão cheia continua o que era (`scope_errors_test.go`, `test_record_scope.py`, `record_scope.test.ts`)
+10. Recusas L2 (colisão 409 com `code` em toda porta + fallback pela frase sem `code` — 409/400 legado, upload 503 = unavailable comum, upload ambíguo 409, delete parcial 500 com pernas além do excerto) — tipadas, e um 409 genérico/sessão cheia continua o que era (`scope_errors_test.go`, `test_record_scope.py`, `record_scope.test.ts`)
 
 O teste 8 é o que impede que "melhorar as mensagens de erro" vire vazamento de
 topologia. O servidor já retém esse corpo; o SDK não pode reintroduzi-lo por

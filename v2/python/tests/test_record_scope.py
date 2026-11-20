@@ -9,9 +9,11 @@ Server shapes copied from AnhurDB fix/l2-lib-scope:
     server/handler/record_scoped_by_id.go:54,75; batch-content / supersede:
     server/handler/record_batch.go, server/handler/record_supersede.go.
   - upload status ?scope= and the ambiguous 409: server/handler/upload_status_scope.go:147,188-189.
-  - collision sentence: server/service/search_scope_admit.go:29,57 (409,
-    handler/search_scope_request.go:35-44); upload 400:
-    server/service/upload_destination.go:163-165.
+  - collision (4574c4d): server/service/search_scope_admit.go sentence + code
+    "tenant_library_collision", HTTP 409 on every door including upload
+    (handler/search_scope_request.go writeScopeLegError, handler/upload.go);
+    legacy bodies (no code; 400 on upload) prove the sentence fallback.
+    Registry unavailable on upload: HTTP 503.
   - partial delete: server/handler/record_delete_file_library.go:53-57, legs
     from server/service/record_delete_file_library.go:34-44.
   - upload 202 body: server/handler/upload.go (writeJSON StatusAccepted).
@@ -38,8 +40,11 @@ from anhurdb import (  # noqa: E402  public exports
 from anhurdb.client import AnhurClient  # noqa: E402
 from anhurdb.client.exceptions import AnhurError, AnhurQueryError  # noqa: E402
 
-COLLISION_409 = json.dumps({"error": "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"})
-COLLISION_400 = json.dumps({"error": "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"})
+COLLISION_409 = json.dumps({"error": "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", "code": "tenant_library_collision"})
+COLLISION_UPLOAD_409 = json.dumps({"error": "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", "code": "tenant_library_collision"})
+LEGACY_COLLISION_409 = json.dumps({"error": "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"})
+LEGACY_COLLISION_400 = json.dumps({"error": "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"})
+REGISTRY_DOWN_503 = json.dumps({"error": "tenant_shared upload: tenant library store c1_t1_lib: tenant registry unavailable: database is locked"})
 AMBIGUOUS_409 = json.dumps({"error": "record 42 is a file upload in more than one plane; pass ?scope=sessions|tenant_shared|tenant_shared_legacy|client_shared"})
 LIMIT_409 = json.dumps({"error": "session has reached the maximum of 500 records", "code": "session_record_limit"})
 PARTIAL_500 = json.dumps({
@@ -89,7 +94,12 @@ class TestRecordScope(AioHTTPTestCase):
 
         app.router.add_route("*", "/ok/{tail:.*}", ok)
         app.router.add_route("*", "/collide/{tail:.*}", fixed(409, COLLISION_409))
-        app.router.add_route("*", "/collide400/{tail:.*}", fixed(400, COLLISION_400))
+        app.router.add_route("*", "/collideupload/{tail:.*}", fixed(409, COLLISION_UPLOAD_409))
+        app.router.add_route("*", "/reworded/{tail:.*}", fixed(409, json.dumps({"error": "library store is taken", "code": "tenant_library_collision"})))
+        app.router.add_route("*", "/othercode/{tail:.*}", fixed(409, json.dumps({"error": "tenant library store id is a registered tenant", "code": "something_else"})))
+        app.router.add_route("*", "/legacy409/{tail:.*}", fixed(409, LEGACY_COLLISION_409))
+        app.router.add_route("*", "/legacy400/{tail:.*}", fixed(400, LEGACY_COLLISION_400))
+        app.router.add_route("*", "/registrydown/{tail:.*}", fixed(503, REGISTRY_DOWN_503))
         app.router.add_route("*", "/ambiguous/{tail:.*}", fixed(409, AMBIGUOUS_409))
         app.router.add_route("*", "/limit/{tail:.*}", fixed(409, LIMIT_409))
         app.router.add_route("*", "/conflict/{tail:.*}", fixed(409, json.dumps({"error": "record already superseded"})))
@@ -168,7 +178,7 @@ class TestRecordScope(AioHTTPTestCase):
                 await client.wait_for_upload(42, timeout=5, interval=1)
 
     @unittest_run_loop
-    async def test_collision_is_typed_on_409_and_400(self):
+    async def test_collision_is_typed_on_409_on_every_door(self):
         async with self._client("collide") as client:
             with self.assertRaises(AnhurTenantLibraryCollisionError) as on_search:
                 await client.search("q", sessions=sessions_all(), scope="tenant_shared")
@@ -179,11 +189,40 @@ class TestRecordScope(AioHTTPTestCase):
         self.assertEqual((on_search.exception.status_code, on_search.exception.kind), (409, "conflict"))
         self.assertFalse(on_search.exception.retryable)
         self.assertNotIsInstance(on_search.exception, AnhurSessionRecordLimitError)
-        async with self._client("collide400") as client:
+        async with self._client("collideupload") as client:
+            with self.assertRaises(AnhurTenantLibraryCollisionError) as on_upload:
+                await client.upload_file("a.txt", b"hi", mode="tenant_shared")
+        self.assertEqual((on_upload.exception.status_code, on_upload.exception.kind), (409, "conflict"))
+        self.assertFalse(on_upload.exception.retryable)
+
+    @unittest_run_loop
+    async def test_collision_code_wins_over_text(self):
+        async with self._client("reworded") as client:
+            with self.assertRaises(AnhurTenantLibraryCollisionError):
+                await client.get(42, scope="tenant_shared")
+        async with self._client("othercode") as client:
+            with self.assertRaises(AnhurQueryError) as caught:
+                await client.get(42)
+        self.assertNotIsInstance(caught.exception, AnhurTenantLibraryCollisionError)
+
+    @unittest_run_loop
+    async def test_legacy_collision_without_code_still_typed(self):
+        async with self._client("legacy409") as client:
+            with self.assertRaises(AnhurTenantLibraryCollisionError):
+                await client.get(42, scope="tenant_shared")
+        async with self._client("legacy400") as client:
             with self.assertRaises(AnhurTenantLibraryCollisionError) as on_upload:
                 await client.upload_file("a.txt", b"hi", mode="tenant_shared")
         self.assertEqual((on_upload.exception.status_code, on_upload.exception.kind), (400, "invalid_request"))
-        self.assertFalse(on_upload.exception.retryable)
+
+    @unittest_run_loop
+    async def test_upload_registry_unavailable_is_plain_unavailable(self):
+        async with self._client("registrydown") as client:
+            with self.assertRaises(AnhurError) as caught:
+                await client.upload_file("a.txt", b"hi", mode="tenant_shared")
+        self.assertNotIsInstance(caught.exception, AnhurTenantLibraryCollisionError)
+        self.assertEqual((caught.exception.status_code, caught.exception.kind), (503, "unavailable"))
+        self.assertTrue(caught.exception.retryable)
 
     @unittest_run_loop
     async def test_session_limit_and_generic_conflict_stay_distinct(self):

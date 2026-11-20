@@ -25,8 +25,13 @@ and TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
   and `*LibraryDeletePartialError` / `ErrLibraryDeletePartial` (HTTP 500
   `partial:true`, every leg kept, retryable — the server delete is idempotent).
 - **New typed refusal:** `*TenantLibraryCollisionError` /
-  `ErrTenantLibraryCollision` (409 on search/by-id/delete, 400 on upload),
-  non-retryable; the session-record-limit 409 is checked first and stays distinct.
+  `ErrTenantLibraryCollision`: HTTP 409 `"code": "tenant_library_collision"` on
+  every door, upload included (server 4574c4d). Classified by the code first
+  (`client.TenantLibraryCollisionCode`); the sentence is a fallback only for a
+  body without a code (older servers, incl. their 400 on upload). Non-retryable;
+  the session-record-limit 409 is checked first and stays distinct. An
+  unreadable tenant registry (503, upload too) stays the plain unavailable
+  `*APIError`.
 - **Moved (house 300-line cut, bodies unchanged apart from the scope):**
   by-id reads to `client/record_by_id.go`, writes to `client/record_mutate.go`,
   upload to `client/upload.go`, out of `client.go`/`parity.go`. Tests:

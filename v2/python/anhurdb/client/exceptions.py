@@ -150,8 +150,9 @@ class AnhurTenantLibraryCollisionError(AnhurQueryError):
     """The caller's tenant library store ``{c}_{t}_lib`` is the registered store
     of ANOTHER tenant (a legacy tenant named ``<t>_lib``), so the server refuses
     every tenant_shared search, by-id call, upload and delete for this caller
-    (ADR-0029). HTTP 409 — or 400 on upload, where the server wraps it in a
-    validation error. Parity: Go ``*TenantLibraryCollisionError`` /
+    (ADR-0029). HTTP 409 with ``code == "tenant_library_collision"`` on every
+    door; servers older than 4574c4d sent no code and answered the upload with
+    400 (recognised by the sentence). Parity: Go ``*TenantLibraryCollisionError`` /
     ``ErrTenantLibraryCollision``, TypeScript ``AnhurTenantLibraryCollisionError``.
 
     ``retryable`` is always False: the same request is refused until an operator

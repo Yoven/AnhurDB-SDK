@@ -106,7 +106,7 @@ export function typedErrorForResponse(
     );
   }
   if (statusCode === 400 || statusCode === 422) {
-    // The tenant-library collision guard answers an upload with 400.
+    // Servers older than 4574c4d refused a colliding upload with 400.
     const scopeError = scopeErrorFromResponse(statusCode, bodyText);
     if (scopeError !== null) return scopeError;
     return new AnhurQueryError(

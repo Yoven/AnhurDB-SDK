@@ -5,9 +5,10 @@ package client
 // delete-by-file exposes its legs.
 //
 // Server shapes copied from AnhurDB fix/l2-lib-scope:
-//   - collision sentence: server/service/search_scope_admit.go:29,57 — 409 via
-//     handler/search_scope_request.go:35-44; 400 on upload via
-//     service/upload_destination.go:163-165 (ValidationError "tenant_shared upload: ...").
+//   - collision (4574c4d): server/service/search_scope_admit.go GuardTenantLibraryCollision
+//     sentence + code "tenant_library_collision", HTTP 409 on every door including upload
+//     (handler/search_scope_request.go writeScopeLegError, handler/upload.go). The legacy
+//     bodies (no code; 400 on upload) are kept to prove the sentence fallback.
 //   - ambiguous upload status: server/handler/upload_status_scope.go:188-189.
 //   - partial delete: server/handler/record_delete_file_library.go:53-57 with legs from
 //     service/record_delete_file_library.go:34-44 and the message of :54-67.
@@ -23,8 +24,12 @@ import (
 	"time"
 )
 
-const collisionBody409 = `{"error":"store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
-const collisionBody400 = `{"error":"tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
+const collisionBody409 = `{"error":"store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared","code":"tenant_library_collision"}`
+const collisionUploadBody409 = `{"error":"tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared","code":"tenant_library_collision"}`
+
+// Legacy (pre-4574c4d) bodies: no code; the upload door answered 400.
+const legacyCollisionBody409 = `{"error":"store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
+const legacyCollisionBody400 = `{"error":"tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
 const ambiguousBody = `{"error":"record 42 is a file upload in more than one plane; pass ?scope=sessions|tenant_shared|tenant_shared_legacy|client_shared"}`
 
 // partialDeleteBody is deliberately longer than the 500-character message excerpt.
@@ -33,7 +38,7 @@ var partialDeleteBody = `{"error":"tenant library delete-by-file partially faile
 	`{"generation":"primary","session_uuid":"shared-c1-t1_lib","matched_count":3,"deleted_count":3},` +
 	`{"generation":"legacy","session_uuid":"shared-c1-t1","matched_count":0,"deleted_count":0,"error":"database error"}]}`
 
-func TestCollisionIsTypedOn409And400(t *testing.T) {
+func TestCollisionIsTypedOn409OnEveryDoor(t *testing.T) {
 	searchMemory := sessionLimitStubServer(t, 409, collisionBody409)
 	_, searchErr := searchMemory.Search(context.Background(), "q", SessionsAll(), WithScope("tenant_shared"))
 	assertCollision(t, searchErr, 409, KindConflict)
@@ -46,9 +51,49 @@ func TestCollisionIsTypedOn409And400(t *testing.T) {
 	_, deleteErr := deleteMemory.DeleteFile(context.Background(), "", "ef9976f1ef5d5176", WithDeleteFileScope(RecordScopeTenantShared))
 	assertCollision(t, deleteErr, 409, KindConflict)
 
-	uploadMemory := sessionLimitStubServer(t, 400, collisionBody400)
+	uploadMemory := sessionLimitStubServer(t, 409, collisionUploadBody409)
+	_, uploadErr := uploadMemory.UploadFile(context.Background(), "a.txt", []byte("hi"), "", 0, WithUploadMode("tenant_shared"))
+	assertCollision(t, uploadErr, 409, KindConflict)
+}
+
+// TestCollisionCodeWinsOverText: the code is the contract — a reworded sentence is still
+// a collision, and a body whose code names another refusal is never re-read by its text.
+func TestCollisionCodeWinsOverText(t *testing.T) {
+	rewordedMemory := sessionLimitStubServer(t, 409, `{"error":"library store is taken","code":"tenant_library_collision"}`)
+	_, rewordedErr := rewordedMemory.Get(context.Background(), 42, WithRecordScope(RecordScopeTenantShared))
+	assertCollision(t, rewordedErr, 409, KindConflict)
+
+	otherCodeMemory := sessionLimitStubServer(t, 409, `{"error":"tenant library store id is a registered tenant","code":"something_else"}`)
+	_, otherCodeErr := otherCodeMemory.Get(context.Background(), 42)
+	if errors.Is(otherCodeErr, ErrTenantLibraryCollision) {
+		t.Errorf("a foreign code must not be re-read as a collision by its text: %v", otherCodeErr)
+	}
+}
+
+// TestLegacyCollisionWithoutCodeStillTyped: servers older than 4574c4d sent no code and
+// refused the upload with 400; the sentence fallback keeps both typed.
+func TestLegacyCollisionWithoutCodeStillTyped(t *testing.T) {
+	getMemory := sessionLimitStubServer(t, 409, legacyCollisionBody409)
+	_, getErr := getMemory.Get(context.Background(), 42, WithRecordScope(RecordScopeTenantShared))
+	assertCollision(t, getErr, 409, KindConflict)
+
+	uploadMemory := sessionLimitStubServer(t, 400, legacyCollisionBody400)
 	_, uploadErr := uploadMemory.UploadFile(context.Background(), "a.txt", []byte("hi"), "", 0, WithUploadMode("tenant_shared"))
 	assertCollision(t, uploadErr, 400, KindInvalidRequest)
+}
+
+// TestUploadRegistryUnavailableIsPlainUnavailable: an unreadable tenant registry is 503
+// on upload (was 400) — an ordinary retryable unavailable *APIError, never a collision.
+func TestUploadRegistryUnavailableIsPlainUnavailable(t *testing.T) {
+	uploadMemory := sessionLimitStubServer(t, 503, `{"error":"tenant_shared upload: tenant library store c1_t1_lib: tenant registry unavailable: database is locked"}`)
+	_, uploadErr := uploadMemory.UploadFile(context.Background(), "a.txt", []byte("hi"), "", 0, WithUploadMode("tenant_shared"))
+	var apiErr *APIError
+	if !errors.As(uploadErr, &apiErr) || apiErr.StatusCode != 503 || apiErr.Kind() != KindUnavailable || !apiErr.Retryable() {
+		t.Fatalf("want retryable unavailable *APIError 503, got %T %v", uploadErr, uploadErr)
+	}
+	if errors.Is(uploadErr, ErrTenantLibraryCollision) {
+		t.Error("a registry outage must never read as a collision")
+	}
 }
 
 func assertCollision(t *testing.T, gotErr error, wantStatus int, wantKind ErrorKind) {
