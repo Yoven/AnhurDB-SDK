@@ -1,5 +1,37 @@
 # Go SDK Changelog
 
+## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
+
+Additive (variadic options; existing call sites compile unchanged). Go, Python
+and TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
+
+- **New:** `client.RecordScope` (`RecordScopeSessions`, `RecordScopeTenantShared`,
+  `RecordScopeTenantSharedLegacy`, `RecordScopeClientShared`) and
+  `client.WithRecordScope(...)`, accepted by `Get`, `ReadContent`, `GetContext`,
+  `GetGrounding`, `BatchReadContent`, `Update`, `Delete`, `Supersede` and
+  `UploadStatus` (sent as `?scope=`). No option = unchanged request. `shared_all`
+  and unknown values are refused locally (invalid_request).
+- **New:** `client.TenantSharedScopeForHit(uuid)` — `tenant_shared` when the hit's
+  uuid ends in `_lib`, else `tenant_shared_legacy`; `client.UploadStatusScope(mode, session)`.
+- **Upload plane travels to the status poll:** `UploadResult.Scope` (SDK-filled,
+  not on the wire) and `WaitUploadOptions.Scope`. New typed
+  `*UploadStatusAmbiguousError` / `ErrUploadStatusAmbiguous` for the server's
+  409 "file upload in more than one plane".
+- **Behaviour change:** `WaitForUpload` now returns at once on a non-retryable
+  error (auth, invalid scope, ambiguity, collision) instead of polling it until
+  the timeout — parity with Python and TypeScript, which already re-raised.
+- **Delete-by-file:** `WithDeleteFileScope(tenant_shared|client_shared)`
+  (session optional with tenant_shared), `DeleteFileResult.Legs []DeleteFileLeg`,
+  and `*LibraryDeletePartialError` / `ErrLibraryDeletePartial` (HTTP 500
+  `partial:true`, every leg kept, retryable — the server delete is idempotent).
+- **New typed refusal:** `*TenantLibraryCollisionError` /
+  `ErrTenantLibraryCollision` (409 on search/by-id/delete, 400 on upload),
+  non-retryable; the session-record-limit 409 is checked first and stays distinct.
+- **Moved (house 300-line cut, bodies unchanged apart from the scope):**
+  by-id reads to `client/record_by_id.go`, writes to `client/record_mutate.go`,
+  upload to `client/upload.go`, out of `client.go`/`parity.go`. Tests:
+  `client/record_scope_test.go`, `client/scope_errors_test.go`.
+
 ## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
 
 Additive; no version number assigned yet (not published). Go, Python and

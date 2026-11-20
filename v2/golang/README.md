@@ -197,10 +197,16 @@ upload, err := mem.UploadFile(ctx, "report.pdf", rawBytes, sessionID, episodicID
 // Shared Data (tenant):
 upload, err = mem.UploadFile(ctx, "handbook.pdf", rawBytes, "", 0, anhurdb.WithUploadMode("tenant_shared"))
 
-// Poll processing status
-status, err := mem.UploadStatus(ctx, upload.RecordID)
+// Poll processing status IN the plane the file landed in (upload.Scope is filled
+// by UploadFile: tenant_shared by default, client_shared, or sessions for chat).
+status, err := mem.UploadStatus(ctx, upload.RecordID, client.WithRecordScope(upload.Scope))
 fmt.Println(status.Status) // "processing", "completed", "failed"
+final, err := mem.WaitForUpload(ctx, upload.RecordID, client.WaitUploadOptions{Scope: upload.Scope})
 ```
+
+Without a scope the server looks for the file in every plane you can upload to
+and answers `*client.UploadStatusAmbiguousError` (HTTP 409) when the id is a
+file in more than one — record ids are per store.
 
 ### Temporal Versioning
 
@@ -228,6 +234,39 @@ fmt.Println(mem.ContainerTag())                            // Recall/profile tag
 err = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
 err = mem.Delete(ctx, 42)
 ```
+
+### By-id scope (records from a shared plane, ADR-0029)
+
+A record id is a rowid **per store**. An id that came from a shared-plane search
+or upload must be read and changed in THAT store, or the call addresses an
+unrelated record with the same number in your chat store. Every by-id method
+takes `client.WithRecordScope(...)`: `Get`, `ReadContent`, `GetContext`,
+`GetGrounding`, `BatchReadContent`, `Update`, `Delete`, `Supersede`,
+`UploadStatus`. No option = your own store (unchanged behaviour).
+
+| Scope | Store |
+|---|---|
+| `RecordScopeSessions` | your chat store, shared-* rows excluded |
+| `RecordScopeTenantShared` | tenant library `{c}_{t}_lib` (uploads after the L2 switch) |
+| `RecordScopeTenantSharedLegacy` | pre-migration library rows in `{c}_{t}` |
+| `RecordScopeClientShared` | client library `{c}_shared` |
+
+```go
+hits, _ := mem.SearchTenantShared(ctx, "refund policy", client.SessionsAll())
+hit := hits[0].Record
+// one tenant_shared search reads BOTH library stores: pick the store per hit
+body, _ := mem.ReadContent(ctx, hit.ID, client.WithRecordScope(client.TenantSharedScopeForHit(hit.UUID)))
+```
+
+`shared_all` (or any other value) is refused locally: an id names one store. A
+row outside the named plane answers `ErrNotFound`, exactly like a missing id;
+`BatchReadContent` omits it from the map.
+
+`DeleteFile` takes `client.WithDeleteFileScope(client.RecordScopeTenantShared)`
+(session may then be empty; the server deletes in both library stores and fills
+`DeleteFileResult.Legs`) or `RecordScopeClientShared`. If one library store fails
+the call returns `*client.LibraryDeletePartialError` with every leg's outcome;
+retrying the same call is safe (idempotent).
 
 ### AST Query (Query Builder)
 
@@ -297,6 +336,16 @@ if errors.As(err, &limitErr) { // or errors.Is(err, client.ErrSessionRecordLimit
 
 `errors.As(err, &apiErr)` still finds the underlying `*APIError` with
 `StatusCode == 409`, so existing code keeps working.
+
+### Tenant library collision (`*client.TenantLibraryCollisionError`)
+
+When your tenant library store id collides with another registered tenant's
+store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
+search, by-id call, upload and delete: HTTP 409 (400 on upload). The SDK returns
+a typed, **non-retryable** `*client.TenantLibraryCollisionError`
+(`errors.Is(err, client.ErrTenantLibraryCollision)`); it heals only when an
+operator renames one of the tenants. It is never confused with the session
+record limit 409.
 
 ## DSPy/LangChain Integration
 

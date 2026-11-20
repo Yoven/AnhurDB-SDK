@@ -37,6 +37,10 @@ type WaitUploadOptions struct {
 	// NotFoundGrace is how long an HTTP 404 is treated as "not applied yet"
 	// before becoming a real error (default 30s).
 	NotFoundGrace time.Duration
+	// Scope is the plane the upload landed in (UploadResult.Scope). Empty = the
+	// server looks in every plane this caller can upload to, and may answer
+	// *UploadStatusAmbiguousError.
+	Scope RecordScope
 }
 
 // waitUploadDefault* are the parity defaults — keep in lockstep with the
@@ -90,7 +94,7 @@ func (m *Memory) WaitForUpload(ctx context.Context, uploadID int64, opts WaitUpl
 	startedAt := time.Now()
 	lastStatus := "never-seen"
 	for {
-		result, statusErr := m.UploadStatus(ctx, uploadID)
+		result, statusErr := m.UploadStatus(ctx, uploadID, WithRecordScope(opts.Scope))
 		switch {
 		case statusErr == nil:
 			if uploadStatusIsTerminal(result) {
@@ -105,6 +109,13 @@ func (m *Memory) WaitForUpload(ctx context.Context, uploadID int64, opts WaitUpl
 					uploadID, opts.NotFoundGrace, ErrNotFound)
 			}
 			lastStatus = "not-found-yet"
+		case uploadPollErrorIsFinal(statusErr):
+			// Junior Tip [a refusal is not a pending upload, 2026-11-20]: an
+			// invalid scope, an ambiguous id (409), a library collision or an auth
+			// failure answers the same on every poll. Looping on it burned the whole
+			// Timeout and then reported a TIMEOUT, hiding the real cause. Python and
+			// TypeScript already re-raise every non-404 error at once.
+			return nil, statusErr
 		default:
 			// Transport/5xx: transient by default — the poll loop IS the retry.
 			lastStatus = "error: " + statusErr.Error()
@@ -120,4 +131,15 @@ func (m *Memory) WaitForUpload(ctx context.Context, uploadID int64, opts WaitUpl
 		case <-time.After(opts.Interval):
 		}
 	}
+}
+
+// uploadPollErrorIsFinal reports whether a status-poll error can never heal by
+// polling again: auth, and any classified non-retryable error (4xx other than the
+// 404 grace, which the caller handles before this).
+func uploadPollErrorIsFinal(statusErr error) bool {
+	if errors.Is(statusErr, ErrUnauthorized) {
+		return true
+	}
+	var classifiedErr interface{ Retryable() bool }
+	return errors.As(statusErr, &classifiedErr) && !classifiedErr.Retryable()
 }

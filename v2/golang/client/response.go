@@ -47,6 +47,10 @@ func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
 			"server returned redirect (HTTP %d); redirects are disabled "+
 				"to prevent credential leakage", resp.StatusCode)
 	case resp.StatusCode == 400 || resp.StatusCode == 422:
+		// An upload refused by the tenant-library collision guard arrives as 400.
+		if scopeErr := scopeErrorFromResponse(resp.StatusCode, body); scopeErr != nil {
+			return nil, scopeErr
+		}
 		// Truncate body in error to prevent oversized log entries.
 		truncated := string(body)
 		if len(truncated) > 500 {
@@ -64,8 +68,17 @@ func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
 		if limitErr := sessionRecordLimitFromResponse(resp.StatusCode, body); limitErr != nil {
 			return nil, limitErr
 		}
+		// L2 library answers (collision, ambiguous upload id) — scope_errors.go.
+		if scopeErr := scopeErrorFromResponse(resp.StatusCode, body); scopeErr != nil {
+			return nil, scopeErr
+		}
 		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	case resp.StatusCode >= 500:
+		// A partial tenant-library delete carries per-leg outcomes that can exceed
+		// the excerpt below, so it is decoded from the FULL body first.
+		if scopeErr := scopeErrorFromResponse(resp.StatusCode, body); scopeErr != nil {
+			return nil, scopeErr
+		}
 		truncated := string(body)
 		if len(truncated) > 500 {
 			truncated = truncated[:500]

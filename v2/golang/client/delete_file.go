@@ -37,6 +37,28 @@ type DeleteFileResult struct {
 	DeletedIDs      []int64 `json:"deleted_ids,omitempty"`
 	DryRun          bool    `json:"dry_run"`
 	RaftIndex       int64   `json:"raft_index,omitempty"`
+	// Legs is present only for a tenant-library delete: one outcome per library
+	// store (generation "primary" = {c}_{t}_lib, "legacy" = pre-migration rows in
+	// {c}_{t}). Absent for every other plane.
+	Legs []DeleteFileLeg `json:"legs,omitempty"`
+}
+
+// DeleteFileLeg is one library store's part of a delete-by-file answer.
+// Server truth: service.DeleteFileLegOutcome (server/service/record_delete_file_library.go:34-44).
+//
+// Junior Tip [why the legs matter]: during the L2 migration a library file can live
+// in either store, and the two stores are two Raft groups with no shared
+// transaction. Skipped = the store does not exist on that node; DispatchSkipped =
+// the store held no match while the other leg did, so nothing was proposed there.
+// A leg with Error set failed — see LibraryDeletePartialError.
+type DeleteFileLeg struct {
+	Generation      string `json:"generation"`
+	SessionUUID     string `json:"session_uuid"`
+	Skipped         bool   `json:"skipped,omitempty"`
+	DispatchSkipped bool   `json:"dispatch_skipped,omitempty"`
+	MatchedCount    int    `json:"matched_count"`
+	DeletedCount    int    `json:"deleted_count"`
+	Error           string `json:"error,omitempty"`
 }
 
 // DeleteFileOption configures a DeleteFile call.
@@ -45,6 +67,7 @@ type DeleteFileOption func(*deleteFileConfig)
 // deleteFileConfig holds the optional parameters of DeleteFile.
 type deleteFileConfig struct {
 	dryRun bool
+	scope  RecordScope
 }
 
 // WithDeleteFileDryRun turns the call into a COUNT-ONLY probe: the server
@@ -59,6 +82,22 @@ type deleteFileConfig struct {
 func WithDeleteFileDryRun(dryRun bool) DeleteFileOption {
 	return func(cfg *deleteFileConfig) {
 		cfg.dryRun = dryRun
+	}
+}
+
+// WithDeleteFileScope names the plane the file lives in: RecordScopeTenantShared
+// (the tenant library — the server deletes in BOTH library stores and reports
+// Legs; sessionUUID may then be empty) or RecordScopeClientShared. Without it the
+// caller's own store is used, except that passing a library session uuid also
+// targets the library.
+//
+// Junior Tip [one store per scope]: sessions, tenant_shared_legacy and shared_all are
+// refused locally — the server's delete-by-file resolves only tenant_shared (two
+// legs, handled together) and client_shared (one store); anything else would delete
+// from a store the caller did not mean (server/handler/record_delete_file.go:88-104).
+func WithDeleteFileScope(scope RecordScope) DeleteFileOption {
+	return func(cfg *deleteFileConfig) {
+		cfg.scope = scope
 	}
 }
 
@@ -101,8 +140,21 @@ func (m *Memory) DeleteFile(
 	// local nomeia o argumento do SDK. As demais regras do prefixo (tamanho
 	// mínimo e caracteres válidos) são do servidor — uma fonte da verdade só,
 	// para que os três SDKs não fiquem a divergir dela.
+	cfg := &deleteFileConfig{}
+	for _, applyOption := range opts {
+		applyOption(cfg)
+	}
+	deleteScope := RecordScope(strings.TrimSpace(string(cfg.scope)))
+	switch deleteScope {
+	case "", RecordScopeTenantShared, RecordScopeClientShared:
+	default:
+		return nil, newValidationError(
+			"INVALID_PARAM: DeleteFile: scope %q is not a delete-by-file plane (want tenant_shared|client_shared, or none)",
+			string(deleteScope))
+	}
+
 	trimmedSessionUUID := strings.TrimSpace(sessionUUID)
-	if trimmedSessionUUID == "" {
+	if trimmedSessionUUID == "" && deleteScope != RecordScopeTenantShared {
 		return nil, fmt.Errorf("DeleteFile: sessionUUID is required")
 	}
 	trimmedIngestKeyPrefix := strings.TrimSpace(ingestKeyPrefix)
@@ -110,13 +162,13 @@ func (m *Memory) DeleteFile(
 		return nil, fmt.Errorf("DeleteFile: ingestKeyPrefix is required")
 	}
 
-	cfg := &deleteFileConfig{}
-	for _, applyOption := range opts {
-		applyOption(cfg)
-	}
-
 	params := url.Values{}
-	params.Set("session", trimmedSessionUUID)
+	if deleteScope != "" {
+		params.Set("scope", string(deleteScope))
+	}
+	if trimmedSessionUUID != "" {
+		params.Set("session", trimmedSessionUUID)
+	}
 	params.Set("ingest_key_prefix", trimmedIngestKeyPrefix)
 	params.Set("dry_run", strconv.FormatBool(cfg.dryRun))
 

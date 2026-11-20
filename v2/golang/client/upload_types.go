@@ -26,6 +26,11 @@ type UploadResult struct {
 	Extension    string `json:"extension,omitempty"`
 	SizeBytes    int64  `json:"size_bytes,omitempty"`
 	Status       string `json:"status,omitempty"`
+
+	// Scope is the plane the file landed in, filled by UploadFile from the mode it
+	// sent (the server does not echo it). Pass it to UploadStatus/WaitForUpload so
+	// the status is read from THAT store (record ids are per store).
+	Scope RecordScope `json:"-"`
 }
 
 // UploadID returns the server record id used for UploadStatus polling.

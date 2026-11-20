@@ -358,47 +358,6 @@ func (m *Memory) ListTypes() []models.MemoryType {
 }
 
 // --------------------------------------------------------------------------
-// GetGrounding — provenance/anchor traversal (GET /records/{id}/grounding)
-// --------------------------------------------------------------------------
-
-// GetGrounding returns the grounding (provenance) of a record via GET
-// /api/v1/records/{id}/grounding: the episodic anchors and consolidations
-// reachable from the target within a BFS depth budget. It is the MCP
-// get_grounding contract — used to answer "what source turns back this memory?".
-//
-// maxDepth is the BFS depth budget. Pass 0 to use the server default (3); any
-// other value MUST be 1..5 inclusive or the server returns HTTP 400
-// "max_depth must be an integer between 1 and 5" (we surface that error rather
-// than clamping, so an out-of-range value fails loud).
-func (m *Memory) GetGrounding(ctx context.Context, recordID int64, maxDepth int) (*GroundingResult, error) {
-	if m.conn == nil {
-		return nil, ErrEmptyAPIKey
-	}
-	if recordID <= 0 {
-		return nil, fmt.Errorf("GetGrounding: recordID must be > 0")
-	}
-
-	params := url.Values{}
-	if maxDepth > 0 {
-		// 0 means "let the server default to 3". Any explicit value is forwarded
-		// as-is; the server validates the 1..5 range and rejects loudly.
-		params.Set("max_depth", strconv.Itoa(maxDepth))
-	}
-
-	path := fmt.Sprintf("/api/v1/records/%d/grounding", recordID)
-	respBytes, getErr := m.conn.Get(ctx, path, params)
-	if getErr != nil {
-		return nil, getErr
-	}
-
-	var result GroundingResult
-	if decodeErr := json.Unmarshal(respBytes, &result); decodeErr != nil {
-		return nil, fmt.Errorf("parsing grounding response: %w", decodeErr)
-	}
-	return &result, nil
-}
-
-// --------------------------------------------------------------------------
 // Shared helpers
 // --------------------------------------------------------------------------
 
