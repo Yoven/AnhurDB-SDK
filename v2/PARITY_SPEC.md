@@ -128,6 +128,49 @@ Identical behaviour in the three:
 - Not covered: `GET /api/v1/client/impersonations` (exists on the server, not in
   this surface yet).
 
+## 401/403 on data routes keep the server's reason (unreleased — 2026-11-21)
+
+Before: every 401/403 collapsed into a bare auth error (Go `ErrUnauthorized`
+"authentication failed: invalid API key", Python/TypeScript `AnhurAuthError`
+"Authentication failed (HTTP <s>)") and the body was dropped, so a scope
+refusal read as an invalid key. Server truth (AnhurDB `main`):
+`server/middleware/auth.go`, `auth_aes_gates.go`, `auth_legacy_key.go`,
+`auth_resolved_identity.go` (`http.Error`, i.e. `text/plain` with a JSON body)
+and `handler/service_bridge.go` (`writeErrorCode`, `application/json`).
+
+| Body (`body.error`) | Status | Go / Python / TypeScript predicate |
+|---|---|---|
+| `l1_only` (+ `detail` "token restricted to L1 sessions") | 403 | `IsL1Only()` / `is_l1_only` / `isL1Only` |
+| `child_suspended` (+ `detail` "client is suspended") | 403 | `IsChildSuspended()` / `is_child_suspended` / `isChildSuspended` |
+| `insufficient scope — key does not have permission for this operation` | 403 | `IsInsufficientScope()` / `is_insufficient_scope` / `isInsufficientScope` (prefix `insufficient scope`) |
+| `client_key_requires_impersonation` | 403 | `IsImpersonationRequired()` / `is_impersonation_required` / `isImpersonationRequired` |
+| `invalid or inactive API key` | 401 | `IsInvalidKey()` / `is_invalid_key` / `isInvalidKey` |
+
+Identical behaviour in the three:
+
+- **Type.** Go `*AuthRefusedError{Status, Code, Detail, ErrorType}` (Unwrap →
+  `ErrUnauthorized`, so `errors.Is` is unchanged) / Python
+  `AnhurAuthRefusedError(AnhurAuthError)` / TypeScript
+  `AnhurAuthRefusedError extends AnhurAuthError`. Kind `auth`, not retryable,
+  status 401 or 403. Constants `AuthCode*` / `AUTH_CODE_*` / `AUTH_CODE_*`.
+- **Decoding.** `code` = `body.error` verbatim when the body is a JSON object
+  with a non-empty string `error`, **whatever the Content-Type**; `detail` and
+  `error_type` are kept when they are strings, a mistyped one is dropped alone
+  (the code survives). Same decoder as the client-key surface
+  (`*ClientAPIError` / `AnhurClientAPIError`).
+- **Message.** With a code: `Authentication failed (HTTP <s>): <code>[: <detail>]`,
+  byte-identical. Without one (non-JSON body, or `error` not a string): the
+  historical text of each SDK — Go `authentication failed: invalid API key`,
+  Python/TypeScript `Authentication failed (HTTP <s>)` — and `code` is empty.
+- **Paths.** Every data-route verb, multipart upload included (Python's
+  multipart path used to omit `status_code`; fixed).
+- **gRPC.** None of the three SDKs has a gRPC transport, so there is nothing to
+  map. If one is added, PermissionDenied with message `l1_only` /
+  `child_suspended` / `client_key_requires_impersonation` / `insufficient
+  scope — …` must become this type with status 403 and that message as `code`,
+  and Unauthenticated (`invalid or inactive API key`) status 401
+  (`server/grpc/interceptor*.go`).
+
 ## Behavioral notes
 
 | Topic | Behavior |

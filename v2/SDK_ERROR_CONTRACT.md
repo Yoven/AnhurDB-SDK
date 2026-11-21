@@ -278,6 +278,23 @@ como a recusa de escopo do mesmo método. As duas recusas L2 409 (colisão, uplo
 ambíguo) citam no máximo 500 caracteres da frase do servidor na mensagem — Go passou a
 cortar também; o campo `ServerMessage`/`server_message` continua com a frase inteira.
 
+## Recusa tipada: 401/403 com o motivo do servidor (2026-11-21)
+
+Antes, todo 401/403 virava o erro de auth nu e o corpo era descartado: uma
+recusa de escopo lia "chave inválida". Agora os três SDKs devolvem um tipo que
+guarda `status`, `code` (= `body.error`, literal, lido qualquer que seja o
+Content-Type — o middleware de auth responde `text/plain` com corpo JSON),
+`detail` e `error_type`. Detalhe e tabela de códigos: `PARITY_SPEC.md`, seção
+"401/403 on data routes keep the server's reason".
+
+| | Go | Python | TypeScript |
+|---|---|---|---|
+| Tipo | `*AuthRefusedError` (Unwrap → `ErrUnauthorized`) | `AnhurAuthRefusedError(AnhurAuthError)` | `AnhurAuthRefusedError extends AnhurAuthError` |
+| kind / retryable | auth / false | auth / false | auth / false |
+
+Mensagem com código, idêntica nos três: `Authentication failed (HTTP <s>): <code>[: <detail>]`.
+Corpo sem código: a mensagem histórica de cada SDK, `code` vazio.
+
 ## Testes que provam o contrato
 
 Um por SDK, tabela única, sem servidor:
