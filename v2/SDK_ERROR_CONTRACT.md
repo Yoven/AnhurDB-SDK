@@ -1,6 +1,6 @@
 # Contrato de erro dos SDKs (Go · Python · TypeScript)
 
-**Status:** proposto · **Data:** 2026-08-13 · **Origem:** benchmark LongMemEval
+**Status:** implementado · **Data:** 2026-08-13 · **Revisado:** 2026-11-21 (SDKs 4.0.0 — sem ramos para servidor antigo) · **Origem:** benchmark LongMemEval
 abortado contra produção com erro de mensagem vazia e sem status
 
 ---
@@ -171,27 +171,28 @@ parecendo queda no plugin de memória. Os três SDKs agora levantam um erro
 
 | SDK | Tipo | Campos |
 |---|---|---|
-| Go | `*client.SessionRecordLimitError` + sentinela `client.ErrSessionRecordLimit` | `SessionUUID string`, `Limit *int`, `Count *int`, `ServerMessage string`; `Kind()=conflict`, `Retryable()=false`, `StatusCode()=409`; `Unwrap()` devolve a sentinela **e** o `*APIError` 409 |
-| Python | `AnhurSessionRecordLimitError(AnhurQueryError)` | `session_uuid`, `limit`, `count` (`Optional[int]`), `server_message`, `code`; `kind="conflict"`, `retryable=False`, `status_code=409` |
-| TypeScript | `AnhurSessionRecordLimitError extends AnhurError` | `sessionUuid`, `limit`, `count` (`number \| null`), `serverMessage`, `code`; `kind="conflict"`, `retryable=false`, `statusCode=409` |
+| Go | `*client.SessionRecordLimitError` + sentinela `client.ErrSessionRecordLimit` | `SessionUUID string`, `Limit int`, `Count int`, `ServerMessage string`; `Kind()=conflict`, `Retryable()=false`, `StatusCode()=409`; `Unwrap()` devolve a sentinela **e** o `*APIError` 409 |
+| Python | `AnhurSessionRecordLimitError(AnhurQueryError)` | `session_uuid: str`, `limit: int`, `count: int`, `server_message`, `code`; `kind="conflict"`, `retryable=False`, `status_code=409` |
+| TypeScript | `AnhurSessionRecordLimitError extends AnhurError` | `sessionUuid: string`, `limit: number`, `count: number`, `serverMessage`, `code`; `kind="conflict"`, `retryable=false`, `statusCode=409` |
 
-**Reconhecimento — as duas gerações de servidor:**
+**Reconhecimento (4.0.0 — só pelo `code`):** o servidor sempre manda HTTP 409
+`{"error": "session has reached the maximum of N records", "code": "session_record_limit", "limit": N, "count": M, "session_uuid": "..."}`
+(`server/handler/service_bridge.go:109-125`, nenhum campo omitempty; único produtor
+`server/service/record_session_cap.go:178`). O erro tipado exige os quatro: `code`
+igual, `limit` e `count` inteiros, `session_uuid` string. Corpo com o `code` mas
+com campo ausente, nulo ou de outro tipo **não** é tipado — continua o 409 genérico,
+cuja mensagem cita o corpo cru; o SDK nunca inventa um `0` (Go decodifica em
+ponteiros para detectar presença). O casamento pela frase e o "maximum of N records"
+relido do texto (servidores anteriores a ADR-0033) foram **removidos** em 4.0.0.
 
-- servidor NOVO: HTTP 409 com `{"error": "session has reached the maximum of N records ...", "code": "session_record_limit", "limit": N, "count": M, "session_uuid": "..."}`;
-- servidor ANTIGO (produção até o deploy): HTTP 409 com só `{"error": "session has reached the maximum of N records"}` (ou o mesmo texto cru).
-
-Casa por `code == "session_record_limit"` **ou** pelo prefixo de texto
-`"session has reached the maximum of"`, e **só** em HTTP 409. Campo ausente vira
-`nil`/`None`/`null`, nunca zero inventado — com uma exceção declarada: `limit` é
-relido da própria frase do servidor ("maximum of N records") quando o campo falta,
-porque o número está no texto que ele mandou. `count` e `session_uuid` não têm
-essa fonte e ficam nulos.
+**Mensagem, idêntica byte a byte nos três:**
+`Conflict (HTTP 409): <error do servidor, primeiros 500 caracteres> (session record limit: session=<uuid>, limit=N, count=M)`
+(em Go só este erro mudou de formato; os demais `*APIError` mantêm `AnhurDB API error (HTTP N): <corpo>`).
 
 **gRPC:** o contrato do servidor é `codes.ResourceExhausted` + `google.rpc.ErrorInfo`
 (reason `SESSION_RECORD_LIMIT`, domain `anhurdb`, metadata `session_uuid`/`limit`/`count`),
-e servidores antigos mandam `codes.AlreadyExists` com o mesmo texto. **Nenhum dos
-três SDKs tem transporte gRPC hoje** (todos falam REST), então não há caminho gRPC a
-classificar; um transporte gRPC futuro TEM de reconhecer os dois códigos.
+**Nenhum dos três SDKs tem transporte gRPC hoje** (todos falam REST), então não há
+caminho gRPC a classificar; um transporte gRPC futuro ramifica no `reason`.
 
 **Não-retryable não é "descarte".** Repetir na mesma sessão dá a mesma recusa até o
 teto mudar no servidor. Quem não pode perder a escrita guarda e tenta DEPOIS; gravar
@@ -204,11 +205,11 @@ em outra sessão para driblar o teto fundiria conversas (no plugin de memória:
 
 Servidor AnhurDB `fix/l2-lib-scope`. Três respostas novas, reconhecidas no
 transporte dos três SDKs **depois** do teste de limite de sessão (que continua
-casando só por `code`/prefixo próprios — as duas recusas 409 nunca se confundem):
+casando só pelo próprio `code` — as duas recusas 409 nunca se confundem):
 
 | Resposta do servidor | Go | Python | TypeScript | kind / retryable |
 |---|---|---|---|---|
-| Colisão: HTTP **409** `{"error":"<frase>","code":"tenant_library_collision"}` em **todas** as portas — busca, by-id, delete-by-file **e upload** (servidor 4574c4d, `handler/search_scope_request.go` `writeScopeLegError`). Os SDKs ramificam **primeiro no `code`**; a frase `"tenant library store id is a registered tenant"` é só fallback para corpo **sem** `code` (servidor anterior a 4574c4d, que respondia o upload com **400**). Corpo com outro `code` nunca é relido pela frase | `*TenantLibraryCollisionError` + `ErrTenantLibraryCollision` (const `TenantLibraryCollisionCode`) | `AnhurTenantLibraryCollisionError(AnhurQueryError)` | `AnhurTenantLibraryCollisionError` | conflict (409; invalid_request só no 400 legado) / **false** |
+| Colisão: HTTP **409** `{"error":"<frase>","code":"tenant_library_collision"}` em **todas** as portas — busca, by-id, delete-by-file **e upload** (servidor 4574c4d, `handler/search_scope_request.go` `writeScopeLegError`). Os SDKs ramificam **só no `code`** (4.0.0 removeu o casamento pela frase e o ramo do upload-**400**, ambos para servidores anteriores a 4574c4d); 409 sem esse `code` é o conflito genérico | `*TenantLibraryCollisionError` + `ErrTenantLibraryCollision` (const `TenantLibraryCollisionCode`) | `AnhurTenantLibraryCollisionError(AnhurQueryError)` | `AnhurTenantLibraryCollisionError` | conflict / **false** |
 | Upload status ambíguo: 409 `"record N is a file upload in more than one plane; ..."` (`handler/upload_status_scope.go:186-191`) | `*UploadStatusAmbiguousError` + `ErrUploadStatusAmbiguous` | `AnhurUploadStatusAmbiguousError` | `AnhurUploadStatusAmbiguousError` | conflict / false |
 | Delete-by-file parcial: 500 `{"error","partial":true,"legs":[...]}` (`handler/record_delete_file_library.go:53-57`) | `*LibraryDeletePartialError` (`.Legs`) + `ErrLibraryDeletePartial` | `AnhurLibraryDeletePartialError` (`.legs`) | `AnhurLibraryDeletePartialError` (`.legs`) | server / **true** (o delete é idempotente; repetir é a recuperação documentada) |
 
@@ -225,6 +226,25 @@ antes respondia 400 — e continua o erro comum `unavailable` / retryable; não 
 gRPC (nenhum SDK tem transporte gRPC hoje): a colisão é `FAILED_PRECONDITION` com
 `ErrorInfo{reason: "TENANT_LIBRARY_COLLISION", domain: "anhurdb"}` — o mesmo formato
 do limite de sessão. Um transporte gRPC futuro deve ramificar no `reason`.
+
+## Resposta 2xx fora do envelope (4.0.0)
+
+Oito rotas de listagem sempre respondem um objeto JSON com uma chave de lista
+(`sessions` / `records` / `entities`; tabela de rotas em `PARITY_SPEC.md`, seção
+"Envelope rule"). Corpo que não é esse objeto — array cru, corpo vazio, chave
+ausente, valor que não é lista nem `null` — levanta, nos três SDKs:
+
+| Go | Python | TypeScript | kind / retryable |
+|---|---|---|---|
+| `*UnexpectedResponseError` (`.Route`, `.Key`) + `ErrUnexpectedResponse` | `AnhurUnexpectedResponseError(AnhurError)` (`.route`, `.key`) | `AnhurUnexpectedResponseError extends AnhurError` (`.route`, `.key`) | server / true, sem status |
+
+Mensagem idêntica: `unexpected response from GET <rota-modelo>: expected a JSON object with "<chave>"`
+(rota-modelo, ex. `/api/v1/chats/{uuid}`, nunca o caminho concreto). Antes de 4.0.0
+vários desses formatos viravam "zero linhas" em silêncio. `"<chave>": null` continua
+sendo lista vazia — é a resposta do servidor para zero linhas.
+
+`GET /api/v1/profile` (sempre montada, `server/router.go:136`): um 404 agora é o erro
+`not_found` comum nos três — o fallback "OSS, perfil vazio" foi removido.
 
 ## Recusa local: tenant id inválido (2026-11-20, fix/sdk-audit-gaps)
 
@@ -253,8 +273,11 @@ Um por SDK, tabela única, sem servidor:
 6. timeout → `kind=timeout`, `retryable=true`, `status` **ausente**, **`message` não-vazia** (regressão do defeito nº 1)
 7. conexão recusada → `kind=transport`, `retryable=true`, `status` ausente
 8. corpo de erro contendo `10.20.1.2:19090` → o endereço **não** aparece em `message`
-9. 409 de sessão cheia — corpo NOVO estruturado e corpo ANTIGO só-texto → erro tipado de limite de sessão, `retryable=false`, campos ausentes nulos; um 409 genérico continua genérico (`session_limit_test.go`, `test_session_record_limit.py`, `session_record_limit.test.ts`)
-10. Recusas L2 (colisão 409 com `code` em toda porta + fallback pela frase sem `code` — 409/400 legado, upload 503 = unavailable comum, upload ambíguo 409, delete parcial 500 com pernas além do excerto) — tipadas, e um 409 genérico/sessão cheia continua o que era (`scope_errors_test.go`, `test_record_scope.py`, `record_scope.test.ts`)
+9. 409 de sessão cheia — corpo estruturado → erro tipado de limite de sessão, `retryable=false`, mensagem idêntica nos três; corpo só-frase sem `code`, ou com `code` e campo ausente/nulo/de outro tipo → 409 genérico; um 409 qualquer continua genérico (`session_limit_test.go`, `test_session_record_limit.py`, `session_record_limit.test.ts`)
+10. Recusas L2 (colisão 409 com `code` em toda porta; a frase sem `code` — em 409 ou 400 — é o erro genérico; upload 503 = unavailable comum, upload ambíguo 409, delete parcial 500 com pernas além do excerto) — tipadas, e um 409 genérico/sessão cheia continua o que era (`scope_errors_test.go`, `test_record_scope.py`, `record_scope.test.ts`)
+
+11. 2xx fora do envelope nas oito rotas de listagem → `UnexpectedResponseError` com a mensagem idêntica; `"<chave>": null` → lista vazia (`envelope_only_test.go`, `test_envelope_rule.py`, `envelope_rule.test.ts`)
+12. `profile()` com 404 → erro `not_found`, nunca perfil vazio (`profile_tag_test.go`, `test_http_mock.py`, `http_error_status.test.ts`)
 
 O teste 8 é o que impede que "melhorar as mensagens de erro" vire vazamento de
 topologia. O servidor já retém esse corpo; o SDK não pode reintroduzi-lo por

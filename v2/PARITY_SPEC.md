@@ -1,14 +1,16 @@
 # AnhurDB SDK v2 — Parity Specification
 
-**Status:** Implemented (2026-07). Python, TypeScript, and Go expose the same `Memory`
-API. This document is the public contract; deviations are bugs.
+**Status:** Implemented (2026-07); **4.0.0 (2026-11-21) in all three SDKs** — legacy
+removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose the same
+`Memory` API. This document is the public contract; deviations are bugs.
 
 **Open Beta endpoint:** `https://anhurdb.yoven.ai` (default in all three SDKs).
 
 ## Principles
 
-1. **One client class** — `Memory` in every language. Legacy aliases exist only for
-   backward compatibility.
+1. **One client class** — `Memory` in every language. No aliases: every deprecated
+   alias was removed in 4.0.0. AnhurDB `main` is the only server, so no SDK carries a
+   branch for an older server.
 2. **Consistent method names** — idiomatic casing per language (`PascalCase`,
    `snake_case`, `camelCase`).
 3. **Same semantics** — equivalent parameters and behavior across SDKs.
@@ -19,7 +21,7 @@ API. This document is the public contract; deviations are bugs.
 | Tool | Go / Python / TypeScript | HTTP route |
 |---|---|---|
 | health | `Health` / `health` / `health` | `GET /api/v1/health` |
-| ingest_memory | `Add` / `add` / `add` | `POST /api/v1/ingest` (default) — episodic + platform extraction; LLM+embed billed. Falls back to `/records` if ingest 404 or caller pins type/score/metadata |
+| ingest_memory | `Add` / `add` / `add` | `POST /api/v1/ingest` (default) — episodic + platform extraction; LLM+embed billed. Goes to `/records` only when the caller pins type/score/metadata; a 404 from `/ingest` is an error (no fallback since 4.0.0). `AddResult.mode` = `"ingest"` \| `"records"` |
 | create_memory | `Create` / `create` / `create` | `POST /api/v1/records` — one typed record, **no** extraction LLM (embed only) |
 | create_in_session | `CreateInSession` / `create_in_session` / `createInSession` | `POST /api/v1/records` |
 | get_memory | `Get` / `get` / `get` | `GET /api/v1/records/{id}` |
@@ -38,7 +40,7 @@ API. This document is the public contract; deviations are bugs.
 | semantic_search (one chat) | `SearchSession` / `search_session` / `searchSession` | `POST /api/v1/search` (`scope=sessions` + `uuid`) |
 | search_by_type | `SearchByType` / `search_by_type` / `searchByType` | `GET /api/v1/search/type` |
 | smart_search | `SmartSearch` / `smart_search` / `smartSearch` | `GET /api/v1/search/smart` (`scope` query, default `sessions`) |
-| recent_memories | `Recent` / `recent` / `recent` | `GET /api/v1/manifest` or `/recent` |
+| recent_memories | `Recent` / `recent` / `recent` | `GET /api/v1/recent` |
 | execute_ast | `Query` / `query` / `query` | `POST /api/v1/query` — **advanced / not day-to-day RAG**; prefer `smart_search` / `recall` for chat recall |
 | manifest_global | `ManifestGlobal` / `manifest_global` / `manifestGlobal` | `GET /api/v1/manifest` |
 | manifest_session | `ManifestSession` / `manifest_session` / `manifestSession` | `GET /api/v1/chats/{uuid}/manifest` |
@@ -72,7 +74,7 @@ API. This document is the public contract; deviations are bugs.
 | get_entity_graph | `EntityGraph` / `entity_graph` / `entityGraph` | `GET /api/v1/entities/{id}/graph` |
 | entity_timeline | `EntityTimeline` / `entity_timeline` / `entityTimeline` | `GET /api/v1/entities/{id}/timeline` |
 | get_record_entities | `GetRecordEntities` / `get_record_entities` / `getRecordEntities` | `GET /api/v1/records/{id}/entities` |
-| get_profile | `Profile` / `profile` / `profile` | `GET /api/v1/profile` |
+| get_profile | `Profile` / `profile` / `profile` | `GET /api/v1/profile` — every HTTP error is raised, a 404 included (the "OSS: empty profile on 404" fallback was removed in 4.0.0; the route is always mounted, `server/router.go:136`). An unknown tag is still an all-zero profile with HTTP 200 |
 
 ## Behavioral notes
 
@@ -88,7 +90,7 @@ API. This document is the public contract; deviations are bugs.
 | `query` | Python/Go return record lists; TypeScript returns `{ records, count }`. |
 | `query` AST validation | Since 2026-07-28 the server rejects a malformed filter with a **named HTTP 400** instead of dropping the predicate: bare value instead of an operator object, empty operator object `{}`, empty `$in`, unknown operator, and a non-scalar operator value. The dropped predicate used to widen the result set and answer 200 — a silent wrong answer. Client-side pre-validation reached parity in Go SDK v2.0.13 (2026-07-30); one narrow, structural residual difference remains — see "Known parity gaps". |
 | Anchor policy | SDKs send one request. Server returns HTTP 422 if no episodic anchor exists. |
-| Session record limit (2026-11-20, ADR-0033) | A write into a full session returns HTTP 409. All three SDKs raise a TYPED, non-retryable refusal — Go `*SessionRecordLimitError` (+ `ErrSessionRecordLimit`), Python `AnhurSessionRecordLimitError`, TypeScript `AnhurSessionRecordLimitError` — carrying session uuid, limit and count (`nil`/`None`/`null` when an old server omitted them; `limit` is read back from the server's sentence). Recognised by `code == "session_record_limit"` OR the text prefix `session has reached the maximum of`, on HTTP 409 only; any other 409 stays the generic error. No SDK has a gRPC transport, so the gRPC form (ResourceExhausted / legacy AlreadyExists) has no SDK path today. Contract: `SDK_ERROR_CONTRACT.md`. |
+| Session record limit (2026-11-20, ADR-0033) | A write into a full session returns HTTP 409. All three SDKs raise a TYPED, non-retryable refusal — Go `*SessionRecordLimitError` (+ `ErrSessionRecordLimit`), Python `AnhurSessionRecordLimitError`, TypeScript `AnhurSessionRecordLimitError` — carrying session uuid, limit and count — all three non-nullable since 4.0.0. Recognised ONLY by HTTP 409 + `code == "session_record_limit"` + an integer `limit`, an integer `count` and a string `session_uuid` (the server always sends all four, `handler/service_bridge.go:109-125`); a body missing or mistyping any of them, and any other 409 (including the bare sentence without a code), stays the generic 409 error. Message, byte-identical: `Conflict (HTTP 409): <server error, first 500 characters> (session record limit: session=<uuid>, limit=N, count=M)`. No SDK has a gRPC transport, so the gRPC form (ResourceExhausted / legacy AlreadyExists) has no SDK path today. Contract: `SDK_ERROR_CONTRACT.md`. |
 
 ## By-id scope — L2 tenant library (2026-11-20, ADR-0029)
 
@@ -106,7 +108,7 @@ the same number. All three SDKs, same semantics:
 | Upload plane | `UploadResult.Scope` / `.scope` / `.scope`, SDK-filled from the mode sent (default & `tenant_shared` → `tenant_shared`, `client_shared` → `client_shared`, chat/session → `sessions`); helper `UploadStatusScope` / `upload_status_scope` / `uploadStatusScope`. Pass it to the status poll |
 | Delete-by-file | scope `tenant_shared` (session may be empty; server deletes both library stores) or `client_shared`; other values refused locally. Result gains `legs[]` `{generation, session_uuid, skipped, dispatch_skipped, matched_count, deleted_count, error}` |
 | `WaitForUpload` | returns/raises at once on a non-retryable error (Go changed to match Python/TS, which already did) |
-| Collision refusal | HTTP 409 `code == "tenant_library_collision"` on every door, upload included (server 4574c4d) → `*TenantLibraryCollisionError` / `AnhurTenantLibraryCollisionError` (conflict, non-retryable). Classified by `code` FIRST; the sentence `"tenant library store id is a registered tenant"` is matched only when the body has NO code (older server: 409, or 400 on upload). Checked after the session-record-limit 409 (`code == "session_record_limit"`), so the two never mix |
+| Collision refusal | HTTP 409 `code == "tenant_library_collision"` on every door, upload included (server 4574c4d) → `*TenantLibraryCollisionError` / `AnhurTenantLibraryCollisionError` (conflict, non-retryable). Classified by `code` ONLY (4.0.0 removed the sentence match and the upload-400 branch, both for servers older than 4574c4d). Checked after the session-record-limit 409 (`code == "session_record_limit"`), so the two never mix |
 | Registry unavailable | HTTP 503 (upload too, was 400) → the ordinary `unavailable` error, retryable, untyped |
 
 Not exposed by any SDK: `GET /records/{id}/explain` (the server honours `?scope=`
@@ -120,7 +122,7 @@ server's `UpdateRecordRequest.scope=14`, `DeleteRecordRequest.scope=2`,
 |---|---|
 | `alternative_sessions` | `DeleteFileResult.AlternativeSessions []FileSessionCandidate` / `.alternative_sessions: List[FileSessionCandidate]` (default `[]`) / `.alternative_sessions?: FileSessionCandidate[]`. Element `{session_uuid, matched_count, root_checksum?, root_filename?}` = server `database.FileSessionCandidate` (`server/database/file_record_sessions.go:38-48`). Filled only when `matched_count == 0`: absent/empty = prefix not in this store; non-empty = wrong session (re-issue the strict delete with a candidate after checking `root_checksum`) |
 | `purge` | `DeleteFileResult.Purge bool` / `.purge: bool` (default `False`) / `.purge?: boolean`. Server `json:"purge"`, always sent: `true` = gone for good (shared plane), `false` = restorable tombstone (chat plane) |
-| `raft_index` | **Deprecated, always 0/absent** in all three — the server never serialises it (`json:"-"`, `server/service/record_delete_file.go:42`). Kept (not removed) because removal breaks compile (Go field, TS property) / attribute access (Python); removed in the next major |
+| `raft_index` | **Removed in 4.0.0** from all three — the server never serialises it (`json:"-"`, `server/service/record_delete_file.go:42`) |
 | Tenant id rule | Server identifier rule (`database.validateIdentifierCharset` + `MaxIdentifierLength`): `[A-Za-z0-9_-]`, ≤ 64; empty = not set. Charset checked before length |
 | Tenant id refusal | Typed validation error, invalid_request / non-retryable, no request sent: Go `*APIError` (clientSide, 400) from the FIRST call (`NewMemory` has no error return; checked per request because `HTTPConnection.TenantID` is exported); Python `AnhurQueryError` from `HTTPConnection`/`Memory` construction; TypeScript `AnhurQueryError` from `new Memory`/`HttpClient`. Messages pinned byte-identical: `INVALID_PARAM: tenant_id contains an invalid character — allowed: letters, digits, '-' and '_'` and `INVALID_PARAM: tenant_id exceeds 64 characters (got N)` |
 
@@ -225,13 +227,52 @@ are hidden unless `archived` is filtered explicitly; a
 `semantic_search` block inside `filters` (Python `QueryBuilder.semantic_search()`)
 is accepted and skipped server-side and has never contributed to the result.
 
-## Deprecated aliases
+## 4.0.0 — legacy removal (2026-11-21)
 
-| Language | Deprecated | Canonical |
+AnhurDB `main` is the only server and there are no external clients, so every
+branch that existed only for an older server, and every deprecated alias, is gone
+— identically in the three SDKs. Per-symbol detail and server evidence: each
+SDK's `CHANGELOG.md`.
+
+| Removed | Go | Python | TypeScript |
+|---|---|---|---|
+| Deprecated aliases | `RecentMemories`, `UpdateConsolidateIDs`, `SearchWithSignals` | `AnhurClient`, `search_with_ast`, `mark_consolidated`, `link_to_consolidated`, `update_consolidate_ids`, `CreateRequest.uuid` | `updateConsolidateIds`, `SearchSessionPayload` |
+| Record status `pending` ("pre-v2") | `models.StatusPending` | `MemoryStatus.PENDING` | `"pending"` in the `MemoryStatus` union |
+| `DeleteFileResult.raft_index` | `RaftIndex` | `raft_index` | `raft_index` |
+| `add()` ingest-404 → `/records` fallback (+ sticky state) | yes | yes | yes |
+| Session-limit sentence match / number parse | yes | yes | yes |
+| Collision sentence match + upload-400 branch | yes | yes | yes |
+| Bare-array / non-envelope tolerance on listings | yes | yes | yes |
+| Entity `type` alias for `entity_type` | — | `EntityModel` alias | — |
+| `profile()` 404 → empty profile | yes | yes (matched `"404"` in the message text) | yes |
+| `mode="mcp"` tunnel transport | — | yes (Python-only) | — |
+
+`AddResult.mode` values are now `"ingest"` / `"records"` (were `"cloud"` / `"oss"`).
+The Go module path moved to `github.com/Yoven/AnhurDB-SDK/v2/golang/v4`.
+
+### Envelope rule (identical in the three SDKs)
+
+These eight routes always answer a JSON object envelope. The body must be an
+object that HAS the list key; the key's value must be a list or `null`
+(`null` = zero rows → empty list). A bare array, an empty body, a missing key or a
+non-list value raises Go `*UnexpectedResponseError` (`ErrUnexpectedResponse`) /
+Python `AnhurUnexpectedResponseError` / TypeScript `AnhurUnexpectedResponseError`,
+kind `server`, no status, message
+`unexpected response from GET <route template>: expected a JSON object with "<key>"`.
+
+| Route | Key | Go / Python / TypeScript |
 |---|---|---|
-| Python | `AnhurClient`, `search_with_ast`, `mark_consolidated`, `link_to_consolidated`, `update_consolidate_ids` | `Memory`, `query`, `batch_update_status`, `link_consolidated` |
-| Go | `RecentMemories`, `UpdateConsolidateIDs` | `Recent`, `LinkConsolidated` |
-| TypeScript | `updateConsolidateIds` | `linkConsolidated` |
+| `GET /api/v1/sessions/stats` | `sessions` | `ListSessions` / `list_sessions` / `listSessions` |
+| `GET /api/v1/recent` | `records` | `Recent` / `recent` / `recent` |
+| `GET /api/v1/manifest` | `records` | `ManifestGlobal` / `manifest_global` / `manifestGlobal` (and `CountByType` / `count_by_type` / `countByType`) |
+| `GET /api/v1/chats/{uuid}/manifest` | `records` | `ManifestSession` / `manifest_session` / `manifestSession` |
+| `GET /api/v1/chats/{uuid}` | `records` | `ListChat` / `list_chat` / `listChat` |
+| `GET /api/v1/entities` | `entities` | `SearchEntities` / `search_entities` / `searchEntities` |
+| `GET /api/v1/entities/list` | `entities` | `ListEntities` / `list_entities` / `listEntities` |
+| `GET /api/v1/records/{id}/entities` | `entities` | `GetRecordEntities` / `get_record_entities` / `getRecordEntities` |
+
+Pinned by `client/envelope_only_test.go`, `tests/test_envelope_rule.py`,
+`src/test/envelope_rule.test.ts` (every route × every bad shape, exact message).
 
 ## Acceptance criteria
 
@@ -290,7 +331,11 @@ together — `{"score":{"$gte":3,"$lte":5}}` is a legal range.
   adopt it (including the Python bare-kwarg replace). Until they do, this entry
   is the record that the difference is known and which side is correct.
 
-## Known pre-2.1.1: 14 accepted-and-discarded `...ReadOption` variadics in Go client.go (2026-09-14)
+## RESOLVED (3.0.0): 14 accepted-and-discarded `...ReadOption` variadics in Go client.go (2026-09-14)
+
+> Fixed in 3.0.0 (`client/read_option_support.go`, pinned by
+> `read_option_refusal_test.go`); the line numbers below point at the pre-split
+> `client.go` and are kept only as history.
 
 Same silent-discard class as the `Memory.Query` variadic deleted on 2026-09-14:
 each method ends in `opts ...ReadOption` with a bare `_ = opts` in the body, so
