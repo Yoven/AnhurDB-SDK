@@ -19,9 +19,9 @@
  * transformaria um prefixo errado em sucesso silencioso — e perda silenciosa é
  * a falha número um deste projeto.
  *
- * `deleted_ids` e `raft_index` são OPCIONAIS porque o servidor os emite com
- * `omitempty`: em dry-run, ou quando nada casou, as chaves não existem no JSON.
- * Ausência aqui é informação legítima, não erro de parse.
+ * `deleted_ids` é OPCIONAL porque o servidor o emite com `omitempty`: em
+ * dry-run, ou quando nada casou, a chave não existe no JSON. Ausência aqui é
+ * informação legítima, não erro de parse.
  */
 export interface DeleteFileResult {
   session_uuid: string;
@@ -30,12 +30,45 @@ export interface DeleteFileResult {
   deleted_count: number;
   deleted_ids?: number[];
   dry_run: boolean;
+  /**
+   * @deprecated Never sent: the server keeps the consensus log index internal
+   * (`json:"-"` at `server/service/record_delete_file.go:42`), so this is always
+   * `undefined`. Kept only so existing code that reads it still compiles;
+   * removed in the next major. Do not branch on it.
+   */
   raft_index?: number;
+  /**
+   * Present ONLY when `matched_count === 0`: the sessions of this SAME store
+   * that do hold records with the requested prefix (server
+   * `database.FileSessionCandidate`, `server/database/file_record_sessions.go:38-48`,
+   * `omitempty`). Absent = the prefix is not in this store at all (or something
+   * matched); present = the session was wrong.
+   *
+   * Junior Tip [zero matches has two causes — this tells them apart]: the delete
+   * stays strict — re-issue `deleteFile` with a candidate's `session_uuid`, and
+   * check `root_checksum`/`root_filename` first: a 64-bit prefix is weaker proof
+   * than the full sha256.
+   */
+  alternative_sessions?: FileSessionCandidate[];
   /**
    * Present only for a tenant-library delete: one outcome per library store
    * (generation `"primary"` = `{c}_{t}_lib`, `"legacy"` = pre-migration rows).
    */
   legs?: DeleteFileLeg[];
+}
+
+/**
+ * One session of the queried store holding records of the file named by the
+ * ingest_key prefix (see `DeleteFileResult.alternative_sessions`).
+ * `root_checksum` is the FULL sha256 the file_ingestor stores on the root record
+ * and `root_filename` its original name; both are absent when the root no longer
+ * exists or predates the field (`omitempty` on the server).
+ */
+export interface FileSessionCandidate {
+  session_uuid: string;
+  matched_count: number;
+  root_checksum?: string;
+  root_filename?: string;
 }
 
 /**

@@ -59,7 +59,7 @@ async def test_delete_file_wire_contract():
                 "deleted_count": 511,
                 "deleted_ids": [1, 2, 3],
                 "dry_run": False,
-                "raft_index": 123,
+                "purge": False,
             },
         )
     )
@@ -80,14 +80,15 @@ async def test_delete_file_wire_contract():
     assert result.matched_count == 511
     assert result.deleted_count == 511
     assert result.deleted_ids == [1, 2, 3]
-    assert result.raft_index == 123
+    # raft_index is json:"-" on the server; the deprecated field stays 0.
+    assert result.raft_index == 0
     assert result.dry_run is False
 
 
 @pytest.mark.anyio
 async def test_delete_file_dry_run_sends_flag_and_omits_ids():
     captured: dict = {}
-    # Envelope de dry-run: o servidor manda deleted_ids/raft_index com
+    # Envelope de dry-run: o servidor manda deleted_ids com
     # ``omitempty``, então as chaves simplesmente não existem.
     runner, base_url = await _start_server(
         _recording_handler(
@@ -183,3 +184,47 @@ async def test_delete_file_short_prefix_surfaces_server_400():
         await runner.cleanup()
 
     assert captured["ingest_key_prefix"] == "abc"
+
+
+# Byte-for-byte what service.DeleteFileResult marshals to when the prefix matched
+# nothing in the requested session but exists in two others
+# (server/service/record_delete_file.go:26-62; element type
+# database.FileSessionCandidate, server/database/file_record_sessions.go:38-48).
+# Same string as Go client/delete_file_alternatives_test.go.
+ZERO_MATCH_SERVER_JSON = (
+    '{"session_uuid":"chat-wrong","ingest_key_prefix":"ef9976f1ef5d5176",'
+    '"matched_count":0,"deleted_count":0,"dry_run":false,"purge":false,'
+    '"alternative_sessions":['
+    '{"session_uuid":"chat-42","matched_count":511,'
+    '"root_checksum":"ef9976f1ef5d51760a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef",'
+    '"root_filename":"lei-8666.pdf"},'
+    '{"session_uuid":"chat-7","matched_count":3}]}'
+)
+
+
+def test_delete_file_result_parses_alternative_sessions_offline():
+    from anhurdb import DeleteFileResult, FileSessionCandidate
+
+    result = DeleteFileResult.model_validate_json(ZERO_MATCH_SERVER_JSON)
+    assert result.matched_count == 0
+    assert result.raft_index == 0
+    assert result.alternative_sessions == [
+        FileSessionCandidate(
+            session_uuid="chat-42",
+            matched_count=511,
+            root_checksum="ef9976f1ef5d51760a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef",
+            root_filename="lei-8666.pdf",
+        ),
+        FileSessionCandidate(session_uuid="chat-7", matched_count=3),
+    ]
+    assert result.alternative_sessions[1].root_checksum == ""
+
+
+def test_delete_file_result_without_alternatives_is_empty_list():
+    from anhurdb import DeleteFileResult
+
+    result = DeleteFileResult.model_validate_json(
+        '{"session_uuid":"chat-42","ingest_key_prefix":"ef9976f1ef5d5176",'
+        '"matched_count":511,"deleted_count":511,"dry_run":false,"purge":false}'
+    )
+    assert result.alternative_sessions == []

@@ -1,5 +1,23 @@
 # Go SDK Changelog
 
+## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
+
+Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
+
+- **New:** `DeleteFileResult.AlternativeSessions []FileSessionCandidate` and type
+  `client.FileSessionCandidate{SessionUUID, MatchedCount, RootChecksum, RootFilename}`
+  — the server's zero-match diagnostic (sessions of the same store that hold the
+  prefix); it was silently dropped on decode.
+- **Deprecated:** `DeleteFileResult.RaftIndex`. The server never serialises it
+  (`json:"-"`), so it was always 0. Kept so existing code compiles; removed in
+  the next major. Same decision in all three SDKs.
+- **Behaviour change:** an invalid `WithTenantID` value (outside `[A-Za-z0-9_-]`
+  or over 64 chars — the server's identifier rule) used to be DROPPED silently,
+  which made a master-key call land on the `default` tenant. Every call now
+  returns an invalid_request `*APIError` (`INVALID_PARAM: tenant_id ...`) before
+  any request is sent. Also enforced for a value set directly on
+  `HTTPConnection.TenantID`.
+
 ## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
 
 Additive (variadic options; existing call sites compile unchanged). Go, Python

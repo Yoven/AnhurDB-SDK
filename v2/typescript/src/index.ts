@@ -115,6 +115,7 @@ export type {
   DeleteFileOptions,
   DeleteFileResult,
   DeleteFileLeg,
+  FileSessionCandidate,
   // Failure classification carried by every AnhurError
   AnhurErrorKind,
 } from "./types.js";

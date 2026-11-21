@@ -15,7 +15,8 @@ Security hardening:
   - Redirect disabled: prevents ``X-API-Key`` leak on cross-origin redirects
     (mitigates CVE-2026-34518).
   - Response size capped at 100 MB (prevents memory exhaustion DoS).
-  - Header injection protection: tenant_id validated against CRLF injection.
+  - tenant_id validated with the server's identifier rule (letters, digits,
+    '-', '_'; <= 64) — refused at construction, never silently rewritten.
   - API key never included in error messages or URLs.
   - HTTP 409 (Conflict) raises ``AnhurQueryError`` in both REST and
     multipart paths (e.g. max_session_records exceeded).
@@ -52,6 +53,7 @@ from .connection_guards import (
     MAX_RESPONSE_SIZE,
     QueryParams,
     validate_header_value,
+    validate_tenant_id,
 )
 from .connection_host import (
     McpTunnelHost,
@@ -105,10 +107,12 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
             max_response_size: Maximum response body size in bytes (default: 100 MB).
 
         Raises:
-            ValueError: If tenant_id contains header-injection characters."""
-        # Validate inputs against injection.
+            ValueError: If api_key contains header-injection characters.
+            AnhurQueryError: If tenant_id breaks the server's identifier rule
+                (invalid_request; CRLF and other injection characters included)."""
+        # Validate inputs against injection / silent server-side rewriting.
         validate_header_value(api_key, "api_key")
-        validate_header_value(tenant_id, "tenant_id")
+        validate_tenant_id(tenant_id)
 
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key

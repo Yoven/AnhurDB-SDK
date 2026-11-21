@@ -226,6 +226,21 @@ gRPC (nenhum SDK tem transporte gRPC hoje): a colisão é `FAILED_PRECONDITION` 
 `ErrorInfo{reason: "TENANT_LIBRARY_COLLISION", domain: "anhurdb"}` — o mesmo formato
 do limite de sessão. Um transporte gRPC futuro deve ramificar no `reason`.
 
+## Recusa local: tenant id inválido (2026-11-20, fix/sdk-audit-gaps)
+
+`X-Tenant-ID` fora da regra do servidor (`[A-Za-z0-9_-]`, até 64; vazio = não
+configurado) é recusado ANTES de qualquer request, com o erro de validação de cada
+SDK — invalid_request / **não** retryable:
+
+| Go | Python | TypeScript |
+|---|---|---|
+| `*APIError` (clientSide, 400) na PRIMEIRA chamada — `NewMemory` não devolve erro | `AnhurQueryError` na construção (`HTTPConnection`/`Memory`); era `ValueError` só para CRLF | `AnhurQueryError` na construção (`new Memory`); era `Error` só para CRLF |
+
+Mensagens byte-idênticas nos três (`INVALID_PARAM: tenant_id contains an invalid
+character — allowed: letters, digits, '-' and '_'` / `INVALID_PARAM: tenant_id
+exceeds 64 characters (got N)`). Antes, Go descartava o header em silêncio e o
+servidor (chave mestra) caía no tenant `default` — outro store, sem erro.
+
 ## Testes que provam o contrato
 
 Um por SDK, tabela única, sem servidor:

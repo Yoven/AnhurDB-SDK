@@ -317,6 +317,12 @@ library stores (session may be empty) and fills `result.legs`;
 library store throws `AnhurLibraryDeletePartialError` with `.legs`; retrying the
 same call is safe (idempotent).
 
+When nothing matched (`matched_count === 0`), `result.alternative_sessions`
+lists the sessions of the same store that DO hold that prefix
+(`FileSessionCandidate { session_uuid, matched_count, root_checksum?, root_filename? }`)
+— check `root_checksum` and re-issue `deleteFile` with the right session.
+`raft_index` is deprecated and always absent (the server never sends it).
+
 ### Query Builder (AST)
 
 Structured filtering via `POST /api/v1/query`. Use `QueryBuilder` to compile an AST, then `Memory.query()` or `.execute()`:
@@ -370,7 +376,7 @@ request was sent.
 | `apiKey`   | `string` | *required*                  | Your AnhurDB API key            |
 | `url`      | `string` | `https://anhurdb.yoven.ai`  | Server URL                      |
 | `userId`   | `string` | derived from apiKey hash    | User/agent identifier           |
-| `tenantId` | `string` | —                           | Tenant ID (multi-tenant setups) |
+| `tenantId` | `string` | —                           | Tenant ID (multi-tenant setups); `[A-Za-z0-9_-]`, ≤ 64, else the constructor throws `AnhurQueryError` |
 
 ### Methods Summary
 

@@ -114,6 +114,21 @@ there too; no SDK method exists) and gRPC (no SDK has a gRPC transport; the
 server's `UpdateRecordRequest.scope=14`, `DeleteRecordRequest.scope=2`,
 `SupersedeRequest.scope=3`, and the read requests' `scope=11` are for a future one).
 
+## Delete-by-file answer + tenant id input (2026-11-20, fix/sdk-audit-gaps)
+
+| Topic | Go / Python / TypeScript |
+|---|---|
+| `alternative_sessions` | `DeleteFileResult.AlternativeSessions []FileSessionCandidate` / `.alternative_sessions: List[FileSessionCandidate]` (default `[]`) / `.alternative_sessions?: FileSessionCandidate[]`. Element `{session_uuid, matched_count, root_checksum?, root_filename?}` = server `database.FileSessionCandidate` (`server/database/file_record_sessions.go:38-48`). Filled only when `matched_count == 0`: absent/empty = prefix not in this store; non-empty = wrong session (re-issue the strict delete with a candidate after checking `root_checksum`) |
+| `raft_index` | **Deprecated, always 0/absent** in all three — the server never serialises it (`json:"-"`, `server/service/record_delete_file.go:42`). Kept (not removed) because removal breaks compile (Go field, TS property) / attribute access (Python); removed in the next major |
+| Tenant id rule | Server identifier rule (`database.validateIdentifierCharset` + `MaxIdentifierLength`): `[A-Za-z0-9_-]`, ≤ 64; empty = not set. Charset checked before length |
+| Tenant id refusal | Typed validation error, invalid_request / non-retryable, no request sent: Go `*APIError` (clientSide, 400) from the FIRST call (`NewMemory` has no error return; checked per request because `HTTPConnection.TenantID` is exported); Python `AnhurQueryError` from `HTTPConnection`/`Memory` construction; TypeScript `AnhurQueryError` from `new Memory`/`HttpClient`. Messages pinned byte-identical: `INVALID_PARAM: tenant_id contains an invalid character — allowed: letters, digits, '-' and '_'` and `INVALID_PARAM: tenant_id exceeds 64 characters (got N)` |
+
+Why reject instead of the old behaviours (Go silently dropped the header, Python
+and TS only blocked control characters): the server's master-key path STRIPS
+every other character and falls back to `default` when nothing is left
+(`server/middleware/auth_master_tenant.go`, `sanitizeTenant`), so both a dropped
+header and `acme/prod` → `acmeprod` acted on another tenant's store with no error.
+
 ## Known parity gaps
 
 Deviations from this contract are bugs (see Principles). These are the open ones,

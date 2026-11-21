@@ -115,7 +115,7 @@ Memory(
     api_key="anhur_xxx",       # Required (or set ANHUR_API_KEY env)
     url="https://anhurdb.yoven.ai",  # Open Beta data plane (default)
     user_id="user-123",        # Optional explicit container tag
-    tenant_id="tenant-a",      # Optional multi-tenant header
+    tenant_id="tenant-a",      # Optional X-Tenant-ID: [A-Za-z0-9_-], <= 64, else AnhurQueryError
     mode="rest",               # "rest" (default) or "mcp" (tunnel)
     timeout=30.0,              # Per-request budget in SECONDS (default 30.0)
 )
@@ -236,6 +236,12 @@ stores (the session may be empty) and fills `DeleteFileResult.legs`;
 `scope="client_shared"` targets the client library. A failure in one library
 store raises `AnhurLibraryDeletePartialError` with `.legs` (every leg); retrying
 the same call is safe (idempotent).
+
+When nothing matched (`matched_count == 0`), `DeleteFileResult.alternative_sessions`
+lists the sessions of the same store that DO hold that prefix
+(`FileSessionCandidate(session_uuid, matched_count, root_checksum, root_filename)`)
+— check `root_checksum` and re-issue `delete_file` with the right session.
+`raft_index` is deprecated and always 0 (the server never sends it).
 
 ### Session Management
 

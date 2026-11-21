@@ -17,7 +17,7 @@ makes them the only piece that can be tested without a server.
 import re
 from typing import Any, Dict, Sequence, Tuple, Union
 
-from .exceptions import AnhurError
+from .exceptions import AnhurError, AnhurQueryError
 
 # Query-string arguments accepted by the read verbs.
 #
@@ -44,6 +44,43 @@ _HEADER_SAFE = re.compile(r"^[\x20-\x7E]+$")
 # HTTP 400 "failed to parse multipart form". REST JSON bodies still get the
 # correct type via the ``json=`` kwarg on ``session.request``.
 
+
+# The server's identifier rule (AnhurDB database.validateIdentifierCharset and
+# database.MaxIdentifierLength): letters, digits, '-' and '_', at most 64.
+_TENANT_ID_CHARSET = re.compile(r"^[A-Za-z0-9_-]*$")
+MAX_TENANT_ID_LENGTH = 64
+
+
+def validate_tenant_id(tenant_id: str) -> None:
+    """Refuse a tenant id the server would silently rewrite. ``""`` = not set.
+
+    Charset is checked before length so the "(got N)" count is always an ASCII
+    count — the message is a pinned cross-SDK string (Go and TypeScript raise it
+    byte-for-byte).
+
+    Junior Tip [reject, never repair]: the server's master-key path SANITIZES
+    ``X-Tenant-ID`` (strips every other character) and falls back to the
+    ``default`` tenant when nothing is left, so ``"acme/prod"`` would silently act
+    on tenant ``acmeprod`` — another store, no error anywhere. Refusing here,
+    before any request, is the only point where the mistake is cheap.
+
+    Raises:
+        AnhurQueryError: HTTP-400-classified (invalid_request, not retryable).
+    """
+    if not tenant_id:
+        return
+    if not _TENANT_ID_CHARSET.match(tenant_id):
+        raise AnhurQueryError(
+            "INVALID_PARAM: tenant_id contains an invalid character — "
+            "allowed: letters, digits, '-' and '_'",
+            status_code=400,
+        )
+    if len(tenant_id) > MAX_TENANT_ID_LENGTH:
+        raise AnhurQueryError(
+            f"INVALID_PARAM: tenant_id exceeds {MAX_TENANT_ID_LENGTH} characters "
+            f"(got {len(tenant_id)})",
+            status_code=400,
+        )
 
 def validate_header_value(value: str, name: str) -> None:
     """Validate a string is safe to use as an HTTP header value.
