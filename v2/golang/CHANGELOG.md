@@ -18,6 +18,14 @@ Python and TypeScript (all three at 4.0.0). Server evidence is AnhurDB `main`
 - **`GET /api/v1/profile` 404 fallback removed.** `Profile` no longer returns an
   empty "OSS mode" profile on 404; the route is mounted unconditionally
   (`server/router.go:136`), so a 404 surfaces as `ErrNotFound`.
+- **Upload mode refusal.** An unknown upload mode (after trim + lower-case) is the typed invalid_request error, raised before any request, with one message in all three: `INVALID_PARAM: upload: mode '<value as given>' is not an upload mode (want chat|tenant_shared|client_shared)`.
+- **Delete-by-file empty arguments.** A missing session (outside `tenant_shared`) or ingest-key prefix is the typed invalid_request error (status 400, not retryable, no request sent), message `INVALID_PARAM: <method>: <argument> is required`.
+- **404 message.** Every HTTP 404 reads `Resource not found (HTTP 404): <path>` (API path, no base URL, no query), kind `not_found`, in all three.
+- **L2 409 messages.** The tenant-library collision and the ambiguous upload status quote at most 500 characters of the server sentence in the message; the full sentence stays on the error object.
+- **Parity nits (audit rows 19-21).** Go changes:
+  - 404 is now `*NotFoundError{Status, Path}` (`StatusCode()`, `Kind() == KindNotFound`, `Retryable() == false`) instead of the bare `ErrNotFound`; `errors.Is(err, ErrNotFound)` still matches through `Unwrap`, but `err == ErrNotFound` is now false. `Error()` changed from `resource not found` to the shared message.
+  - `TenantLibraryCollisionError.Error()` and `UploadStatusAmbiguousError.Error()` excerpt `ServerMessage` to 500 characters (field unchanged).
+  - `DeleteFile` empty `sessionUUID` / `ingestKeyPrefix` and `UploadFile` unknown mode return the client-side `*APIError` (400) instead of `fmt.Errorf`; messages `INVALID_PARAM: DeleteFile: sessionUUID is required`, `INVALID_PARAM: DeleteFile: ingestKeyPrefix is required` (upload message below).
 - **Session-record-limit message.** `SessionRecordLimitError.Error()` changed from `AnhurDB API error (HTTP 409): ...` to the shared layout below (other `*APIError` messages keep the Go `AnhurDB API error (HTTP N): <body>` format). The wire body is now decoded with pointers, so a missing/null/mistyped `limit`, `count` or `session_uuid` is a generic 409 `*APIError` instead of a typed refusal holding 0. Shared layout:
   `Conflict (HTTP 409): <server error, first 500 characters> (session record limit: session=<uuid>, limit=N, count=M)`.
 

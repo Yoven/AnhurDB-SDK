@@ -79,7 +79,9 @@ class DeleteFileMixin:
             a contagem real, para que "apaguei 0" nunca se disfarce de sucesso.
 
         Raises:
-            ValueError:      If either argument is empty/blank (fails locally,
+            AnhurQueryError: (status 400, ``kind == "invalid_request"``) if
+                             either argument is empty/blank or the scope is
+                             not a delete-by-file plane (fails locally,
                              without a round trip); the session may be blank
                              only with ``scope="tenant_shared"``.
             AnhurLibraryDeletePartialError: HTTP 500 ``partial: true`` — one
@@ -112,10 +114,15 @@ class DeleteFileMixin:
             )
         trimmed_session_uuid = (session_uuid or "").strip()
         if not trimmed_session_uuid and delete_scope != SCOPE_TENANT_SHARED:
-            raise ValueError("delete_file: session_uuid is required")
+            raise AnhurQueryError(
+                "INVALID_PARAM: delete_file: session_uuid is required", status_code=400
+            )
         trimmed_ingest_key_prefix = (ingest_key_prefix or "").strip()
         if not trimmed_ingest_key_prefix:
-            raise ValueError("delete_file: ingest_key_prefix is required")
+            raise AnhurQueryError(
+                "INVALID_PARAM: delete_file: ingest_key_prefix is required",
+                status_code=400,
+            )
 
         delete_params: Dict[str, str] = {
             "ingest_key_prefix": trimmed_ingest_key_prefix,

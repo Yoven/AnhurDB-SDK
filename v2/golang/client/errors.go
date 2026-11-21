@@ -64,6 +64,40 @@ func (e *UnsupportedOptionError) Error() string {
 // Unwrap lets errors.Is(err, ErrUnsupportedOption) match every instance.
 func (e *UnsupportedOptionError) Unwrap() error { return ErrUnsupportedOption }
 
+// NotFoundError is the HTTP 404 answer: the route or the resource does not
+// exist. Path is the API path that was requested (no base URL, no query).
+//
+// Junior Tip [why a type and not the bare sentinel, 2026-11-21]: the bare
+// ErrNotFound carried no status and no path, so a log line said "resource not
+// found" without saying WHICH request — while Python and TypeScript printed
+// "Resource not found (HTTP 404): <path>". The message is now byte-identical
+// in the three SDKs, and Unwrap keeps errors.Is(err, ErrNotFound) true, so
+// every caller that branched on the sentinel (upload wait grace, the plugin's
+// delivery retry, add's /ingest 404) keeps working unchanged. Never compare
+// with == ErrNotFound: that was never the contract and now it is false.
+type NotFoundError struct {
+	// Status is the HTTP status the server used (always 404).
+	Status int
+	// Path is the requested API path, quoted in Error().
+	Path string
+}
+
+func (notFoundErr *NotFoundError) Error() string {
+	return fmt.Sprintf("Resource not found (HTTP %d): %s", notFoundErr.Status, notFoundErr.Path)
+}
+
+// Unwrap lets errors.Is(err, ErrNotFound) match every *NotFoundError.
+func (notFoundErr *NotFoundError) Unwrap() error { return ErrNotFound }
+
+// StatusCode returns the HTTP status the server used (404).
+func (notFoundErr *NotFoundError) StatusCode() int { return notFoundErr.Status }
+
+// Kind is not_found.
+func (notFoundErr *NotFoundError) Kind() ErrorKind { return KindFor(notFoundErr.Status) }
+
+// Retryable is false: the same path is missing on the next call too.
+func (notFoundErr *NotFoundError) Retryable() bool { return false }
+
 // APIError wraps an HTTP status code with the response body for debugging.
 type APIError struct {
 	StatusCode int

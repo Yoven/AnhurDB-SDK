@@ -18,6 +18,11 @@ the same things in the same release.
 - **`GET /api/v1/profile` 404 fallback removed.** `profile()` no longer returns an
   empty "OSS mode" profile on 404; the route is mounted unconditionally
   (`server/router.go:136`), so a 404 surfaces as `AnhurError` with `statusCode === 404`.
+- **Upload mode refusal.** An unknown upload mode (after trim + lower-case) is the typed invalid_request error, raised before any request, with one message in all three: `INVALID_PARAM: upload: mode '<value as given>' is not an upload mode (want chat|tenant_shared|client_shared)`.
+- **Delete-by-file empty arguments.** A missing session (outside `tenant_shared`) or ingest-key prefix is the typed invalid_request error (status 400, not retryable, no request sent), message `INVALID_PARAM: <method>: <argument> is required`.
+- **404 message.** Every HTTP 404 reads `Resource not found (HTTP 404): <path>` (API path, no base URL, no query), kind `not_found`, in all three.
+- **L2 409 messages.** The tenant-library collision and the ambiguous upload status quote at most 500 characters of the server sentence in the message; the full sentence stays on the error object.
+- **Parity nits (audit rows 18-21).** TypeScript changes: `uploadFile` trims and lower-cases `options.mode` and throws on an unknown value (from plain JS, `"Chat"` used to send no mode and land in tenant_shared while `scope` reported another plane); `deleteFile` empty `sessionUuid` / `ingestKeyPrefix` throws `AnhurQueryError` (400, `invalid_request`) instead of a plain `Error`. Messages `INVALID_PARAM: deleteFile: sessionUuid is required`, `INVALID_PARAM: deleteFile: ingestKeyPrefix is required` (upload message below). 404 and L2 409 messages were already in the shared form.
 - **Session-record-limit message.** already used the shared layout below; a body whose `limit`/`count`/`session_uuid` is missing or mistyped stays the generic 409. Shared layout:
   `Conflict (HTTP 409): <server error, first 500 characters> (session record limit: session=<uuid>, limit=N, count=M)`.
 

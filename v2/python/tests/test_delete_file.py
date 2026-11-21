@@ -156,11 +156,17 @@ async def test_delete_file_local_validation_never_hits_the_server(
     runner, base_url = await _start_server(handle)
     try:
         async with Memory(api_key="test-key", url=base_url) as mem:
-            with pytest.raises(ValueError):
+            with pytest.raises(AnhurQueryError) as refusal:
                 await mem.delete_file(session_uuid, ingest_key_prefix)
     finally:
         await runner.cleanup()
 
+    # Typed invalid_request, same shape as Go/TS: INVALID_PARAM: <method>: <argument> is required.
+    assert refusal.value.status_code == 400
+    assert refusal.value.kind == "invalid_request"
+    assert refusal.value.retryable is False
+    expected_argument = "session_uuid" if not session_uuid.strip() else "ingest_key_prefix"
+    assert str(refusal.value) == f"INVALID_PARAM: delete_file: {expected_argument} is required"
     assert server_was_called["hit"] is False
 
 

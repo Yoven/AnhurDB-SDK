@@ -63,8 +63,9 @@ export abstract class MemoryFilesApi extends MemoryRecordsApi {
    * @param sessionUuid     - Session that owns the file's records.
    * @param ingestKeyPrefix - The file's `<checksum16>` identity.
    * @param options         - `{ dryRun }` — count only, write nothing.
-   * @throws Error when either argument is empty/blank (fails locally, without a
-   *         round trip).
+   * @throws AnhurQueryError (400, kind `invalid_request`) when either argument
+   *         is empty/blank or the scope is not a delete-by-file plane (fails
+   *         locally, without a round trip).
    *
    * @example
    * ```ts
@@ -93,11 +94,11 @@ export abstract class MemoryFilesApi extends MemoryRecordsApi {
     }
     const trimmedSessionUuid = (sessionUuid ?? "").trim();
     if (!trimmedSessionUuid && deleteScope !== "tenant_shared") {
-      throw new Error("deleteFile: sessionUuid is required");
+      throw new AnhurQueryError("INVALID_PARAM: deleteFile: sessionUuid is required", 400);
     }
     const trimmedIngestKeyPrefix = (ingestKeyPrefix ?? "").trim();
     if (!trimmedIngestKeyPrefix) {
-      throw new Error("deleteFile: ingestKeyPrefix is required");
+      throw new AnhurQueryError("INVALID_PARAM: deleteFile: ingestKeyPrefix is required", 400);
     }
 
     const deleteParams: Record<string, string> = {
@@ -122,6 +123,8 @@ export abstract class MemoryFilesApi extends MemoryRecordsApi {
    * @param content   - Raw file bytes (`Uint8Array` / `Buffer`) or UTF-8 text.
    * @param options   - Chat: `{ sessionId, linkedEpisodicId }` (both required).
    *                    Shared: `{ mode: "tenant_shared" | "client_shared" }`.
+   *                    `mode` is trimmed and lower-cased; any other value throws
+   *                    `AnhurQueryError` (400, `invalid_request`) before sending.
    *
    * Chat uploads hang the file as a sub-tree of the episodic and set `has_file=true`.
    *
@@ -148,9 +151,22 @@ export abstract class MemoryFilesApi extends MemoryRecordsApi {
       blobParts = [content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer];
     }
     form.append("file", new Blob(blobParts), filename);
-    let mode = options?.mode;
+    // Junior Tip [why the mode is normalised at runtime, 2026-11-21]: the
+    // union type only protects TypeScript callers; from plain JS "Chat" or
+    // " client_shared " used to fall through both branches, send NO mode, and
+    // the server filed the upload in tenant_shared while `scope` below
+    // reported another plane. Go and Python trim + lower-case and refuse an
+    // unknown value; this does the same, with the same typed error.
+    let mode = String(options?.mode ?? "").trim().toLowerCase();
     if (options?.sessionId && !mode) {
       mode = "chat";
+    }
+    if (mode && mode !== "chat" && mode !== "tenant_shared" && mode !== "client_shared") {
+      throw new AnhurQueryError(
+        `INVALID_PARAM: upload: mode '${String(options?.mode)}' is not an upload mode ` +
+          "(want chat|tenant_shared|client_shared)",
+        400,
+      );
     }
     if (mode === "chat") {
       if (!options?.sessionId) {

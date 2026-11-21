@@ -267,7 +267,7 @@ class TestRecordScope(AioHTTPTestCase):
             for bad_scope in ("sessions", "tenant_shared_legacy", "shared_all"):
                 with self.assertRaises(AnhurQueryError):
                     await client.delete_file("s1", "ef9976f1ef5d5176", scope=bad_scope)
-            with self.assertRaises(ValueError):
+            with self.assertRaises(AnhurQueryError):
                 await client.delete_file("", "ef9976f1ef5d5176", scope="client_shared")
 
     @unittest_run_loop

@@ -20,7 +20,10 @@ import (
 //   - Response body is capped at maxResponseSize (100 MB).
 //   - Error messages never include the API key.
 //   - Redirect responses (3xx) are treated as errors.
-func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
+//
+// requestPath is the API path WITHOUT base URL or query string; it is quoted
+// only in the 404 message, exactly as Python and TypeScript quote it.
+func (c *HTTPConnection) handleResponse(resp *http.Response, requestPath string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	// SECURITY: Cap response body to prevent memory exhaustion.
@@ -40,7 +43,9 @@ func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		return nil, ErrUnauthorized
 	case resp.StatusCode == 404:
-		return nil, ErrNotFound
+		// Typed so the status and path survive; errors.Is(err, ErrNotFound)
+		// still matches through NotFoundError.Unwrap (errors.go).
+		return nil, &NotFoundError{Status: resp.StatusCode, Path: requestPath}
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		// Redirect responses — blocked for security.
 		return nil, fmt.Errorf(

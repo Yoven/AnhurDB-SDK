@@ -190,11 +190,11 @@ func (m *Memory) DeleteFile(
 
 	trimmedSessionUUID := strings.TrimSpace(sessionUUID)
 	if trimmedSessionUUID == "" && deleteScope != RecordScopeTenantShared {
-		return nil, fmt.Errorf("DeleteFile: sessionUUID is required")
+		return nil, newValidationError("INVALID_PARAM: DeleteFile: sessionUUID is required")
 	}
 	trimmedIngestKeyPrefix := strings.TrimSpace(ingestKeyPrefix)
 	if trimmedIngestKeyPrefix == "" {
-		return nil, fmt.Errorf("DeleteFile: ingestKeyPrefix is required")
+		return nil, newValidationError("INVALID_PARAM: DeleteFile: ingestKeyPrefix is required")
 	}
 
 	params := url.Values{}

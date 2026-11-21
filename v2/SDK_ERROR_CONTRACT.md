@@ -261,6 +261,23 @@ character — allowed: letters, digits, '-' and '_'` / `INVALID_PARAM: tenant_id
 exceeds 64 characters (got N)`). Antes, Go descartava o header em silêncio e o
 servidor (chave mestra) caía no tenant `default` — outro store, sem erro.
 
+## Alinhamentos de 2026-11-21 (auditoria de paridade, linhas 18-21)
+
+| Caso | Go | Python | TypeScript | kind / retryable |
+|---|---|---|---|---|
+| HTTP 404 | `*NotFoundError{Status, Path}`; `errors.Is(err, ErrNotFound)` continua verdadeiro (era o sentinela nu, sem status nem caminho) | `AnhurQueryError(status_code=404)` | `AnhurQueryError` (`statusCode === 404`) | not_found / false |
+| `upload` com modo desconhecido (após trim + minúsculas) | `*APIError` clientSide 400 (era `fmt.Errorf`) | `AnhurQueryError(400)` (era `ValueError`) | `AnhurQueryError(400)` (antes o modo era enviado sem normalizar e um valor desconhecido era descartado em silêncio) | invalid_request / false |
+| delete-by-file sem sessão (fora de `tenant_shared`) ou sem prefixo | `*APIError` clientSide 400 (era `fmt.Errorf`) | `AnhurQueryError(400)` (era `ValueError`) | `AnhurQueryError(400)` (era `Error`) | invalid_request / false |
+
+Mensagens: 404 = `Resource not found (HTTP 404): <caminho da API, sem base URL nem query>`,
+idêntica nos três. Modo = `INVALID_PARAM: upload: mode '<valor como recebido>' is not an
+upload mode (want chat|tenant_shared|client_shared)`, idêntica nos três. Delete =
+`INVALID_PARAM: <método>: <argumento> is required` com o nome de cada SDK
+(`DeleteFile`/`sessionUUID`, `delete_file`/`session_uuid`, `deleteFile`/`sessionUuid`),
+como a recusa de escopo do mesmo método. As duas recusas L2 409 (colisão, upload
+ambíguo) citam no máximo 500 caracteres da frase do servidor na mensagem — Go passou a
+cortar também; o campo `ServerMessage`/`server_message` continua com a frase inteira.
+
 ## Testes que provam o contrato
 
 Um por SDK, tabela única, sem servidor:
@@ -278,6 +295,7 @@ Um por SDK, tabela única, sem servidor:
 
 11. 2xx fora do envelope nas oito rotas de listagem → `UnexpectedResponseError` com a mensagem idêntica; `"<chave>": null` → lista vazia (`envelope_only_test.go`, `test_envelope_rule.py`, `envelope_rule.test.ts`)
 12. `profile()` com 404 → erro `not_found`, nunca perfil vazio (`profile_tag_test.go`, `test_http_mock.py`, `http_error_status.test.ts`)
+13. Alinhamentos 2026-11-21: 404 com a mensagem compartilhada (e `errors.Is(err, ErrNotFound)` em Go), modo de upload desconhecido e argumentos vazios do delete-by-file como invalid_request sem request, excerto de 500 caracteres nas recusas L2 (`parity_nits_test.go`, `test_parity_nits.py` + `test_delete_file.py`, `parity_nits.test.ts` + `delete_file.test.ts`)
 
 O teste 8 é o que impede que "melhorar as mensagens de erro" vire vazamento de
 topologia. O servidor já retém esse corpo; o SDK não pode reintroduzi-lo por

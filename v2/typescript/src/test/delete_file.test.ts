@@ -150,14 +150,18 @@ describe("Memory.deleteFile (local validation)", () => {
   it("rejects an empty sessionUuid", async () => {
     const error = await rejectAnyNetworkCall((mem) =>
       mem.deleteFile("", "ef9976f1ef5d5176"));
-    assert.ok(error instanceof Error);
-    assert.equal((error as Error).message, "deleteFile: sessionUuid is required");
+    // Typed invalid_request, same shape as Go/Python (2026-11-21).
+    assert.ok(error instanceof AnhurQueryError);
+    assert.equal((error as AnhurQueryError).statusCode, 400);
+    assert.equal((error as AnhurQueryError).kind, "invalid_request");
+    assert.equal((error as AnhurQueryError).retryable, false);
+    assert.equal((error as Error).message, "INVALID_PARAM: deleteFile: sessionUuid is required");
   });
 
   it("rejects a blank sessionUuid", async () => {
     const error = await rejectAnyNetworkCall((mem) =>
       mem.deleteFile("   ", "ef9976f1ef5d5176"));
-    assert.equal((error as Error).message, "deleteFile: sessionUuid is required");
+    assert.equal((error as Error).message, "INVALID_PARAM: deleteFile: sessionUuid is required");
   });
 
   it("rejects an empty ingestKeyPrefix", async () => {
@@ -165,7 +169,7 @@ describe("Memory.deleteFile (local validation)", () => {
       mem.deleteFile("chat-42", ""));
     assert.equal(
       (error as Error).message,
-      "deleteFile: ingestKeyPrefix is required",
+      "INVALID_PARAM: deleteFile: ingestKeyPrefix is required",
     );
   });
 
@@ -174,7 +178,7 @@ describe("Memory.deleteFile (local validation)", () => {
       mem.deleteFile("chat-42", "\t"));
     assert.equal(
       (error as Error).message,
-      "deleteFile: ingestKeyPrefix is required",
+      "INVALID_PARAM: deleteFile: ingestKeyPrefix is required",
     );
   });
 });

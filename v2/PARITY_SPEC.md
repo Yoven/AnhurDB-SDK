@@ -63,7 +63,7 @@ removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose
 | create_session | `CreateSession` / `create_session` / `createSession` | `POST /api/v1/sessions` (required before writes). Omit id → server generates |
 | open_session | `OpenSession` / `open_session` / `openSession` | Local generate + register (`new_session` then `create_session`) |
 | new_session | `NewSession` / `new_session` / `newSession` | Client-side id rotation only — does **not** register; writes fail until create/open_session |
-| upload_file | `UploadFile` / `upload_file` / `uploadFile` | `POST /api/v1/upload` |
+| upload_file | `UploadFile` / `upload_file` / `uploadFile` | `POST /api/v1/upload` — `mode` is trimmed and lower-cased in all three; an unknown value is the typed invalid_request error, no request sent (see `SDK_ERROR_CONTRACT.md`, 2026-11-21) |
 | upload_status | `UploadStatus` / `upload_status` / `uploadStatus` | `GET /api/v1/upload/{id}/status` |
 | wait_for_upload | `WaitForUpload` / `wait_for_upload` / `waitForUpload` | polling client-side sobre upload_status — sem rota própria |
 | list_entities | `ListEntities` / `list_entities` / `listEntities` | `GET /api/v1/entities/list` |
@@ -123,6 +123,7 @@ server's `UpdateRecordRequest.scope=14`, `DeleteRecordRequest.scope=2`,
 | `alternative_sessions` | `DeleteFileResult.AlternativeSessions []FileSessionCandidate` / `.alternative_sessions: List[FileSessionCandidate]` (default `[]`) / `.alternative_sessions?: FileSessionCandidate[]`. Element `{session_uuid, matched_count, root_checksum?, root_filename?}` = server `database.FileSessionCandidate` (`server/database/file_record_sessions.go:38-48`). Filled only when `matched_count == 0`: absent/empty = prefix not in this store; non-empty = wrong session (re-issue the strict delete with a candidate after checking `root_checksum`) |
 | `purge` | `DeleteFileResult.Purge bool` / `.purge: bool` (default `False`) / `.purge?: boolean`. Server `json:"purge"`, always sent: `true` = gone for good (shared plane), `false` = restorable tombstone (chat plane) |
 | `raft_index` | **Removed in 4.0.0** from all three — the server never serialises it (`json:"-"`, `server/service/record_delete_file.go:42`) |
+| Empty arguments | Missing session (outside `tenant_shared`) or ingest-key prefix: typed validation error, invalid_request / non-retryable, no request sent — Go `*APIError` (clientSide, 400), Python `AnhurQueryError(400)`, TypeScript `AnhurQueryError(400)`; message `INVALID_PARAM: <method>: <argument> is required` (since 2026-11-21; was `fmt.Errorf` / `ValueError` / `Error`) |
 | Tenant id rule | Server identifier rule (`database.validateIdentifierCharset` + `MaxIdentifierLength`): `[A-Za-z0-9_-]`, ≤ 64; empty = not set. Charset checked before length |
 | Tenant id refusal | Typed validation error, invalid_request / non-retryable, no request sent: Go `*APIError` (clientSide, 400) from the FIRST call (`NewMemory` has no error return; checked per request because `HTTPConnection.TenantID` is exported); Python `AnhurQueryError` from `HTTPConnection`/`Memory` construction; TypeScript `AnhurQueryError` from `new Memory`/`HttpClient`. Messages pinned byte-identical: `INVALID_PARAM: tenant_id contains an invalid character — allowed: letters, digits, '-' and '_'` and `INVALID_PARAM: tenant_id exceeds 64 characters (got N)` |
 
@@ -304,8 +305,10 @@ Contrato (defaults iguais nos três: timeout 120s, interval 5s, grace 30s):
   loop É o retry.
 
 Suporte: os erros HTTP dos três SDKs carregam o status estruturado
-(Go `ErrNotFound` tipado; Python `AnhurError.status_code`; TS
-`AnhurError.statusCode`) — nunca parsear a mensagem.
+(Go `*NotFoundError` com `Status`/`Path`, casado por `errors.Is(err, ErrNotFound)`;
+Python `AnhurError.status_code`; TS `AnhurError.statusCode`) — nunca parsear a
+mensagem. Desde 2026-11-21 a mensagem do 404 é a mesma nos três:
+`Resource not found (HTTP 404): <caminho>`.
 
 ## Where()/where(): per-column operator accumulation (2026-09-14)
 

@@ -141,7 +141,7 @@ func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values
 		return nil, newTransportError(req.Method+" "+path, err)
 	}
 
-	return c.handleResponse(resp)
+	return c.handleResponse(resp, path)
 }
 
 // Post sends a POST request with a JSON-encoded body.
@@ -187,7 +187,7 @@ func (c *HTTPConnection) PostMultipart(
 	if doErr != nil {
 		return nil, newTransportError(req.Method+" "+path, doErr)
 	}
-	return c.handleResponse(resp)
+	return c.handleResponse(resp, path)
 }
 
 // PostRead sends a POST request for a READ-shaped endpoint (e.g.
@@ -218,7 +218,7 @@ func (c *HTTPConnection) post(ctx context.Context, path string, body interface{}
 		return nil, newTransportError(req.Method+" "+path, err)
 	}
 
-	return c.handleResponse(resp)
+	return c.handleResponse(resp, path)
 }
 
 // Patch sends a PATCH request with a JSON-encoded body.
@@ -244,7 +244,7 @@ func (c *HTTPConnection) Patch(ctx context.Context, path string, body interface{
 		return nil, newTransportError(req.Method+" "+path, err)
 	}
 
-	return c.handleResponse(resp)
+	return c.handleResponse(resp, path)
 }
 
 // Delete sends a DELETE request to the given path and discards the body.
@@ -283,5 +283,5 @@ func (c *HTTPConnection) DeleteWithParams(ctx context.Context, path string, para
 		return nil, newTransportError(req.Method+" "+path, doErr)
 	}
 
-	return c.handleResponse(resp)
+	return c.handleResponse(resp, path)
 }

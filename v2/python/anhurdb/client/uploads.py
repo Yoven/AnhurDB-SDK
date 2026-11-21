@@ -95,9 +95,12 @@ class UploadMixin:
         elif resolved_mode in ("tenant_shared", "client_shared"):
             extra["mode"] = resolved_mode
         elif resolved_mode:
-            raise ValueError(
-                f"invalid mode {mode!r} "
-                "(want chat|tenant_shared|client_shared)"
+            # Typed invalid_request (no request sent), message byte-identical
+            # to Go UploadFile and TypeScript uploadFile.
+            raise AnhurQueryError(
+                f"INVALID_PARAM: upload: mode '{mode}' is not an upload mode "
+                "(want chat|tenant_shared|client_shared)",
+                status_code=400,
             )
         data = await self._connection.post_multipart(
             "/api/v1/upload",

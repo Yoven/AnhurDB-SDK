@@ -66,7 +66,7 @@ type TenantLibraryCollisionError struct {
 
 func (collisionErr *TenantLibraryCollisionError) Error() string {
 	return fmt.Sprintf("AnhurDB refused the tenant library (HTTP %d): %s (not retryable: rename one of the two tenants)",
-		collisionErr.Status, collisionErr.ServerMessage)
+		collisionErr.Status, truncateErrorBody(collisionErr.ServerMessage))
 }
 
 // Unwrap lets errors.Is(err, ErrTenantLibraryCollision) and errors.As(err, **APIError) match.
@@ -93,7 +93,7 @@ type UploadStatusAmbiguousError struct {
 }
 
 func (ambiguousErr *UploadStatusAmbiguousError) Error() string {
-	return fmt.Sprintf("Conflict (HTTP 409): %s (pass WithRecordScope(UploadResult.Scope))", ambiguousErr.ServerMessage)
+	return fmt.Sprintf("Conflict (HTTP 409): %s (pass WithRecordScope(UploadResult.Scope))", truncateErrorBody(ambiguousErr.ServerMessage))
 }
 
 // Unwrap lets errors.Is(err, ErrUploadStatusAmbiguous) and errors.As(err, **APIError) match.

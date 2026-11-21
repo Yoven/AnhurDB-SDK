@@ -65,7 +65,11 @@ func (m *Memory) UploadFile(ctx context.Context, filename string, content []byte
 	case "":
 		// shared default on server when no session — leave fields empty
 	default:
-		return nil, fmt.Errorf("invalid upload mode %q (want chat|tenant_shared|client_shared)", uploadCfg.mode)
+		// Typed invalid_request (no request sent), message byte-identical to
+		// Python upload_file and TypeScript uploadFile.
+		return nil, newValidationError(
+			"INVALID_PARAM: upload: mode '%s' is not an upload mode (want chat|tenant_shared|client_shared)",
+			uploadCfg.mode)
 	}
 
 	respBytes, postErr := m.conn.PostMultipart(ctx, "/api/v1/upload", "file", filename, content, extraFields)
