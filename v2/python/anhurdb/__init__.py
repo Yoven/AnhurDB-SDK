@@ -87,6 +87,7 @@ from .client.exceptions import (
     AnhurTenantLibraryCollisionError,
     AnhurUploadStatusAmbiguousError,
     AnhurLibraryDeletePartialError,
+    AnhurUnexpectedResponseError,
 )
 from .client.record_scope import (
     RECORD_SCOPES,
@@ -188,6 +189,7 @@ __all__ = [
     "AnhurTenantLibraryCollisionError",
     "AnhurUploadStatusAmbiguousError",
     "AnhurLibraryDeletePartialError",
+    "AnhurUnexpectedResponseError",
     "RECORD_SCOPES",
     "SCOPE_SESSIONS",
     "SCOPE_TENANT_SHARED",

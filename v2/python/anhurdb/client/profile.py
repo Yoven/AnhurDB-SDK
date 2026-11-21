@@ -9,7 +9,6 @@ file was already past the 300-line house cut.
 from typing import Optional
 
 from .connection import HTTPConnection
-from .exceptions import AnhurQueryError
 from ..models.profile import ProfileResult
 
 
@@ -26,8 +25,11 @@ class ProfileMixin:
         """Get the memory profile for a container tag (user/agent).
 
         Aggregates the container's memories into identity facts, preferences
-        and aggregate statistics. If the server doesn't support profiles
-        (OSS without agents), returns an empty profile rather than raising.
+        and aggregate statistics. Any HTTP error — a 404 included — is raised:
+        ``GET /api/v1/profile`` is mounted unconditionally
+        (``server/router.go:136``), so 3.x's "404 means OSS, return an empty
+        profile" fallback (which also matched ``"404"`` anywhere in the
+        message text) was removed in 4.0.0.
 
         Args:
             container_tag: User/agent identifier; ``None`` = this Memory's tag.
@@ -65,19 +67,11 @@ class ProfileMixin:
                 "container_tag cannot be empty — GET /api/v1/profile requires "
                 "a tag and answers HTTP 400 without one"
             )
-        try:
-            data = await self._connection.get(
-                "/api/v1/profile",
-                params={"tag": target_tag},
-            )
-            return ProfileResult.model_validate(data if isinstance(data, dict) else {})
-        except AnhurQueryError as exc:
-            # 404 = server doesn't support profiles (OSS mode). An all-default
-            # ProfileResult is the honest answer: the blocks are empty because
-            # nothing computes them, which is exactly what the model says.
-            if "404" in str(exc):
-                return ProfileResult()
-            raise
+        data = await self._connection.get(
+            "/api/v1/profile",
+            params={"tag": target_tag},
+        )
+        return ProfileResult.model_validate(data)
 
 
 __all__ = ["ProfileMixin"]

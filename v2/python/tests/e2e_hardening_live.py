@@ -39,14 +39,15 @@ def check(label, condition, detail=""):
 check.failed = False
 
 
-async def _find_record(client, record_id):
-    """Read a single record's manifest row via the records endpoint."""
-    return await client._connection.get(f"/api/v1/records/{record_id}")
+async def _find_record(mem, record_id):
+    """Read one record back through the public ``Memory.get`` (GET /api/v1/records/{id})."""
+    return await mem.get(record_id)
 
 
 async def test_score_type_persist():
     print("1. add(score, type) persists to DB:")
     async with Memory(api_key=API_KEY, url=BASE_URL, user_id="e2e_hardening") as mem:
+        await mem.create_session()  # writes need a registered session
         result = await mem.add(
             "User strongly prefers dark mode and vim keybindings",
             score=8,
@@ -57,7 +58,7 @@ async def test_score_type_persist():
         check("mode is records (direct /records door)", result.mode == "records",
               f"mode={result.mode}")
 
-        row = await _find_record(mem._client, record_id)
+        row = await _find_record(mem, record_id)
         check("type persisted as 'preference'", row.get("type") == "preference",
               f"type={row.get('type')}")
         check("score persisted as 8", row.get("score") == 8,
@@ -68,13 +69,14 @@ async def test_score_type_persist():
 async def test_metadata_merge():
     print("2. add(metadata=) merges caller metadata + container_tag:")
     async with Memory(api_key=API_KEY, url=BASE_URL, user_id="e2e_hardening") as mem:
+        await mem.create_session()  # writes need a registered session
         result = await mem.add(
             "Project Apollo kickoff notes",
             type=MemoryType.FACT,
             metadata={"project": "apollo", "priority": "high"},
         )
         record_id = result.records[0].id
-        row = await _find_record(mem._client, record_id)
+        row = await _find_record(mem, record_id)
         import json
         meta = json.loads(row.get("metadata", "{}"))
         check("caller key 'project' persisted", meta.get("project") == "apollo",
@@ -100,6 +102,7 @@ async def test_long_content_not_truncated():
     print("4. long (>1000 char) plain-text content round-trips intact:")
     big = "Lorem ipsum dolor sit amet. " * 80  # ~2240 chars
     async with Memory(api_key=API_KEY, url=BASE_URL, user_id="e2e_hardening") as mem:
+        await mem.create_session()  # writes need a registered session
         result = await mem.add(big, type=MemoryType.FACT)
         record_id = result.records[0].id
         content = await mem.read_content(record_id)
@@ -140,7 +143,7 @@ async def test_no_retry_transient_500():
             raised = False
             try:
                 await client._connection.post(
-                    "/api/v1/records", {"uuid": "s1", "summary": "x"}
+                    "/api/v1/records", {"session_id": "s1", "summary": "x"}
                 )
             except AnhurError:
                 raised = True

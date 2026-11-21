@@ -16,7 +16,7 @@ Call ``query()``.
 from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
-from .exceptions import AnhurError
+from .envelope import envelope_list
 from .query_argument import compile_query_argument
 from ..models import MemoryType, Record
 
@@ -99,7 +99,7 @@ class RecordListingMixin:
                 "/api/v1/manifest",
                 params={"limit": str(page_size), "offset": str(offset)},
             )
-            records = data.get("records") if isinstance(data, dict) else None
+            records = envelope_list(data, "/api/v1/manifest", "records")
             if not records:
                 break
             for record_fields in records:
@@ -132,15 +132,9 @@ class RecordListingMixin:
             "/api/v1/recent",
             params={"limit": str(limit)},
         )
-        if not isinstance(data, dict):
-            raise AnhurError(
-                f"recent: GET /api/v1/recent answered {type(data).__name__}, "
-                'not the {"records", "count"} envelope',
-                kind=AnhurError.KIND_SERVER,
-            )
         # Typed Record objects (the FULL record) instead of raw dicts — matches
         # Go/TS recent(), which return the full typed record.
-        records = data.get("records") or []
+        records = envelope_list(data, "/api/v1/recent", "records")
         return [Record(**rec) for rec in records if isinstance(rec, dict)]
 
     def list_types(self) -> List[str]:

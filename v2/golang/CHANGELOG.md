@@ -7,6 +7,20 @@ existed only for an older server is removed. Identical removals ship in Go,
 Python and TypeScript (all three at 4.0.0). Server evidence is AnhurDB `main`
 (`server/`).
 
+### Aligned across the three SDKs (identical behaviour, 2026-11-21)
+
+- **Envelope rule on the eight listing routes.** `ListSessions`, `Recent`, `ManifestGlobal`, `ManifestSession`, `ListChat`, `SearchEntities`, `ListEntities`, `GetRecordEntities` require the JSON
+  object envelope with its list key (`sessions` / `records` / `entities`); the
+  value may be a list or `null` (`null` = zero rows). A bare array, an empty
+  body, a missing key or a non-list value now raises `*UnexpectedResponseError` (`errors.Is(err, ErrUnexpectedResponse)`, `Kind() == KindServer`), new file `client/envelope.go`, message
+  `unexpected response from GET <route template>: expected a JSON object with "<key>"`
+  — byte-identical in all three. 3.x read several of these shapes as "no rows".
+- **`GET /api/v1/profile` 404 fallback removed.** `Profile` no longer returns an
+  empty "OSS mode" profile on 404; the route is mounted unconditionally
+  (`server/router.go:136`), so a 404 surfaces as `ErrNotFound`.
+- **Session-record-limit message.** `SessionRecordLimitError.Error()` changed from `AnhurDB API error (HTTP 409): ...` to the shared layout below (other `*APIError` messages keep the Go `AnhurDB API error (HTTP N): <body>` format). The wire body is now decoded with pointers, so a missing/null/mistyped `limit`, `count` or `session_uuid` is a generic 409 `*APIError` instead of a typed refusal holding 0. Shared layout:
+  `Conflict (HTTP 409): <server error, first 500 characters> (session record limit: session=<uuid>, limit=N, count=M)`.
+
 ### Removed
 
 - **`Memory.UpdateConsolidateIDs`** — deprecated alias of `LinkConsolidated`

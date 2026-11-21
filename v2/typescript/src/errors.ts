@@ -171,3 +171,21 @@ export class AnhurSessionRecordLimitError extends AnhurError {
     this.serverMessage = details.serverMessage;
   }
 }
+
+/** A 2xx answer that is not the route's JSON object envelope (4.0.0).
+ *
+ * Kind `"server"`, no status code. `route` is the route TEMPLATE (e.g.
+ * `/api/v1/chats/{uuid}`) and `key` the list key the envelope must carry. The
+ * message is byte-identical to Go `*UnexpectedResponseError` and Python
+ * `AnhurUnexpectedResponseError`. Rule and routes: `envelope.ts`. */
+export class AnhurUnexpectedResponseError extends AnhurError {
+  readonly route: string;
+  readonly key: string;
+
+  constructor(route: string, key: string) {
+    super(`unexpected response from GET ${route}: expected a JSON object with "${key}"`, undefined, "server");
+    this.name = "AnhurUnexpectedResponseError";
+    this.route = route;
+    this.key = key;
+  }
+}

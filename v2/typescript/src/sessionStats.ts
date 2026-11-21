@@ -24,6 +24,7 @@
 
 import type { HttpClient } from "./client.js";
 import { AnhurError } from "./errors.js";
+import { requireEnvelope } from "./envelope.js";
 
 /**
  * Aggregate stats for a single session — one row of `sessions[]`.
@@ -114,7 +115,8 @@ interface SessionStatsEnvelope {
  * Junior Tip [no bare-array branch, 4.0.0]: this used to also accept a naked
  * `[...]` from deployments that predated the envelope. None exists any more,
  * and a branch nothing can reach is a branch nothing tests. A non-object body
- * is now a contract violation and fails loudly instead of reading as a page.
+ * (or an empty body, or no `sessions` key) is now an
+ * `AnhurUnexpectedResponseError` (`envelope.ts`) instead of reading as a page.
  *
  * @param httpClient - Transport used for the GET calls.
  * @returns Every session in the tenant, in server order.
@@ -135,24 +137,9 @@ export async function fetchAllSessionStats(
       },
     );
 
-    // JSON `null` (or an empty body, which the transport turns into `{}`):
-    // no sessions, and not an error.
-    if (responseBody === null) {
-      return allSessions;
-    }
-    if (typeof responseBody !== "object" || Array.isArray(responseBody)) {
-      throw new AnhurError(
-        "listSessions: GET /api/v1/sessions/stats answered a non-envelope body " +
-          "(expected {sessions, has_more, next_offset})",
-        undefined,
-        "server",
-      );
-    }
-
-    const envelope: SessionStatsEnvelope = responseBody;
-    if (envelope.sessions) {
-      allSessions.push(...envelope.sessions);
-    }
+    const envelope = requireEnvelope<SessionStatsEnvelope>(
+      responseBody, "/api/v1/sessions/stats", "sessions");
+    allSessions.push(...(envelope.sessions ?? []));
     if (envelope.has_more !== true) {
       return allSessions;
     }

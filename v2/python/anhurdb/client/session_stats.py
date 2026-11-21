@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from .envelope import envelope_list
 from .exceptions import AnhurError
 
 # Page size requested for every sessions/stats call.
@@ -96,17 +97,8 @@ async def fetch_all_session_stats(connection: Any) -> List[Dict[str, Any]]:
             },
         )
 
-        if not isinstance(response_body, dict):
-            raise AnhurError(
-                "list_sessions: GET /api/v1/sessions/stats answered "
-                f"{type(response_body).__name__}, not the paged envelope "
-                '{"sessions", "has_more", "next_offset", ...}',
-                kind=AnhurError.KIND_SERVER,
-            )
-
-        page_sessions = response_body.get("sessions")
-        if isinstance(page_sessions, list):
-            all_sessions.extend(page_sessions)
+        page_sessions = envelope_list(response_body, "/api/v1/sessions/stats", "sessions")
+        all_sessions.extend(page_sessions)
 
         if response_body.get("has_more") is not True:
             return all_sessions

@@ -14,7 +14,6 @@
  */
 
 import type { HttpClient } from "./client.js";
-import { AnhurError } from "./errors.js";
 import { emptyProfile, type ProfileResult } from "./profileTypes.js";
 
 /**
@@ -43,44 +42,26 @@ import { emptyProfile, type ProfileResult } from "./profileTypes.js";
  *      `null` would make every caller write a null check for a case the
  *      server considers ordinary.
  *
- * A REAL 404 on the route itself (an OSS build with no profiler) yields the
- * same all-zero profile, deliberately: both answers mean "nothing to show",
- * and neither is a transport failure the caller can act on. Any other status
- * is re-thrown untouched.
- *
- * Junior Tip [branch on the STATUS, never on the message text]: the 404 test
- * below used to read `err.message.includes("404")`. A 500 whose echoed body
- * merely mentioned 404 — a proxy error page, a record id `404`, a stack line —
- * was accepted as "OSS has no profile endpoint", and a genuine server failure
- * was reported to the caller as an empty profile. The status code is the
- * contract; the message is decoration.
+ * Junior Tip [no 404 fallback since 4.0.0]: 3.x turned a 404 on the route
+ * into an all-zero profile ("an OSS build with no profiler"). The route is
+ * mounted unconditionally (`server/router.go:136`), so a 404 is a real
+ * misconfiguration (wrong base URL, a proxy) and is thrown like any other
+ * error. Same in Go and Python.
  *
  * @param httpClient - Transport used for the GET.
  * @param tag        - Container tag to profile. Must already be non-empty.
- * @returns The profile; all-zero when the tag (or the endpoint) is unknown.
- * @throws {AnhurError} Anything that is not a 404 on the route.
+ * @returns The profile; all-zero when the tag is unknown.
+ * @throws {AnhurError} Any HTTP or transport error, a 404 included.
  */
 export async function fetchProfile(
   httpClient: HttpClient,
   tag: string,
 ): Promise<ProfileResult> {
-  try {
-    const data = await httpClient.get<ProfileResult>("/api/v1/profile", { tag });
-    const fallback = emptyProfile();
-    return {
-      static: data.static ?? fallback.static,
-      dynamic: data.dynamic ?? fallback.dynamic,
-      stats: data.stats ?? fallback.stats,
-    };
-  } catch (err: unknown) {
-    // Junior Tip [no invented `tag`/`status` keys — 3.0.0]: this branch used to
-    // bolt `tag` and `status: "not_available"` onto the returned object. The
-    // handler has never emitted either key; only `ProfileResult`'s old open
-    // index signature let them compile. Callers branching on `profile.status`
-    // were branching on an SDK fiction, and the fiction is now unrepresentable.
-    if (err instanceof AnhurError && err.statusCode === 404) {
-      return emptyProfile();
-    }
-    throw err;
-  }
+  const data = await httpClient.get<ProfileResult>("/api/v1/profile", { tag });
+  const emptyBlocks = emptyProfile();
+  return {
+    static: data.static ?? emptyBlocks.static,
+    dynamic: data.dynamic ?? emptyBlocks.dynamic,
+    stats: data.stats ?? emptyBlocks.stats,
+  };
 }

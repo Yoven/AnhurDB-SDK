@@ -2,10 +2,10 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -66,7 +66,7 @@ func TestListSessionsBareArrayIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a bare array must not decode any more, got %+v", sessions)
 	}
-	if !strings.Contains(err.Error(), "parsing sessions response") {
+	if !errors.Is(err, ErrUnexpectedResponse) {
 		t.Fatalf("want the envelope decode error, got: %v", err)
 	}
 }

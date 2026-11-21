@@ -8,7 +8,7 @@
  * 4.0.0; `Memory` extends this class, so the public surface is identical.
  */
 
-import { AnhurError } from "./errors.js";
+import { envelopeList, requireEnvelope } from "./envelope.js";
 import { MemoryLookupApi } from "./lookupApi.js";
 import type {
   ListChatOptions,
@@ -46,16 +46,8 @@ export abstract class MemoryManifestApi extends MemoryLookupApi {
     const params: Record<string, string> = {};
     if (limit !== undefined) params.limit = String(limit);
 
-    const data = await this.searchTransport.get<{ records?: MemoryRecord[] | null }>(
-      "/api/v1/recent", params);
-    if (data === null || typeof data !== "object" || Array.isArray(data)) {
-      throw new AnhurError(
-        "recent: GET /api/v1/recent answered a non-envelope body (expected {records, count})",
-        undefined,
-        "server",
-      );
-    }
-    return data.records ?? [];
+    const data = await this.searchTransport.get<unknown>("/api/v1/recent", params);
+    return envelopeList<MemoryRecord>(data, "/api/v1/recent", "records");
   }
 
   /**
@@ -78,9 +70,10 @@ export abstract class MemoryManifestApi extends MemoryLookupApi {
   async manifestGlobal(
     options?: ManifestGlobalOptions): Promise<ManifestResult> {
     const params = this.buildManifestParams(options);
-    return this.searchTransport.get<ManifestResult>(
+    const data = await this.searchTransport.get<unknown>(
       "/api/v1/manifest",
       Object.keys(params).length > 0 ? params : undefined);
+    return manifestFrom(data, "/api/v1/manifest");
   }
 
   /**
@@ -104,9 +97,10 @@ export abstract class MemoryManifestApi extends MemoryLookupApi {
       throw new Error("manifestSession: sessionUuid is required");
     }
     const params = this.buildManifestParams(options);
-    return this.searchTransport.get<ManifestResult>(
+    const data = await this.searchTransport.get<unknown>(
       `/api/v1/chats/${encodeURIComponent(sessionUuid)}/manifest`,
       Object.keys(params).length > 0 ? params : undefined);
+    return manifestFrom(data, "/api/v1/chats/{uuid}/manifest");
   }
 
   /**
@@ -136,13 +130,12 @@ export abstract class MemoryManifestApi extends MemoryLookupApi {
     }
     if (options?.status) params.status = options.status;
 
-    const data = await this.searchTransport.get<ListChatResult>(
+    const data = await this.searchTransport.get<unknown>(
       `/api/v1/chats/${encodeURIComponent(sessionUuid)}`,
       Object.keys(params).length > 0 ? params : undefined);
-    return {
-      records: data.records ?? [],
-      count: data.count ?? (data.records ?? []).length,
-    };
+    const envelope = requireEnvelope<Partial<ListChatResult>>(data, "/api/v1/chats/{uuid}", "records");
+    const records = envelope.records ?? [];
+    return { records, count: envelope.count ?? records.length };
   }
 
   /**
@@ -239,4 +232,13 @@ export abstract class MemoryManifestApi extends MemoryLookupApi {
     if (options?.until) params.until = options.until;
     return params;
   }
+}
+
+/**
+ * Validate a manifest answer (`envelope.ts`) and coalesce the server's
+ * zero-row `"records": null` to `[]`, so `records` is always an array.
+ */
+function manifestFrom(data: unknown, route: string): ManifestResult {
+  const envelope = requireEnvelope<ManifestResult>(data, route, "records");
+  return { ...envelope, records: envelope.records ?? [] };
 }

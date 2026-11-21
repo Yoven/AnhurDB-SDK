@@ -68,8 +68,8 @@ type SessionRecordLimitError struct {
 // human recognises, so they come right after the status; the details follow.
 // The format is byte-identical in the Python and TypeScript SDKs.
 func (limitError *SessionRecordLimitError) Error() string {
-	return fmt.Sprintf("AnhurDB API error (HTTP 409): %s (session record limit: session=%s, limit=%d, count=%d)",
-		limitError.ServerMessage, limitError.SessionUUID, limitError.Limit, limitError.Count)
+	return fmt.Sprintf("Conflict (HTTP 409): %s (session record limit: session=%s, limit=%d, count=%d)",
+		serverMessageExcerpt(limitError.ServerMessage), limitError.SessionUUID, limitError.Limit, limitError.Count)
 }
 
 // Unwrap lets errors.Is(err, ErrSessionRecordLimit) and
@@ -87,13 +87,33 @@ func (limitError *SessionRecordLimitError) Kind() ErrorKind { return KindConflic
 // Retryable is always false — see the type's Junior Tip.
 func (limitError *SessionRecordLimitError) Retryable() bool { return false }
 
+// serverMessageExcerptRunes caps how much of the server sentence the message
+// quotes — 500 characters, the same cap Python ([:500]) and TypeScript use.
+const serverMessageExcerptRunes = 500
+
+// serverMessageExcerpt returns at most serverMessageExcerptRunes characters
+// (runes, not bytes, so a multi-byte character is never cut in half).
+func serverMessageExcerpt(serverMessage string) string {
+	messageRunes := []rune(serverMessage)
+	if len(messageRunes) <= serverMessageExcerptRunes {
+		return serverMessage
+	}
+	return string(messageRunes[:serverMessageExcerptRunes])
+}
+
 // sessionRecordLimitWireBody is the subset of a 409 body this file reads.
+//
+// Junior Tip [pointers detect PRESENCE]: decoding into a plain int turns a
+// missing "limit" into 0 — a number the server never said. With pointers a
+// missing or null field stays nil, and a mistyped one ("limit":"5", 5.5) fails
+// the decode; either way the body is not the contract and stays the generic
+// 409. Same rule as Python (session_limit.py) and TypeScript (sessionLimit.ts).
 type sessionRecordLimitWireBody struct {
-	Error       string `json:"error"`
-	Code        string `json:"code"`
-	Limit       int    `json:"limit"`
-	Count       int    `json:"count"`
-	SessionUUID string `json:"session_uuid"`
+	Error       string  `json:"error"`
+	Code        string  `json:"code"`
+	Limit       *int    `json:"limit"`
+	Count       *int    `json:"count"`
+	SessionUUID *string `json:"session_uuid"`
 }
 
 // sessionRecordLimitFromResponse returns the typed refusal, or nil when the
@@ -110,10 +130,13 @@ func sessionRecordLimitFromResponse(statusCode int, body []byte) *SessionRecordL
 	if wireBody.Code != SessionRecordLimitCode {
 		return nil
 	}
+	if wireBody.Limit == nil || wireBody.Count == nil || wireBody.SessionUUID == nil {
+		return nil
+	}
 	return &SessionRecordLimitError{
-		SessionUUID:   wireBody.SessionUUID,
-		Limit:         wireBody.Limit,
-		Count:         wireBody.Count,
+		SessionUUID:   *wireBody.SessionUUID,
+		Limit:         *wireBody.Limit,
+		Count:         *wireBody.Count,
 		ServerMessage: strings.TrimSpace(wireBody.Error),
 		response:      &APIError{StatusCode: statusCode, Body: string(body)},
 	}

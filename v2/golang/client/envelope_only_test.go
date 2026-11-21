@@ -1,12 +1,9 @@
 package client
 
-// envelope_only_test.go — one domain: proving the 4.0.0 removal of the
-// bare-array response fallbacks on the listing and entity reads. The server
-// always answers these routes with an object envelope, so a bare JSON array is
-// now a decode error, while the two shapes the server really sends for "no
-// rows" — "records": null and an empty envelope — still decode to an empty
-// slice. (ListSessions and Recent have the same proof in list_sessions_test.go
-// and add_options_test.go.)
+// envelope_only_test.go — one domain: proving the 4.0.0 envelope rule
+// (envelope.go) on all eight listing routes: anything that is not a JSON object
+// carrying the route's list key is a typed *UnexpectedResponseError, while a
+// present key with a null value (the server's zero-row answer) is empty.
 //
 // Server truth: global manifest — server/handler/search_aux.go:224; session
 // manifest — server/handler/record_session.go:305-311; chat listing —
@@ -15,10 +12,10 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -33,68 +30,94 @@ func fixedBodyMemory(t *testing.T, body string) *Memory {
 	return NewMemory("k", WithURL(stubServer.URL))
 }
 
-func TestBareArrayIsRejectedOnEveryEnvelopeRoute(t *testing.T) {
-	const bareArray = `[{"id":7,"name":"n"}]`
-	testCases := []struct {
-		name      string
-		call      func(memory *Memory) (int, error)
-		wantError string
-	}{
-		{
-			name: "ManifestGlobal",
-			call: func(memory *Memory) (int, error) {
-				page, callErr := memory.ManifestGlobal(context.Background(), "", 10, 0)
-				if page == nil {
-					return 0, callErr
-				}
-				return len(page.Records), callErr
-			},
-			wantError: "parsing global manifest response",
-		},
-		{
-			name: "ManifestSession",
-			call: func(memory *Memory) (int, error) {
-				page, callErr := memory.ManifestSession(context.Background(), "s1", "", 10, 0)
-				if page == nil {
-					return 0, callErr
-				}
-				return len(page.Records), callErr
-			},
-			wantError: "parsing session manifest response",
-		},
-		{
-			name: "ListChat",
-			call: func(memory *Memory) (int, error) {
-				records, callErr := memory.ListChat(context.Background(), "s1", nil, "")
-				return len(records), callErr
-			},
-			wantError: "parsing list chat response",
-		},
-		{
-			name: "SearchEntities",
-			call: func(memory *Memory) (int, error) {
-				entities, callErr := memory.SearchEntities(context.Background(), "q", "", 10)
-				return len(entities), callErr
-			},
-			wantError: "parsing entities response",
-		},
-		{
-			name: "GetRecordEntities",
-			call: func(memory *Memory) (int, error) {
-				entities, callErr := memory.GetRecordEntities(context.Background(), 7)
-				return len(entities), callErr
-			},
-			wantError: "parsing record entities response",
-		},
+// envelopeRouteCall runs one of the eight envelope routes against memory and
+// returns only its error.
+type envelopeRouteCall struct {
+	route string
+	key   string
+	call  func(memory *Memory) error
+}
+
+// everyEnvelopeRoute is the cross-SDK list (Python tests/test_envelope_rule.py,
+// TypeScript src/test/envelope_rule.test.ts cover the same eight).
+func everyEnvelopeRoute() []envelopeRouteCall {
+	backgroundContext := context.Background()
+	return []envelopeRouteCall{
+		{"/api/v1/sessions/stats", "sessions", func(memory *Memory) error {
+			_, callErr := memory.ListSessions(backgroundContext)
+			return callErr
+		}},
+		{"/api/v1/recent", "records", func(memory *Memory) error {
+			_, callErr := memory.Recent(backgroundContext, 10)
+			return callErr
+		}},
+		{"/api/v1/manifest", "records", func(memory *Memory) error {
+			_, callErr := memory.ManifestGlobal(backgroundContext, "", 10, 0)
+			return callErr
+		}},
+		{"/api/v1/chats/{uuid}/manifest", "records", func(memory *Memory) error {
+			_, callErr := memory.ManifestSession(backgroundContext, "s1", "", 10, 0)
+			return callErr
+		}},
+		{"/api/v1/chats/{uuid}", "records", func(memory *Memory) error {
+			_, callErr := memory.ListChat(backgroundContext, "s1", nil, "")
+			return callErr
+		}},
+		{"/api/v1/entities", "entities", func(memory *Memory) error {
+			_, callErr := memory.SearchEntities(backgroundContext, "q", "", 10)
+			return callErr
+		}},
+		{"/api/v1/entities/list", "entities", func(memory *Memory) error {
+			_, callErr := memory.ListEntities(backgroundContext, 10, 0)
+			return callErr
+		}},
+		{"/api/v1/records/{id}/entities", "entities", func(memory *Memory) error {
+			_, callErr := memory.GetRecordEntities(backgroundContext, 7)
+			return callErr
+		}},
 	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			rowCount, callErr := testCase.call(fixedBodyMemory(t, bareArray))
-			if callErr == nil {
-				t.Fatalf("a bare array must not decode any more, got %d rows", rowCount)
-			}
-			if !strings.Contains(callErr.Error(), testCase.wantError) {
-				t.Fatalf("want %q in the error, got: %v", testCase.wantError, callErr)
+}
+
+// TestNonEnvelopeIsUnexpectedResponseOnEveryRoute proves the 4.0.0 rule: a
+// bare array, an empty body, an object without the key, or a non-list value
+// is a typed *UnexpectedResponseError of kind "server" with the cross-SDK
+// message — never "no rows".
+func TestNonEnvelopeIsUnexpectedResponseOnEveryRoute(t *testing.T) {
+	badBodies := map[string]string{
+		"bare array":   `[{"id":7,"name":"n"}]`,
+		"empty body":   ``,
+		"json null":    `null`,
+		"missing key":  `{"count":0}`,
+		"non-list key": `{"records":{},"sessions":{},"entities":{}}`,
+	}
+	for _, route := range everyEnvelopeRoute() {
+		for bodyName, body := range badBodies {
+			t.Run(route.route+"/"+bodyName, func(t *testing.T) {
+				callErr := route.call(fixedBodyMemory(t, body))
+				var shapeError *UnexpectedResponseError
+				if !errors.As(callErr, &shapeError) || !errors.Is(callErr, ErrUnexpectedResponse) {
+					t.Fatalf("want *UnexpectedResponseError, got %T: %v", callErr, callErr)
+				}
+				wantMessage := "unexpected response from GET " + route.route + ": expected a JSON object with \"" + route.key + "\""
+				if callErr.Error() != wantMessage {
+					t.Fatalf("Error() = %q, want %q", callErr.Error(), wantMessage)
+				}
+				if shapeError.Kind() != KindServer {
+					t.Fatalf("Kind() = %s, want server", shapeError.Kind())
+				}
+			})
+		}
+	}
+}
+
+// TestNullListIsEmptyOnEveryRoute pins what was KEPT: a present key whose
+// value is null (the server's zero-row answer) is an empty result.
+func TestNullListIsEmptyOnEveryRoute(t *testing.T) {
+	nullBody := `{"records":null,"sessions":null,"entities":null,"count":0,"has_more":false}`
+	for _, route := range everyEnvelopeRoute() {
+		t.Run(route.route, func(t *testing.T) {
+			if callErr := route.call(fixedBodyMemory(t, nullBody)); callErr != nil {
+				t.Fatalf("null list must be empty, got %v", callErr)
 			}
 		})
 	}

@@ -42,22 +42,7 @@ func (m *Memory) Recent(ctx context.Context, limit int) ([]models.Record, error)
 	if getErr != nil {
 		return nil, getErr
 	}
-	return decodeRecordsEnvelope(respBytes, "recent")
-}
-
-// firstJSONToken returns the first non-whitespace byte of a JSON payload, or 0
-// if the payload is empty/whitespace-only. The envelope decoders use it to treat
-// an EMPTY body as "no rows" instead of a decode error.
-func firstJSONToken(raw []byte) byte {
-	for _, currentByte := range raw {
-		switch currentByte {
-		case ' ', '\t', '\n', '\r':
-			continue
-		default:
-			return currentByte
-		}
-	}
-	return 0
+	return decodeRecordsEnvelope(respBytes, "/api/v1/recent")
 }
 
 // ManifestGlobal returns a paginated page of the tenant's full record manifest
@@ -90,7 +75,7 @@ func (m *Memory) ManifestGlobal(ctx context.Context, keyword string, limit, offs
 	if getErr != nil {
 		return nil, getErr
 	}
-	return decodeManifestPage(respBytes, "global manifest")
+	return decodeManifestPage(respBytes, "/api/v1/manifest")
 }
 
 // ManifestSession returns a paginated page of one session's record manifest via
@@ -123,7 +108,7 @@ func (m *Memory) ManifestSession(ctx context.Context, sessionUUID, keyword strin
 	if getErr != nil {
 		return nil, getErr
 	}
-	return decodeManifestPage(respBytes, "session manifest")
+	return decodeManifestPage(respBytes, "/api/v1/chats/{uuid}/manifest")
 }
 
 // ListChat returns every record for a single chat/session via GET
@@ -158,7 +143,7 @@ func (m *Memory) ListChat(ctx context.Context, sessionUUID string, consolidated 
 	if getErr != nil {
 		return nil, getErr
 	}
-	return decodeRecordsEnvelope(respBytes, "list chat")
+	return decodeRecordsEnvelope(respBytes, "/api/v1/chats/{uuid}")
 }
 
 // applyTemporalParams folds the optional bi-temporal read filters
@@ -180,21 +165,19 @@ func applyTemporalParams(params url.Values, cfg searchConfig) {
 
 // decodeManifestPage decodes the manifest envelope shared by ManifestGlobal and
 // ManifestSession: {"records":[Record],"count":int,"limit":int,"offset":int,
-// "has_more":bool}. label names the call site for clearer parse errors.
+// "has_more":bool}. route is the route template, for the error message.
 //
-// Junior Tip [envelope only, 4.0.0]: the server always sends this object
-// (ManifestGlobal server/handler/search_aux.go:224, ManifestSession
-// server/handler/record_session.go:305-311). The 3.x branch that wrapped a
-// bare JSON array for pre-envelope servers is gone — an array is now a decode error.
-// "records": null (the server's zero-hit answer) still becomes an empty slice,
-// and an empty body is still an empty page, not an error.
-func decodeManifestPage(raw []byte, label string) (*ManifestPage, error) {
-	if firstJSONToken(raw) == 0 {
-		return &ManifestPage{Records: []models.Record{}}, nil
+// Junior Tip [envelope only, 4.0.0]: requireEnvelope (envelope.go) refuses a
+// bare array, an empty body or a missing "records" key with a typed
+// *UnexpectedResponseError; "records": null (the server's zero-hit answer)
+// still becomes an empty slice.
+func decodeManifestPage(raw []byte, route string) (*ManifestPage, error) {
+	if shapeErr := requireEnvelope(raw, route, "records"); shapeErr != nil {
+		return nil, shapeErr
 	}
 	var page ManifestPage
 	if parseErr := json.Unmarshal(raw, &page); parseErr != nil {
-		return nil, fmt.Errorf("parsing %s response: %w", label, parseErr)
+		return nil, fmt.Errorf("parsing %s response: %w", route, parseErr)
 	}
 	if page.Records == nil {
 		page.Records = []models.Record{}
@@ -203,17 +186,15 @@ func decodeManifestPage(raw []byte, label string) (*ManifestPage, error) {
 }
 
 // decodeRecordsEnvelope decodes a {"records":[Record],"count":int} envelope (no
-// pagination) — used by Recent (server/handler/record_session.go:455) and
-// ListChat (server/handler/record_session.go:184).
-// Same discipline as decodeManifestPage: envelope only, null records and an
-// empty body are an empty slice.
-func decodeRecordsEnvelope(raw []byte, label string) ([]models.Record, error) {
-	if firstJSONToken(raw) == 0 {
-		return []models.Record{}, nil
+// pagination) — used by Recent and ListChat. Same discipline as
+// decodeManifestPage.
+func decodeRecordsEnvelope(raw []byte, route string) ([]models.Record, error) {
+	if shapeErr := requireEnvelope(raw, route, "records"); shapeErr != nil {
+		return nil, shapeErr
 	}
 	var wrapped queryResponse // identical shape: {records, count}
 	if parseErr := json.Unmarshal(raw, &wrapped); parseErr != nil {
-		return nil, fmt.Errorf("parsing %s response: %w", label, parseErr)
+		return nil, fmt.Errorf("parsing %s response: %w", route, parseErr)
 	}
 	if wrapped.Records == nil {
 		return []models.Record{}, nil

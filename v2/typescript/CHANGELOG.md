@@ -7,6 +7,20 @@ speaks the current contract, so every branch that existed only for an older
 server, and every deprecated alias, is removed. Go, Python and TypeScript remove
 the same things in the same release.
 
+### Aligned across the three SDKs (identical behaviour, 2026-11-21)
+
+- **Envelope rule on the eight listing routes.** `listSessions`, `recent`, `manifestGlobal`, `manifestSession`, `listChat`, `searchEntities`, `listEntities`, `getRecordEntities` (and `countByType`, which walks the manifest). `manifestGlobal`/`manifestSession` now always return `records` as an array (`null` → `[]`) require the JSON
+  object envelope with its list key (`sessions` / `records` / `entities`); the
+  value may be a list or `null` (`null` = zero rows). A bare array, an empty
+  body, a missing key or a non-list value now raises `AnhurUnexpectedResponseError` (extends `AnhurError`, `kind === "server"`, exported from the package root), new module `src/envelope.ts`; `EntitiesListPage` type exported, message
+  `unexpected response from GET <route template>: expected a JSON object with "<key>"`
+  — byte-identical in all three. 3.x read several of these shapes as "no rows".
+- **`GET /api/v1/profile` 404 fallback removed.** `profile()` no longer returns an
+  empty "OSS mode" profile on 404; the route is mounted unconditionally
+  (`server/router.go:136`), so a 404 surfaces as `AnhurError` with `statusCode === 404`.
+- **Session-record-limit message.** already used the shared layout below; a body whose `limit`/`count`/`session_uuid` is missing or mistyped stays the generic 409. Shared layout:
+  `Conflict (HTTP 409): <server error, first 500 characters> (session record limit: session=<uuid>, limit=N, count=M)`.
+
 ### Removed
 
 - `DeleteFileResult.raft_index` — the server keeps the consensus log index

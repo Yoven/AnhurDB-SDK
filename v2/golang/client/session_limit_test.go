@@ -43,7 +43,7 @@ func TestSessionRecordLimitIsTyped(t *testing.T) {
 			wantSession:     "s-full-1",
 			wantLimit:       500,
 			wantCount:       503,
-			wantInErrorText: "AnhurDB API error (HTTP 409): session has reached the maximum of 500 records (refused) (session record limit: session=s-full-1, limit=500, count=503)",
+			wantInErrorText: "Conflict (HTTP 409): session has reached the maximum of 500 records (refused) (session record limit: session=s-full-1, limit=500, count=503)",
 		},
 		{
 			name:            "code without the usual text",
@@ -142,5 +142,46 @@ func TestSessionLimitSentenceWithoutCodeIsGenericConflict(t *testing.T) {
 				t.Fatalf("want a plain *APIError 409 conflict, got %T: %v", addErr, addErr)
 			}
 		})
+	}
+}
+
+// TestSessionLimitCodeWithMalformedFieldsIsGenericConflict pins the cross-SDK
+// rule (Python session_limit.py, TypeScript sessionLimit.ts): a body with the
+// code but a missing, null or mistyped limit/count/session_uuid breaks the
+// contract and stays the generic 409 — Go must detect PRESENCE, never decode a
+// missing number as 0.
+func TestSessionLimitCodeWithMalformedFieldsIsGenericConflict(t *testing.T) {
+	malformedBodies := map[string]string{
+		"limit missing":        `{"error":"x","code":"session_record_limit","count":5,"session_uuid":"s"}`,
+		"count missing":        `{"error":"x","code":"session_record_limit","limit":5,"session_uuid":"s"}`,
+		"session_uuid missing": `{"error":"x","code":"session_record_limit","limit":5,"count":5}`,
+		"limit null":           `{"error":"x","code":"session_record_limit","limit":null,"count":5,"session_uuid":"s"}`,
+		"limit as string":      `{"error":"x","code":"session_record_limit","limit":"5","count":5,"session_uuid":"s"}`,
+		"count fractional":     `{"error":"x","code":"session_record_limit","limit":5,"count":5.5,"session_uuid":"s"}`,
+		"session_uuid number":  `{"error":"x","code":"session_record_limit","limit":5,"count":5,"session_uuid":7}`,
+	}
+	for caseName, body := range malformedBodies {
+		t.Run(caseName, func(t *testing.T) {
+			if sessionRecordLimitFromResponse(409, []byte(body)) != nil {
+				t.Fatalf("malformed body was typed: %s", body)
+			}
+		})
+	}
+}
+
+// TestSessionLimitMessageIsTheCrossSDKLayout pins the exact message Python and
+// TypeScript also produce, including the 500-character server excerpt.
+func TestSessionLimitMessageIsTheCrossSDKLayout(t *testing.T) {
+	longSentence := strings.Repeat("é", 600)
+	refusal := sessionRecordLimitFromResponse(409, []byte(`{"error":"`+longSentence+`","code":"session_record_limit","limit":3,"count":4,"session_uuid":"s9"}`))
+	if refusal == nil {
+		t.Fatal("well-formed body not typed")
+	}
+	wantMessage := "Conflict (HTTP 409): " + strings.Repeat("é", 500) + " (session record limit: session=s9, limit=3, count=4)"
+	if refusal.Error() != wantMessage {
+		t.Fatalf("Error() = %q\nwant      %q", refusal.Error(), wantMessage)
+	}
+	if refusal.ServerMessage != longSentence {
+		t.Error("ServerMessage must stay verbatim (only the message is excerpted)")
 	}
 }

@@ -6,7 +6,7 @@ simulates AnhurDB responses. Tests cover:
   - Memory.add() cloud ingest path
   - Memory.add() OSS fallback path
   - Memory.search() result parsing
-  - Memory.profile() success and 404 fallback
+  - Memory.profile() success, and a 404 raised (no fallback since 4.0.0)
   - Memory.create() record creation
   - Memory.batch_read_content()
   - Memory.search_entities()
@@ -463,16 +463,14 @@ class TestIngest404IsAnError(AioHTTPTestCase):
         self.assertEqual(self.app.get("records_calls", 0), 1)
 
     @unittest_run_loop
-    async def test_profile_404_returns_empty(self):
+    async def test_profile_404_is_raised(self):
+        """4.0.0: /api/v1/profile is always mounted (server/router.go:136), so a
+        404 is a real error, never an empty "OSS" profile."""
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
-            profile = await mem.profile()
-            # 404 = the server has no profile engine. An all-default
-            # ProfileResult says exactly that; the old dict carried a phantom
-            # `status: "not_available"` key the server has never sent.
-            self.assertEqual(profile.stats.total_records, 0)
-            self.assertEqual(profile.static.facts, [])
-            self.assertFalse(hasattr(profile, "status"))
+            with self.assertRaises(AnhurQueryError) as caught:
+                await mem.profile()
+            self.assertEqual(caught.exception.status_code, 404)
 
 
 class TestMemoryFullApiMock(AioHTTPTestCase):

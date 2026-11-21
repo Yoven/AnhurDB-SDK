@@ -9,6 +9,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -157,5 +158,23 @@ func TestProfileTreatsAnUnknownTagAsAnEmptyProfile(t *testing.T) {
 	}
 	if profile.Stats.TotalRecords != 0 || profile.Stats.LastActive != "" {
 		t.Fatalf("expected an empty profile, got %+v", profile.Stats)
+	}
+}
+
+// TestProfile404IsAnError pins the 4.0.0 removal of the "404 = OSS, empty
+// profile" fallback: GET /api/v1/profile is always mounted
+// (server/router.go:136), so a 404 reaches the caller as ErrNotFound. Python
+// (test_http_mock.py) and TypeScript (profile_contract.test.ts) pin the same.
+func TestProfile404IsAnError(t *testing.T) {
+	stubServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
+		http.Error(responseWriter, `{"error":"not found"}`, http.StatusNotFound)
+	}))
+	defer stubServer.Close()
+	memory := NewMemory("k", WithURL(stubServer.URL))
+
+	profile, profileErr := memory.Profile(context.Background(), WithProfileTag("t1"))
+
+	if profile != nil || !errors.Is(profileErr, ErrNotFound) {
+		t.Fatalf("want ErrNotFound and no profile, got %+v, %v", profile, profileErr)
 	}
 }

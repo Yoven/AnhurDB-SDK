@@ -43,11 +43,10 @@ func (m *Memory) ListSessions(ctx context.Context) ([]SessionStats, error) {
 		// Junior Tip [envelope only, 4.0.0]: the server always answers with
 		// {"sessions","count","limit","offset","has_more","next_offset"}
 		// (server/handler/record_session.go:135-142). The 3.x bare-array branch
-		// for pre-envelope servers is gone: an array is now a decode error, not a
-		// silently truncated single page. An empty body (or "null") is still
-		// "no sessions", not an error.
-		if firstJSONToken(respBytes) == 0 {
-			return allSessions, nil
+		// for pre-envelope servers is gone: an array is now a typed *UnexpectedResponseError, not a
+		// silently truncated single page (requireEnvelope, envelope.go).
+		if shapeErr := requireEnvelope(respBytes, "/api/v1/sessions/stats", "sessions"); shapeErr != nil {
+			return nil, shapeErr
 		}
 		var wrapped sessionsWrapper
 		if parseErr := json.Unmarshal(respBytes, &wrapped); parseErr != nil {

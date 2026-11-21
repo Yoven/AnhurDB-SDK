@@ -14,7 +14,7 @@ the two vocabularies apart is why the wire key is ``entity_type`` and not
 from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
-from .exceptions import AnhurError
+from .envelope import envelope_list, require_envelope
 from ..models.entity import (
     EntitiesPage,
     EntityGraphResult,
@@ -50,7 +50,7 @@ class EntityMixin:
         if entity_type:
             params["type"] = entity_type
         data = await self._connection.get("/api/v1/entities", params=params)
-        return _entities_from(data)
+        return _entities_from(data, "/api/v1/entities")
 
     async def list_entities(
         self,
@@ -79,7 +79,9 @@ class EntityMixin:
             offset = 0
         params = {"limit": str(limit), "offset": str(offset)}
         data = await self._connection.get("/api/v1/entities/list", params=params)
-        return EntitiesPage.model_validate(data if isinstance(data, dict) else {})
+        envelope = dict(require_envelope(data, "/api/v1/entities/list", "entities"))
+        envelope["entities"] = envelope["entities"] or []
+        return EntitiesPage.model_validate(envelope)
 
     async def upsert_entity(
         self,
@@ -259,35 +261,19 @@ class EntityMixin:
         data = await self._connection.get(
             f"/api/v1/records/{record_id}/entities",
         )
-        return _entities_from(data)
+        return _entities_from(data, "/api/v1/records/{id}/entities")
 
 
-def _entities_from(data: Any) -> List[EntityModel]:
+def _entities_from(data: Any, route: str) -> List[EntityModel]:
     """Decode the two UNPAGED entity envelopes into typed entities.
 
     Both routes always answer ``{"entities": [...], "count": N}`` (search:
     ``server/handler/entity.go:254-257``; by record: ``:561-565``, plus
-    ``record_id``).
-
-    Junior Tip [no bare-list branch since 4.0.0]: earlier SDKs also accepted a
-    naked array for a server generation that no longer exists. An answer that
-    is not the envelope now RAISES instead of being read as "no entities" —
-    an empty list is a legitimate answer, so it must never double as the
-    signal for "I did not understand the response".
+    ``record_id``). Anything else raises ``AnhurUnexpectedResponseError``
+    (rule in ``envelope.py``) — an empty list is a legitimate answer, so it
+    must never double as the signal for "I did not understand the response".
     """
-    if not isinstance(data, dict):
-        raise AnhurError(
-            f"entity response is {type(data).__name__}, not the "
-            '{"entities": [...]} envelope',
-            kind=AnhurError.KIND_SERVER,
-        )
-    rows = data.get("entities") or []
-    if not isinstance(rows, list):
-        raise AnhurError(
-            f'entity response "entities" is {type(rows).__name__}, not a list',
-            kind=AnhurError.KIND_SERVER,
-        )
-    return [EntityModel.model_validate(row) for row in rows]
+    return [EntityModel.model_validate(row) for row in envelope_list(data, route, "entities")]
 
 
 __all__ = ["EntityMixin"]

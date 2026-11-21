@@ -192,3 +192,22 @@ class AnhurLibraryDeletePartialError(AnhurError):
         super().__init__(message, status_code=500, kind=AnhurError.KIND_SERVER)
         self.legs = list(legs or [])
         self.server_message = server_message
+
+
+class AnhurUnexpectedResponseError(AnhurError):
+    """A 2xx answer that is not the route's JSON object envelope (4.0.0).
+
+    Kind ``"server"``, no status code. ``route`` is the route TEMPLATE (e.g.
+    ``/api/v1/chats/{uuid}``) and ``key`` the list key the envelope must carry.
+    The message is byte-identical to Go ``*UnexpectedResponseError`` and
+    TypeScript ``AnhurUnexpectedResponseError``. Rule and routes:
+    ``anhurdb/client/envelope.py``.
+    """
+
+    def __init__(self, route: str, key: str):
+        super().__init__(
+            f'unexpected response from GET {route}: expected a JSON object with "{key}"',
+            kind=AnhurError.KIND_SERVER,
+        )
+        self.route = route
+        self.key = key

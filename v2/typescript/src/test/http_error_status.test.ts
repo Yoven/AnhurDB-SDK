@@ -118,23 +118,17 @@ describe("typed errors carry the real HTTP status (multipart path)", () => {
 });
 
 describe("404 detection branches on the status, never on the message", () => {
-  it("profile() falls back to an EMPTY profile on a REAL 404", async () => {
-    const { value } = await withStubbedFetch(
+  it("profile() throws on a REAL 404 (no OSS fallback since 4.0.0)", async () => {
+    // GET /api/v1/profile is mounted unconditionally (server/router.go:136):
+    // a 404 is a wrong base URL or a proxy, never "an OSS build without a
+    // profiler". Go and Python raise the same way.
+    const { thrown, value } = await withStubbedFetch(
       [{ status: 404, body: JSON.stringify({ error: "no such endpoint" }) }],
       (memory) => memory.profile(),
     );
-    // 3.0.0: the fallback no longer invents `tag` / `status: "not_available"`.
-    // `handler/profile.go` has never emitted either key, so the SDK does not
-    // either — it answers exactly what the hosted server answers for a tag it
-    // does not know: an all-zero profile. Same shape, both reasons.
-    assert.deepEqual(value, {
-      static: {
-        facts: [], preferences: [], decisions: [],
-        risks: [], emotions: [], highlight: [],
-      },
-      dynamic: { recent_tasks: [], recent_topics: [] },
-      stats: { total_records: 0, sessions: 0, last_active: "" },
-    });
+    assert.equal(value, undefined, "a 404 must not become an empty profile");
+    assert.ok(thrown instanceof AnhurError);
+    assert.equal((thrown as AnhurError).statusCode, 404);
   });
 
   it("profile() rethrows a 500 whose body merely mentions 404", async () => {

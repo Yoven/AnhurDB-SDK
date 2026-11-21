@@ -13,6 +13,7 @@ Split out of ``client/__init__.py`` in 3.0.0 when the return type went from
 from typing import Dict, Optional
 
 from .connection import HTTPConnection
+from .envelope import require_envelope
 from ..models.manifest import ManifestResult
 
 
@@ -60,7 +61,7 @@ class ManifestMixin:
         if until:
             params["until"] = until
         data = await self._connection.get("/api/v1/manifest", params=params)
-        return ManifestResult.model_validate(data if isinstance(data, dict) else {})
+        return _manifest_from(data, "/api/v1/manifest")
 
     async def manifest_session(
         self,
@@ -100,7 +101,15 @@ class ManifestMixin:
             f"/api/v1/chats/{session_uuid}/manifest",
             params=params,
         )
-        return ManifestResult.model_validate(data if isinstance(data, dict) else {})
+        return _manifest_from(data, "/api/v1/chats/{uuid}/manifest")
+
+
+def _manifest_from(data: object, route: str) -> ManifestResult:
+    """Validate the envelope (``envelope.py``), then type it; ``records: null``
+    becomes ``[]``."""
+    envelope = dict(require_envelope(data, route, "records"))
+    envelope["records"] = envelope["records"] or []
+    return ManifestResult.model_validate(envelope)
 
 
 __all__ = ["ManifestMixin"]

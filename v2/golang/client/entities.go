@@ -54,6 +54,9 @@ func (m *Memory) ListEntities(ctx context.Context, limit, offset int) (*Entities
 		return nil, getErr
 	}
 
+	if shapeErr := requireEnvelope(respBytes, "/api/v1/entities/list", "entities"); shapeErr != nil {
+		return nil, shapeErr
+	}
 	var page EntitiesPage
 	if decodeErr := json.Unmarshal(respBytes, &page); decodeErr != nil {
 		return nil, fmt.Errorf("parsing entities list response: %w", decodeErr)
@@ -84,6 +87,9 @@ func (m *Memory) SearchEntities(ctx context.Context, query, entityType string, l
 	// Junior Tip [envelope only, 4.0.0]: the server always answers
 	// {"entities": [...], "count": N} (server/handler/entity.go:254-257); the
 	// 3.x bare-array fallback for pre-envelope servers is gone.
+	if shapeErr := requireEnvelope(respBytes, "/api/v1/entities", "entities"); shapeErr != nil {
+		return nil, shapeErr
+	}
 	var resp entitiesResponse
 	if decodeErr := json.Unmarshal(respBytes, &resp); decodeErr != nil {
 		return nil, fmt.Errorf("parsing entities response: %w", decodeErr)
@@ -231,6 +237,9 @@ func (m *Memory) GetRecordEntities(ctx context.Context, recordID int64) ([]Entit
 
 	// The server always answers {"record_id", "entities", "count"}
 	// (server/handler/entity.go:563-567); the 3.x bare-array fallback is gone.
+	if shapeErr := requireEnvelope(respBytes, "/api/v1/records/{id}/entities", "entities"); shapeErr != nil {
+		return nil, shapeErr
+	}
 	var resp entitiesResponse
 	if decodeErr := json.Unmarshal(respBytes, &resp); decodeErr != nil {
 		return nil, fmt.Errorf("parsing record entities response: %w", decodeErr)

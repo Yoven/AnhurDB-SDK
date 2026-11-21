@@ -133,7 +133,7 @@ export {
 } from "./types.js";
 // Typed per-session record cap refusal (ADR-0033). Exported from errors.ts
 // directly so the oversized types.ts does not grow.
-export { AnhurSessionRecordLimitError } from "./errors.js";
+export { AnhurSessionRecordLimitError, AnhurUnexpectedResponseError } from "./errors.js";
 // L2 tenant library (ADR-0029): by-id scope and its typed refusals. Exported
 // from their own modules so the oversized types.ts does not grow.
 export {
@@ -142,6 +142,7 @@ export {
   uploadStatusScope,
 } from "./recordScope.js";
 export type { ByIdOptions, RecordScope } from "./recordScope.js";
+export type { EntitiesListPage } from "./entitiesApi.js";
 export {
   AnhurTenantLibraryCollisionError,
   AnhurUploadStatusAmbiguousError,

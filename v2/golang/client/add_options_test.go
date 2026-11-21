@@ -47,7 +47,7 @@ func TestRecentBareArrayIsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a bare array must not decode any more, got %d records", len(records))
 	}
-	if !strings.Contains(err.Error(), "parsing recent response") {
+	if !errors.Is(err, ErrUnexpectedResponse) {
 		t.Fatalf("want the envelope decode error, got: %v", err)
 	}
 }

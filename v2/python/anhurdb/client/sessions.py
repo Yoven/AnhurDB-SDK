@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
+from .envelope import envelope_list
 from .exceptions import AnhurQueryError
 from .session_stats import fetch_all_session_stats
 from ..models import SessionStats
@@ -189,8 +190,7 @@ class SessionMixin:
             f"/api/v1/chats/{session_uuid}",
             params=params or None,
         )
-        records = data.get("records") if isinstance(data, dict) else None
-        return list(records or [])
+        return envelope_list(data, "/api/v1/chats/{uuid}", "records")
 
     async def get_session_history(
         self,

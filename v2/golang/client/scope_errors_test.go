@@ -136,7 +136,7 @@ func assertCollision(t *testing.T, gotErr error, wantStatus int, wantKind ErrorK
 }
 
 func TestSessionLimitAndGenericConflictStayDistinct(t *testing.T) {
-	limitMemory := sessionLimitStubServer(t, 409, `{"error":"session has reached the maximum of 500 records","code":"session_record_limit"}`)
+	limitMemory := sessionLimitStubServer(t, 409, `{"error":"session has reached the maximum of 500 records","code":"session_record_limit","limit":500,"count":500,"session_uuid":"s1"}`)
 	_, limitErr := limitMemory.Get(context.Background(), 1)
 	if !errors.Is(limitErr, ErrSessionRecordLimit) || errors.Is(limitErr, ErrTenantLibraryCollision) || errors.Is(limitErr, ErrUploadStatusAmbiguous) {
 		t.Errorf("session limit misclassified: %v", limitErr)

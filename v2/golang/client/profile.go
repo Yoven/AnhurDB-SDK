@@ -11,7 +11,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 )
@@ -34,9 +33,10 @@ import (
 // live-verified 2026-09-14). Sending one anyway would spend a round trip to
 // learn what the SDK already knew.
 //
-// If the server doesn't have a profile endpoint yet (OSS without agents),
-// it returns an empty profile rather than failing — matching the Python
-// SDK behaviour.
+// Any HTTP error — a 404 included — is returned: GET /api/v1/profile is
+// mounted unconditionally (server/router.go:136), so the 3.x "404 means OSS,
+// return an empty profile" fallback was removed in 4.0.0 (Python and
+// TypeScript removed it too).
 func (m *Memory) Profile(ctx context.Context, opts ...ProfileOption) (*ProfileResult, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey
@@ -57,9 +57,6 @@ func (m *Memory) Profile(ctx context.Context, opts ...ProfileOption) (*ProfileRe
 
 	respBytes, err := m.conn.Get(ctx, "/api/v1/profile", params)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return &ProfileResult{}, nil
-		}
 		return nil, err
 	}
 

@@ -12,6 +12,7 @@
  * lines, house cut ~300) in 4.0.0; `Memory` extends this class.
  */
 
+import { envelopeList, requireEnvelope } from "./envelope.js";
 import { MemoryGraphApi } from "./graphApi.js";
 import type {
   EntityGraphResult,
@@ -39,10 +40,10 @@ export abstract class MemoryEntitiesApi extends MemoryGraphApi {
     if (entityType) params.type = entityType;
     if (limit !== undefined) params.limit = String(limit);
 
-    const data = await this.searchTransport.get<{ entities?: EntityRecord[] }>(
+    const data = await this.searchTransport.get<unknown>(
       "/api/v1/entities",
       Object.keys(params).length > 0 ? params : undefined);
-    return data.entities ?? [];
+    return envelopeList<EntityRecord>(data, "/api/v1/entities", "entities");
   }
 
   /**
@@ -59,24 +60,18 @@ export abstract class MemoryEntitiesApi extends MemoryGraphApi {
    */
   async listEntities(
     limit = 200,
-    offset = 0): Promise<{
-    entities: EntityRecord[];
-    count: number;
-    total: number;
-    limit: number;
-    offset: number;
-    has_more: boolean;
-    next_offset: number;
-  }> {
+    offset = 0): Promise<EntitiesListPage> {
     if (limit <= 0) limit = 200;
     if (limit > 500) limit = 500;
     if (offset < 0) offset = 0;
-    return this.searchTransport.get(
+    const data = await this.searchTransport.get<unknown>(
       "/api/v1/entities/list",
       {
         limit: String(limit),
         offset: String(offset),
       });
+    const page = requireEnvelope<EntitiesListPage>(data, "/api/v1/entities/list", "entities");
+    return { ...page, entities: page.entities ?? [] };
   }
 
   /**
@@ -195,9 +190,20 @@ export abstract class MemoryEntitiesApi extends MemoryGraphApi {
    */
   async getRecordEntities(
     recordId: number): Promise<EntityRecord[]> {
-    const data = await this.searchTransport.get<{ entities?: EntityRecord[] }>(
+    const data = await this.searchTransport.get<unknown>(
       `/api/v1/records/${recordId}/entities`,
       undefined);
-    return data.entities ?? [];
+    return envelopeList<EntityRecord>(data, "/api/v1/records/{id}/entities", "entities");
   }
+}
+
+/** The `GET /api/v1/entities/list` page (`handler/entity.go:200-208`). */
+export interface EntitiesListPage {
+  entities: EntityRecord[];
+  count: number;
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  next_offset: number;
 }
