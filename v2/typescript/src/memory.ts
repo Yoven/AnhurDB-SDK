@@ -34,7 +34,7 @@ import type { MemoryOptions, ProfileResult } from "./types.js";
 import { MemoryWriteApi } from "./writeApi.js";
 
 /** Default cloud endpoint. Self-hosted users pass `url` explicitly. */
-const DEFAULT_CLOUD_URL = "https://anhurdb.yoven.ai";
+export const DEFAULT_CLOUD_URL = "https://anhurdb.yoven.ai";
 
 /**
  * Dead-simple memory interface for AnhurDB.

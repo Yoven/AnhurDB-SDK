@@ -418,6 +418,56 @@ import type {
 } from "anhurdb";
 ```
 
+## Client key API (child clients, agent profile, impersonation — ADR-0034)
+
+`ClientAPI` takes a **client key** (kind=client), never a tenant key. It talks
+only to `/api/v1/client/*` and **never sends `X-Tenant-ID`** (the tenant
+travels in the body).
+
+```ts
+import { ClientAPI } from "anhurdb";
+
+const api = new ClientAPI({ clientKey, url: "http://localhost:8000" });
+const child = await api.createChild(accountRef); // created=true once, then false with the same id
+await api.createChildTenant(child.child_client_id, {
+  tenantId: "contabilidade",
+  profile: { config: { search_top_k: "8" }, maxRpm: 1200 },
+});
+const token = await api.impersonateChild(child.child_client_id, {
+  tenantId: "contabilidade", scope: "write", l1Only: true, ttlSeconds: 3600,
+});
+// token.api_key, token.key_id, token.scope, token.l1_only, token.expires_at (Date)
+await api.revokeImpersonation(token.key_id);
+```
+
+| Method | Route |
+|---|---|
+| `createChild(externalRef)` | `POST /api/v1/client/children` |
+| `listChildren()` | `GET /api/v1/client/children` |
+| `suspendChild(childId)` / `resumeChild(childId)` | `POST /api/v1/client/children/{child_id}/suspend` / `resume` |
+| `listTenants()` / `listChildTenants(childId)` | `GET /api/v1/client/tenants` / `GET /api/v1/client/children/{child_id}/tenants` |
+| `createTenant(request)` / `createChildTenant(childId, request)` | `POST /api/v1/client/tenants` / `POST /api/v1/client/children/{child_id}/tenants` |
+| `impersonate(request)` / `impersonateChild(childId, request)` | `POST /api/v1/client/impersonate` / `POST /api/v1/client/children/{child_id}/impersonate` |
+| `revokeImpersonation(keyId)` | `POST /api/v1/client/impersonate/revoke` |
+
+**Trust the echo, not the request.** The server lowers a scope above the
+client key's ceiling without an error, so always read `token.scope` and
+`token.l1_only`. The SDK fails closed when the echo is WEAKER than requested:
+`AnhurClientAPIResponseError` with `code` `l1_only_not_honoured` or
+`scope_not_honoured` (and `keyId` of the minted token, so you can revoke it).
+A lower scope than requested is accepted.
+
+**Errors.** A refusal is `AnhurClientAPIError` (extends `AnhurError`) with
+`statusCode`, `code` (= the server's `body.error`: `child_suspended`,
+`child_not_found`, `child_limit`, `tenant_limit`, `invalid_scope`,
+`invalid_tenant_id`, `invalid_profile`, `invalid_child_id`, `key_not_found`,
+`key_not_owned`, …), `detail`, `errorType` and `isNotLeader`. `kind` follows
+the status; `child_limit`/`tenant_limit` are hard caps (`retryable` false).
+The SDK never retries. Inputs that can never succeed (empty ref/tenant/key id,
+tenant `*`, non-canonical child id, unknown scope, child impersonate without
+scope, non-integer or negative TTL, `maxRpm < 1`) throw `AnhurQueryError`
+(400) before any request.
+
 ## Error Handling
 
 ```typescript

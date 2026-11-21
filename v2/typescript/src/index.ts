@@ -148,3 +148,25 @@ export {
   AnhurUploadStatusAmbiguousError,
   AnhurLibraryDeletePartialError,
 } from "./scopeErrors.js";
+// Client-key surface (ADR-0034): child clients, tenants with an agent
+// profile, scoped/l1_only impersonation, revoke. Parity: Go NewClientAPI,
+// Python ClientAPI.
+export { ClientAPI } from "./clientKeyApi.js";
+export {
+  KEY_SCOPE_ADMIN,
+  KEY_SCOPE_WRITE,
+  KEY_SCOPE_READ_ONLY,
+} from "./clientKeyTypes.js";
+export type {
+  AgentProfile,
+  ChildClient,
+  ChildStatus,
+  ClientAPIOptions,
+  ClientTenant,
+  CreateTenantRequest,
+  ImpersonateRequest,
+  ImpersonatedKey,
+  KeyScope,
+  RevokeResult,
+} from "./clientKeyTypes.js";
+export { AnhurClientAPIError, AnhurClientAPIResponseError } from "./clientKeyErrors.js";

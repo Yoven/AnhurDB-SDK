@@ -1,5 +1,27 @@
 # TypeScript SDK Changelog
 
+## Unreleased
+
+### Added — client-key API (ADR-0034), identical in Go, Python and TypeScript
+
+- `new ClientAPI({ clientKey, url?, timeoutMs? })` for `/api/v1/client/*`:
+  `createChild`, `listChildren`, `suspendChild`, `resumeChild`, `listTenants`,
+  `listChildTenants`, `createTenant`, `createChildTenant` (optional
+  `profile: { config, maxRpm }`), `impersonate`, `impersonateChild`
+  (`{ tenantId, scope, l1Only, description, ttlSeconds }` → `ImpersonatedKey`),
+  `revokeImpersonation`. Never sends `X-Tenant-ID`. Modules
+  `src/clientKey*.ts`; shapes taken from the AnhurDB handlers
+  `server/handler/client_*.go` (branch `feat/phase1-client-children`).
+  Exported from the package root with its types and `KEY_SCOPE_*` constants.
+- `AnhurClientAPIError` exposes the server code (`body.error`), `detail`,
+  `errorType` and `isNotLeader`; `child_limit`/`tenant_limit` are not
+  retryable.
+- Fail-closed impersonation echo: `AnhurClientAPIResponseError` with `code`
+  `l1_only_not_honoured`, `scope_not_honoured` or `unexpected_response`
+  (carries the minted `keyId`).
+- `DEFAULT_CLOUD_URL` in `src/memory.ts` is now exported internally so the new
+  transport reuses it (not re-exported from the package root).
+
 ## 4.0.0 — legacy removal (2026-11-21)
 
 **Breaking.** AnhurDB (`AnhurDB/server`, main) is the only server and it always
