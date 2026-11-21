@@ -10,7 +10,8 @@
  * fork a third dialect.
  */
 
-import { AnhurAuthError, AnhurError, AnhurQueryError } from "./types.js";
+import { AnhurError, AnhurQueryError } from "./types.js";
+import { authErrorFromResponse } from "./authErrors.js";
 import { sessionRecordLimitFromResponse } from "./sessionLimit.js";
 import { scopeErrorFromResponse } from "./scopeErrors.js";
 
@@ -100,10 +101,9 @@ export function typedErrorForResponse(
 ): AnhurError {
   const bodyExcerpt = bodyText.slice(0, ERROR_BODY_EXCERPT_CHARS);
   if (statusCode === 401 || statusCode === 403) {
-    return new AnhurAuthError(
-      `Authentication failed (HTTP ${statusCode})`,
-      statusCode,
-    );
+    // Typed so the server's reason (l1_only, child_suspended, insufficient
+    // scope, ...) survives; still `instanceof AnhurAuthError` (authErrors.ts).
+    return authErrorFromResponse(statusCode, bodyText);
   }
   if (statusCode === 400 || statusCode === 422) {
     return new AnhurQueryError(

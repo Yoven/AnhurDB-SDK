@@ -11,6 +11,7 @@
 
 import { AnhurError, AnhurQueryError } from "./errors.js";
 import { scopeRank } from "./clientKeyTypes.js";
+import { decodeErrorEnvelope } from "./authErrors.js";
 
 export const RESPONSE_CODE_UNEXPECTED = "unexpected_response";
 export const RESPONSE_CODE_L1_ONLY_NOT_HONOURED = "l1_only_not_honoured";
@@ -30,9 +31,10 @@ const HARD_CEILING_CODES: ReadonlySet<string> = new Set(["child_limit", "tenant_
  * `errorType` is `not_leader` on the provably-uncommitted 503.
  *
  * Junior Tip [why the shared status mapping is bypassed]: `typedErrorForResponse`
- * turns every 401/403 into `AnhurAuthError` WITHOUT the body, so a 403
- * `child_suspended` would read like a bad key. This surface reads the body on
- * every status; `kind` still follows the status.
+ * only types 401/403 (`AnhurAuthRefusedError`) and a few 409/500 bodies; this
+ * surface needs the code on EVERY status (`child_limit` 429, `not_leader`
+ * 503, …), so it decodes the same envelope (`decodeErrorEnvelope`) itself.
+ * `kind` still follows the status.
  *
  * Junior Tip [429 is not always "slow down"]: `child_limit` and `tenant_limit`
  * are caps, so `retryable` is false for them.
@@ -81,22 +83,8 @@ export class AnhurClientAPIError extends AnhurError {
    * (whatever its Content-Type — ClientKeyOnly answers text/plain with a JSON
    * body); otherwise keep a bounded excerpt. */
   static fromBody(statusCode: number, method: string, path: string, bodyText: string): AnhurClientAPIError {
-    let envelope: unknown = null;
-    try {
-      envelope = JSON.parse(bodyText);
-    } catch {
-      envelope = null;
-    }
-    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
-      const fields = envelope as Record<string, unknown>;
-      if (typeof fields.error === "string" && fields.error) {
-        return new AnhurClientAPIError(statusCode, method, path, {
-          code: fields.error,
-          detail: typeof fields.detail === "string" ? fields.detail : "",
-          errorType: typeof fields.error_type === "string" ? fields.error_type : "",
-        });
-      }
-    }
+    const envelope = decodeErrorEnvelope(bodyText);
+    if (envelope !== null) return new AnhurClientAPIError(statusCode, method, path, envelope);
     return new AnhurClientAPIError(statusCode, method, path, {
       body: bodyText.trim().slice(0, EXCERPT_CHARACTERS),
     });

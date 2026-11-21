@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Changed — 401/403 keep the server's reason (identical in Go, Python and TypeScript)
+
+- Every 401/403 now throws `AnhurAuthRefusedError` (extends `AnhurAuthError`,
+  so `instanceof AnhurAuthError` is still true) with `statusCode`, `code`
+  (`body.error` verbatim, parsed whatever the Content-Type — the auth
+  middleware answers `text/plain` with a JSON body), `detail`, `errorType`, and
+  the getters `isL1Only`, `isChildSuspended`, `isInsufficientScope` (prefix
+  `insufficient scope`), `isImpersonationRequired`, `isInvalidKey`; constants
+  `AUTH_CODE_*`. Module `src/authErrors.ts`; exported from the package root.
+- `err.name` is now `"AnhurAuthRefusedError"` (was `"AnhurAuthError"`); branch
+  on `instanceof`, not on `name`.
+- Message with a code: `Authentication failed (HTTP <s>): <code>[: <detail>]`.
+  Non-JSON body: unchanged (`Authentication failed (HTTP <s>)`).
+- `AnhurClientAPIError.fromBody` uses the same envelope decoder
+  (`decodeErrorEnvelope`); behaviour unchanged.
+- No gRPC transport exists in this SDK, so there is no gRPC mapping.
+
 ### Added — client-key API (ADR-0034), identical in Go, Python and TypeScript
 
 - `new ClientAPI({ clientKey, url?, timeoutMs? })` for `/api/v1/client/*`:

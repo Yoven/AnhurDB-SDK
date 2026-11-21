@@ -170,3 +170,12 @@ export type {
   RevokeResult,
 } from "./clientKeyTypes.js";
 export { AnhurClientAPIError, AnhurClientAPIResponseError } from "./clientKeyErrors.js";
+// Typed 401/403 refusal carrying the server's code (extends AnhurAuthError).
+export {
+  AnhurAuthRefusedError,
+  AUTH_CODE_L1_ONLY,
+  AUTH_CODE_CHILD_SUSPENDED,
+  AUTH_CODE_INSUFFICIENT_SCOPE_PREFIX,
+  AUTH_CODE_IMPERSONATION_REQUIRED,
+  AUTH_CODE_INVALID_KEY,
+} from "./authErrors.js";
