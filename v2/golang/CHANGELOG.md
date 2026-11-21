@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed — 401/403 on data routes keep the server's reason (identical in Go, Python and TypeScript)
+
+- Every 401/403 from a data route is now `*AuthRefusedError{Status, Code,
+  Detail, ErrorType}` instead of the bare `ErrUnauthorized`. `Code` is
+  `body.error` verbatim, parsed whatever the Content-Type (the auth middleware
+  answers `text/plain` with a JSON body). Predicates: `IsL1Only`,
+  `IsChildSuspended`, `IsInsufficientScope` (prefix `insufficient scope`),
+  `IsImpersonationRequired`, `IsInvalidKey`; constants `AuthCode*`.
+- Backward compatible: `Unwrap` returns `ErrUnauthorized`, so
+  `errors.Is(err, ErrUnauthorized)` is still true; `Kind()` is `auth`,
+  `Retryable()` false. Only `err == ErrUnauthorized` (never the contract) is
+  now false.
+- Message with a code: `Authentication failed (HTTP <s>): <code>[: <detail>]`.
+  Non-JSON body: unchanged (`authentication failed: invalid API key`).
+- The refusal-envelope decoder is shared with `*ClientAPIError` and now reads
+  field by field: a mistyped optional field (`"detail": 5`) no longer drops
+  the code (Python/TypeScript already behaved this way).
+- No gRPC transport exists in this SDK, so there is no gRPC mapping.
+
 ### Added — client-key API (ADR-0034), identical in Go, Python and TypeScript
 
 - `NewClientAPI(clientKey, opts...)` and `*ClientAPI` for `/api/v1/client/*`:

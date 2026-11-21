@@ -39,12 +39,13 @@ const (
 // required", "tenant not owned by this client", the 409 collision text), and
 // a not_leader 503 carries prose in "error" with ErrorType "not_leader".
 //
-// Junior Tip [why the transport's generic mapping is bypassed here]:
-// handleResponse turns every 401/403 into the bare ErrUnauthorized and drops
-// the body — so a 403 child_suspended would be indistinguishable from a bad
-// key. The client-key surface reads the body on every status instead, and
-// Unwrap still returns the same sentinel, so errors.Is(err, ErrUnauthorized)
-// and errors.Is(err, ErrNotFound) keep their meaning.
+// Junior Tip [why the transport's generic mapping is bypassed here]: the
+// data-route mapping (handleResponse) only types 401/403 (*AuthRefusedError)
+// and 404; the client-key surface needs the body's code on EVERY status
+// (child_limit 429, not_leader 503, ...), so it decodes the same envelope
+// itself. Unwrap still returns the shared sentinels, so
+// errors.Is(err, ErrUnauthorized) and errors.Is(err, ErrNotFound) keep their
+// meaning.
 type ClientAPIError struct {
 	// Status is the HTTP status.
 	Status int

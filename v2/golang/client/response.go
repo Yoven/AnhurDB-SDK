@@ -41,7 +41,10 @@ func (c *HTTPConnection) handleResponse(resp *http.Response, requestPath string)
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return body, nil
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		return nil, ErrUnauthorized
+		// Typed so the server's reason (l1_only, child_suspended, insufficient
+		// scope, ...) survives; errors.Is(err, ErrUnauthorized) still matches
+		// through AuthRefusedError.Unwrap (auth_refused.go).
+		return nil, authRefusedFromBody(resp.StatusCode, body)
 	case resp.StatusCode == 404:
 		// Typed so the status and path survive; errors.Is(err, ErrNotFound)
 		// still matches through NotFoundError.Unwrap (errors.go).

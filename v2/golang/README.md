@@ -383,6 +383,32 @@ if err != nil {
 }
 ```
 
+### Refused credential (HTTP 401/403): the server's reason
+
+Every 401/403 is a `*client.AuthRefusedError` with `Status`, `Code` (the
+server's `body.error`, verbatim, read whatever the Content-Type), `Detail` and
+`ErrorType`. `errors.Is(err, client.ErrUnauthorized)` stays true for all of
+them, so existing branches keep working. A scope refusal no longer reads as an
+invalid key:
+
+```go
+var refused *client.AuthRefusedError
+if errors.As(err, &refused) {
+    switch {
+    case refused.IsL1Only():                // 403 l1_only: token restricted to L1 sessions
+    case refused.IsChildSuspended():        // 403 child_suspended
+    case refused.IsInsufficientScope():     // 403 "insufficient scope — ..."
+    case refused.IsImpersonationRequired(): // 403 client_key_requires_impersonation
+    case refused.IsInvalidKey():            // 401 "invalid or inactive API key"
+    }
+}
+```
+
+Message: `Authentication failed (HTTP <s>): <code>[: <detail>]` (identical in
+Python and TypeScript). A body that is not a JSON object with a string `error`
+keeps the historical `authentication failed: invalid API key`, with `Code == ""`.
+Not retryable. This SDK has no gRPC transport.
+
 ### Full session (HTTP 409, `session_record_limit`)
 
 A write into a session that already holds its maximum number of records is

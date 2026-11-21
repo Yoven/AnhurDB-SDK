@@ -88,15 +88,12 @@ func (api *ClientAPI) send(ctx context.Context, method, path string, requestBody
 // body is parsed regardless of the declared type.
 func clientAPIErrorFromBody(status int, method, path string, responseBody []byte) *ClientAPIError {
 	apiError := &ClientAPIError{Status: status, Method: method, Path: path}
-	var envelope struct {
-		Error     string `json:"error"`
-		Detail    string `json:"detail"`
-		ErrorType string `json:"error_type"`
-	}
-	if json.Unmarshal(responseBody, &envelope) == nil && envelope.Error != "" {
-		apiError.Code = envelope.Error
-		apiError.Detail = envelope.Detail
-		apiError.ErrorType = envelope.ErrorType
+	// Same decoder as the data-route 401/403 (auth_refused.go), so the two
+	// surfaces read one envelope one way.
+	if envelope, decoded := decodeErrorEnvelope(responseBody); decoded {
+		apiError.Code = envelope.code
+		apiError.Detail = envelope.detail
+		apiError.ErrorType = envelope.errorType
 		return apiError
 	}
 	apiError.Body = excerpt(strings.TrimSpace(string(responseBody)))

@@ -8,7 +8,8 @@ import (
 )
 
 var (
-	// ErrUnauthorized is returned when the API key is invalid or expired (401/403).
+	// ErrUnauthorized is matched (errors.Is) by every 401/403. The concrete error
+	// is *AuthRefusedError, which carries the server's reason (auth_refused.go).
 	ErrUnauthorized = errors.New("authentication failed: invalid API key")
 
 	// ErrInvalidQuery is returned when the server rejects the request as malformed (400/422).
