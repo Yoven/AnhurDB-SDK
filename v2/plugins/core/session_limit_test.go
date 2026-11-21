@@ -42,7 +42,10 @@ func (fake *fullSessionServer) handler() http.Handler {
 }
 
 const structuredRefusal = `{"error":"session has reached the maximum of 500 records","code":"session_record_limit","limit":500,"count":503,"session_uuid":"sess-full"}`
-const legacyRefusal = `{"error":"session has reached the maximum of 500 records"}`
+
+// preCodeRefusal is the pre-ADR-0033 body (no code). Since SDK 4.0.0 it is an
+// ordinary 409, not a session-limit refusal; it stays here to prove exactly that.
+const preCodeRefusal = `{"error":"session has reached the maximum of 500 records"}`
 
 // readPluginLog returns the whole plugin.log written under cfg.
 func readPluginLog(t *testing.T, cfg config) string {
@@ -87,19 +90,19 @@ func TestDrainRefusedBySessionLimitIsNamedAndKept(t *testing.T) {
 	}
 }
 
-// The FIRST attempt (persist), against an OLD text-only server: the line says
-// "count=unknown" rather than inventing a number, every chunk is queued with
-// the cause, and only ONE request is spent on a session that refuses them all.
+// The FIRST attempt (persist): one clear line with the server's numbers, every
+// chunk is queued with the cause, and only ONE request is spent on a session
+// that refuses them all.
 func TestFirstAttemptRefusalQueuesAllChunksWithCause(t *testing.T) {
 	shortenRetryBackoffForTest(t)
-	fake := &fullSessionServer{refusalBody: legacyRefusal}
+	fake := &fullSessionServer{refusalBody: strings.Replace(structuredRefusal, "sess-full", "sess-first", 1)}
 	server := httptest.NewServer(fake.handler())
 	defer server.Close()
 	cfg := newTestConfig(t)
 	cfg.maxChunkChars = 20
 
 	allDelivered := deliverSessionText(context.Background(), cfg, newTestMemory(t, server.URL),
-		"sess-old", "first paragraph here\n\nsecond paragraph here\n\nthird paragraph here")
+		"sess-first", "first paragraph here\n\nsecond paragraph here\n\nthird paragraph here")
 
 	if allDelivered {
 		t.Fatal("a refused session reported success")
@@ -112,7 +115,7 @@ func TestFirstAttemptRefusalQueuesAllChunksWithCause(t *testing.T) {
 		t.Errorf("want exactly one clear session-limit line, log:\n%s", pluginLog)
 	}
 	if !strings.Contains(pluginLog, "deliver: chunk not delivered") ||
-		!strings.Contains(pluginLog, "session=sess-old limit=500 count=unknown") {
+		!strings.Contains(pluginLog, "session=sess-first limit=500 count=503") {
 		t.Errorf("first-attempt lines missing:\n%s", pluginLog)
 	}
 	store, storeErr := queueStoreFor(cfg)
@@ -124,12 +127,102 @@ func TestFirstAttemptRefusalQueuesAllChunksWithCause(t *testing.T) {
 		t.Fatalf("pending = %d, want every chunk kept", len(pendingItems))
 	}
 	for _, item := range pendingItems {
-		if item.SessionID != "sess-old" || !strings.HasPrefix(item.LastError, "SESSION RECORD LIMIT: session=sess-old") {
+		if item.SessionID != "sess-first" || !strings.HasPrefix(item.LastError, "SESSION RECORD LIMIT: session=sess-first limit=500 count=503") {
+			t.Errorf("item kept under session %q with cause %q", item.SessionID, item.LastError)
+		}
+	}
+	if report := statusReport(cfg); !strings.Contains(report, "limit 500, count 503") {
+		t.Errorf("status must name the server's numbers:\n%s", report)
+	}
+}
+
+// TestPreCodeRefusalIsAnOrdinaryConflict proves the SDK 4.0.0 removal from the
+// plugin's side: a 409 that carries only the old sentence (no code) is no longer
+// a typed session-limit refusal, so there is no SESSION RECORD LIMIT log line and
+// no "skip the remaining chunks" shortcut — each chunk is tried once and queued
+// with the raw error. Nothing is lost. `status` still names the session from the
+// raw text on disk (legacySessionLimitText), which is the kept disk-reading path.
+func TestPreCodeRefusalIsAnOrdinaryConflict(t *testing.T) {
+	shortenRetryBackoffForTest(t)
+	fake := &fullSessionServer{refusalBody: preCodeRefusal}
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+	cfg := newTestConfig(t)
+	cfg.maxChunkChars = 20
+
+	allDelivered := deliverSessionText(context.Background(), cfg, newTestMemory(t, server.URL),
+		"sess-old", "first paragraph here\n\nsecond paragraph here\n\nthird paragraph here")
+
+	if allDelivered {
+		t.Fatal("a refused session reported success")
+	}
+	pluginLog := readPluginLog(t, cfg)
+	if strings.Contains(pluginLog, "SESSION RECORD LIMIT:") {
+		t.Errorf("a code-less 409 must not be logged as a session limit any more:\n%s", pluginLog)
+	}
+	store, storeErr := queueStoreFor(cfg)
+	if storeErr != nil {
+		t.Fatal(storeErr)
+	}
+	pendingItems, _ := store.ListPending()
+	if len(pendingItems) < 2 || fake.ingestedCount != len(pendingItems) {
+		t.Fatalf("want every chunk tried once and kept: pending=%d ingest requests=%d", len(pendingItems), fake.ingestedCount)
+	}
+	for _, item := range pendingItems {
+		if item.SessionID != "sess-old" || strings.HasPrefix(item.LastError, "SESSION RECORD LIMIT") ||
+			!strings.Contains(item.LastError, "session has reached the maximum of 500 records") {
 			t.Errorf("item kept under session %q with cause %q", item.SessionID, item.LastError)
 		}
 	}
 	if report := statusReport(cfg); !strings.Contains(report, "limit 500, count unknown") {
-		t.Errorf("status must name the old-server numbers honestly:\n%s", report)
+		t.Errorf("status must still name the session from the raw text on disk:\n%s", report)
+	}
+}
+
+// TestDrainLeavesTrailingOldCausesUntouched is the evidence for KEEPING
+// legacySessionLimitText: a drain re-stamps only the OLDEST row of a full
+// session (the one it attempts); every later row of that session is Released
+// with its old last_error intact. Without the legacy match, `status` would count
+// only one of the two chunks as belonging to the full session.
+func TestDrainLeavesTrailingOldCausesUntouched(t *testing.T) {
+	fake := &fullSessionServer{refusalBody: strings.Replace(structuredRefusal, "sess-full", "sess-stuck", 1)}
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+	cfg := newTestConfig(t)
+	store, storeErr := queueStoreFor(cfg)
+	if storeErr != nil {
+		t.Fatal(storeErr)
+	}
+	oldCause := &legacyError{text: `AnhurDB API error (HTTP 409): {"error":"session has reached the maximum of 500 records"}`}
+	for _, body := range []string{"turn one", "turn two"} {
+		if enqueueErr := store.EnqueueChunk("sess-stuck", chunkFor("sess-stuck", body)); enqueueErr != nil {
+			t.Fatal(enqueueErr)
+		}
+	}
+	claimed, _ := store.ClaimNextBatch(10)
+	for _, item := range claimed {
+		if failErr := store.MarkFailed(item.ID, 0, oldCause); failErr != nil {
+			t.Fatal(failErr)
+		}
+	}
+	if _, resetErr := store.database.Exec(`UPDATE pending_memory SET next_attempt_at = ?`, "2000-01-01T00:00:00Z"); resetErr != nil {
+		t.Fatal(resetErr)
+	}
+
+	flushQueue(context.Background(), cfg, newTestMemory(t, server.URL))
+
+	pendingItems, _ := store.ListPending()
+	if len(pendingItems) != 2 {
+		t.Fatalf("pending = %d, want both chunks kept", len(pendingItems))
+	}
+	if !strings.HasPrefix(pendingItems[0].LastError, "SESSION RECORD LIMIT: session=sess-stuck limit=500 count=503") {
+		t.Errorf("the attempted (oldest) row must be re-stamped, got %q", pendingItems[0].LastError)
+	}
+	if pendingItems[1].LastError != oldCause.text {
+		t.Errorf("the released row must keep its old cause, got %q", pendingItems[1].LastError)
+	}
+	if report := statusReport(cfg); !strings.Contains(report, "session=sess-stuck chunks=2") {
+		t.Errorf("status must count BOTH rows of the full session:\n%s", report)
 	}
 }
 

@@ -6,25 +6,27 @@ package client
 // and hand the caller the session, the cap and the count, so the refusal is
 // impossible to mistake for an outage.
 //
-// Wire contract (ADR-0033, AnhurDB):
-//   - NEW servers: HTTP 409, body
-//     {"error": "session has reached the maximum of N records ...",
-//      "code": "session_record_limit", "limit": N, "count": M, "session_uuid": "..."}
-//   - OLD servers (production until the deploy): HTTP 409, body
-//     {"error": "session has reached the maximum of N records"} — no code, no
-//     count, no session.
+// Wire contract (ADR-0033, AnhurDB server/handler/service_bridge.go:81-82 and
+// :109-125, produced only by service/record_session_cap.go:178): HTTP 409, body
 //
-// Both are recognised: by `code`, OR by the text prefix. gRPC (ResourceExhausted
-// + ErrorInfo reason SESSION_RECORD_LIMIT; legacy AlreadyExists with the same
-// text) is part of the contract too, but this SDK has no gRPC transport, so
-// there is no gRPC path here to classify.
+//	{"error": "session has reached the maximum of N records ...",
+//	 "code": "session_record_limit", "limit": N, "count": M, "session_uuid": "..."}
+//
+// All four structured fields are always present (none is omitempty), so the SDK
+// recognises the refusal by `code` ONLY and treats limit/count/session as
+// required. gRPC (ResourceExhausted + ErrorInfo reason SESSION_RECORD_LIMIT) is
+// part of the contract too, but this SDK has no gRPC transport.
+//
+// Junior Tip [why the sentence is no longer read, 4.0.0]: until 3.x the SDK also
+// matched the text "session has reached the maximum of" and parsed N back out of
+// it, for servers that predated the structured body. Every server now sends the
+// code; matching prose would keep a second, weaker contract alive that nobody
+// tests against the server. A 409 without the code is an ordinary *APIError.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -33,15 +35,8 @@ import (
 // *SessionRecordLimitError to read the session, the cap and the count.
 var ErrSessionRecordLimit = errors.New("anhurdb: session record limit reached")
 
-// SessionRecordLimitCode is the machine-readable `code` a new server sends.
+// SessionRecordLimitCode is the machine-readable `code` the server sends.
 const SessionRecordLimitCode = "session_record_limit"
-
-// sessionRecordLimitTextPrefix is how BOTH old and new servers start the
-// message. It is the only signal an old server gives.
-const sessionRecordLimitTextPrefix = "session has reached the maximum of"
-
-// sessionRecordLimitFromText pulls N out of "...maximum of N records".
-var sessionRecordLimitFromText = regexp.MustCompile(`maximum of (\d+) records`)
 
 // SessionRecordLimitError is returned when AnhurDB refuses a write because the
 // target session already holds its maximum number of records.
@@ -53,13 +48,12 @@ var sessionRecordLimitFromText = regexp.MustCompile(`maximum of (\d+) records`)
 // different session to get around the cap would merge two conversations, which
 // the memory plugin forbids (1 agent session = 1 AnhurDB session).
 type SessionRecordLimitError struct {
-	// SessionUUID is the full session. Empty when an old server omitted it.
+	// SessionUUID is the full session the server refused.
 	SessionUUID string
-	// Limit is the session cap. Nil only when neither the `limit` field nor
-	// the message text carried it (an old server always puts N in the text).
-	Limit *int
-	// Count is how many records the session holds. Nil on old servers.
-	Count *int
+	// Limit is the session cap.
+	Limit int
+	// Count is how many records the session holds.
+	Count int
 	// ServerMessage is the server's human sentence, verbatim.
 	ServerMessage string
 	// response is the plain HTTP error this refusal arrived as. Unwrap exposes
@@ -67,19 +61,15 @@ type SessionRecordLimitError struct {
 	response *APIError
 }
 
-// Error renders the refusal with every number the server gave, and says
-// "unknown" for the ones an old server did not send — never a fake zero.
+// Error renders the refusal with every number the server gave.
 //
 // Junior Tip [server sentence FIRST]: log readers and notifiers truncate (the
 // plugin's watcher keeps ~200 characters). The server's own words are what a
 // human recognises, so they come right after the status; the details follow.
+// The format is byte-identical in the Python and TypeScript SDKs.
 func (limitError *SessionRecordLimitError) Error() string {
-	sessionText := limitError.SessionUUID
-	if sessionText == "" {
-		sessionText = "unknown"
-	}
-	return fmt.Sprintf("AnhurDB API error (HTTP 409): %s (session record limit: session=%s, limit=%s, count=%s)",
-		limitError.ServerMessage, sessionText, optionalIntText(limitError.Limit), optionalIntText(limitError.Count))
+	return fmt.Sprintf("AnhurDB API error (HTTP 409): %s (session record limit: session=%s, limit=%d, count=%d)",
+		limitError.ServerMessage, limitError.SessionUUID, limitError.Limit, limitError.Count)
 }
 
 // Unwrap lets errors.Is(err, ErrSessionRecordLimit) and
@@ -101,50 +91,30 @@ func (limitError *SessionRecordLimitError) Retryable() bool { return false }
 type sessionRecordLimitWireBody struct {
 	Error       string `json:"error"`
 	Code        string `json:"code"`
-	Limit       *int   `json:"limit"`
-	Count       *int   `json:"count"`
+	Limit       int    `json:"limit"`
+	Count       int    `json:"count"`
 	SessionUUID string `json:"session_uuid"`
 }
 
 // sessionRecordLimitFromResponse returns the typed refusal, or nil when the
-// response is any other kind of answer.
+// response is any other kind of answer (any other status, a non-JSON body, or
+// a JSON body without the session_record_limit code).
 func sessionRecordLimitFromResponse(statusCode int, body []byte) *SessionRecordLimitError {
 	if statusCode != 409 {
 		return nil
 	}
 	var wireBody sessionRecordLimitWireBody
 	if decodeErr := json.Unmarshal(body, &wireBody); decodeErr != nil {
-		// A non-JSON body (a proxy, a plain-text error) can still carry the text.
-		wireBody = sessionRecordLimitWireBody{Error: string(body)}
-	}
-	serverMessage := strings.TrimSpace(wireBody.Error)
-	if wireBody.Code != SessionRecordLimitCode && !strings.HasPrefix(serverMessage, sessionRecordLimitTextPrefix) {
 		return nil
 	}
-	limitValue := wireBody.Limit
-	if limitValue == nil {
-		// Junior Tip [the text is the server's own number, not a guess]: an old
-		// server writes N into the sentence; reading it back is not inventing
-		// a value. Count has no such source, so it stays nil.
-		if textMatch := sessionRecordLimitFromText.FindStringSubmatch(serverMessage); textMatch != nil {
-			if parsedLimit, parseErr := strconv.Atoi(textMatch[1]); parseErr == nil {
-				limitValue = &parsedLimit
-			}
-		}
+	if wireBody.Code != SessionRecordLimitCode {
+		return nil
 	}
 	return &SessionRecordLimitError{
 		SessionUUID:   wireBody.SessionUUID,
-		Limit:         limitValue,
+		Limit:         wireBody.Limit,
 		Count:         wireBody.Count,
-		ServerMessage: serverMessage,
+		ServerMessage: strings.TrimSpace(wireBody.Error),
 		response:      &APIError{StatusCode: statusCode, Body: string(body)},
 	}
-}
-
-// optionalIntText prints a nullable number as the number or "unknown".
-func optionalIntText(value *int) string {
-	if value == nil {
-		return "unknown"
-	}
-	return strconv.Itoa(*value)
 }

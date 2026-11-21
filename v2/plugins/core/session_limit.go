@@ -19,10 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 // sessionLimitMarker starts the log line AND the persisted queue cause. The
@@ -33,6 +32,17 @@ const sessionLimitMarker = "SESSION RECORD LIMIT"
 // legacySessionLimitText is how the server words the refusal. Queue rows written
 // before this file existed carry only the SDK's raw error, so `status` must
 // recognise this text too or it would miss the very chunks already stuck.
+//
+// Junior Tip [why this survives the SDK 4.0.0 legacy removal, verified
+// 2026-11-21]: this is NOT a server-compatibility branch — it reads USER DATA
+// already on disk (queue.db last_error). The drain re-stamps a row in the new
+// format only when that row is ATTEMPTED and refused again (queue_bridge.go:
+// noteSessionLimit → markQueueFailure → MarkFailed). But the drain attempts
+// only the OLDEST item of a session and Releases the rest untouched
+// (blockedSessions; Release does not write last_error), so while the cap holds
+// every later row of a full session keeps its old text indefinitely. Dropping
+// this match would make `status` report those chunks as ordinary backlog
+// instead of naming the full session.
 const legacySessionLimitText = "session has reached the maximum of"
 
 // sessionLimitCauseFields reads back the fields sessionLimitCause wrote.
@@ -42,7 +52,7 @@ var sessionLimitCauseFields = regexp.MustCompile(sessionLimitMarker + `: session
 var legacySessionLimitNumber = regexp.MustCompile(`maximum of (\d+) records`)
 
 // sessionLimitRefusal returns the typed refusal inside deliveryErr, or nil.
-// The SDK recognises both the new structured 409 and the old text-only one.
+// The SDK recognises the structured 409 by its code (session_record_limit).
 func sessionLimitRefusal(deliveryErr error) *client.SessionRecordLimitError {
 	var refusal *client.SessionRecordLimitError
 	if errors.As(deliveryErr, &refusal) {
@@ -59,8 +69,8 @@ func sessionLimitCause(sessionID string, refusal *client.SessionRecordLimitError
 	if refusal.SessionUUID != "" {
 		sessionID = refusal.SessionUUID
 	}
-	return fmt.Sprintf("%s: session=%s limit=%s count=%s — AnhurDB refuses new records for this session",
-		sessionLimitMarker, sessionID, optionalCount(refusal.Limit), optionalCount(refusal.Count))
+	return fmt.Sprintf("%s: session=%s limit=%d count=%d — AnhurDB refuses new records for this session",
+		sessionLimitMarker, sessionID, refusal.Limit, refusal.Count)
 }
 
 // noteSessionLimit logs the ONE clear line for a session-limit refusal and
@@ -81,8 +91,9 @@ func noteSessionLimit(cfg config, sessionID string, deliveryErr error) (cause st
 }
 
 // sessionLimitFromCause recognises a persisted cause — this file's format or the
-// legacy raw SDK text — and returns the limit and count as text ("unknown" when
-// absent). ok is false for any other cause.
+// legacy raw SDK text (see legacySessionLimitText) — and returns the limit and
+// count as text ("unknown" when an old row did not carry them; rows written by
+// a 3.x plugin may also say "unknown"). ok is false for any other cause.
 func sessionLimitFromCause(cause string) (limitText string, countText string, ok bool) {
 	if fields := sessionLimitCauseFields.FindStringSubmatch(cause); fields != nil {
 		return fields[2], fields[3], true
@@ -95,12 +106,4 @@ func sessionLimitFromCause(cause string) (limitText string, countText string, ok
 		return limitText, "unknown", true
 	}
 	return "", "", false
-}
-
-// optionalCount prints a nullable number, or "unknown" — never a fake zero.
-func optionalCount(value *int) string {
-	if value == nil {
-		return "unknown"
-	}
-	return strconv.Itoa(*value)
 }

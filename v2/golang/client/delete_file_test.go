@@ -71,10 +71,6 @@ func TestDeleteFileWireContract(t *testing.T) {
 	if len(deleteResult.DeletedIDs) != 3 {
 		t.Errorf("expected 3 deleted ids, got %d", len(deleteResult.DeletedIDs))
 	}
-	// raft_index is json:"-" on the server: the deprecated field stays zero.
-	if deleteResult.RaftIndex != 0 {
-		t.Errorf("raft_index is never sent by the server, got %d", deleteResult.RaftIndex)
-	}
 	if deleteResult.DryRun {
 		t.Error("dry_run must decode as false")
 	}

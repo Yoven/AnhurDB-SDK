@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/models"
 )
 
 const liveURL = "http://localhost:8000"
@@ -85,14 +85,14 @@ func TestLiveE2E(testHandle *testing.T) {
 	}
 	step(testHandle, "ReadContent", readErr, fmt.Sprintf("id=%d len=%d body=%q", recordID, len(content), truncate(content, 80)))
 
-	// --- OP 2b: RecentMemories (alternate read-back path) ---
-	// Retry: RecentMemories has a parse bug on EMPTY manifests (object vs
-	// bare-array). Retrying lets a populated read succeed.
+	// --- OP 2b: Recent (alternate read-back path) ---
+	// Retry: the new record may not be visible on the first read; retrying
+	// lets a populated read succeed.
 	var recent []models.Record
 	var recentErr error
 	foundRecent := false
 	for attempt := 1; attempt <= 6; attempt++ {
-		recent, recentErr = mem.RecentMemories(ctx, 5)
+		recent, recentErr = mem.Recent(ctx, 5)
 		for _, rec := range recent {
 			if int64(rec.ID) == recordID {
 				foundRecent = true
@@ -103,7 +103,7 @@ func TestLiveE2E(testHandle *testing.T) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	step(testHandle, "RecentMemories", recentErr, fmt.Sprintf("count=%d contains_new=%v", len(recent), foundRecent))
+	step(testHandle, "Recent", recentErr, fmt.Sprintf("count=%d contains_new=%v", len(recent), foundRecent))
 
 	// --- OP 3: Search (give async indexing a chance, retry a few times) ---
 	var hits []client.SearchResult

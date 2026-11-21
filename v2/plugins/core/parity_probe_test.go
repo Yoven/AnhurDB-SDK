@@ -39,7 +39,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 // parityBodyMarker is embedded in every queued fixture body so an observation can name

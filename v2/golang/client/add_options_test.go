@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/models"
 )
 
-// TestRecentMemoriesEmptyEnvelope reproduces the empty-manifest crash: the
+// TestRecentEmptyEnvelope reproduces the empty-manifest crash: the
 // server returns {"records": []} (an OBJECT). The old code fell through to a
 // bare-array Unmarshal and errored. It must now yield an empty slice, no error.
-func TestRecentMemoriesEmptyEnvelope(t *testing.T) {
+func TestRecentEmptyEnvelope(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Set("Content-Type", "application/json")
 		io.WriteString(responseWriter, `{"count":0,"has_more":false,"limit":5,"offset":0,"records":[]}`)
@@ -24,7 +25,7 @@ func TestRecentMemoriesEmptyEnvelope(t *testing.T) {
 	defer server.Close()
 
 	mem := NewMemory("k", WithURL(server.URL))
-	records, err := mem.RecentMemories(context.Background(), 5)
+	records, err := mem.Recent(context.Background(), 5)
 	if err != nil {
 		t.Fatalf("empty envelope must not error, got: %v", err)
 	}
@@ -33,27 +34,32 @@ func TestRecentMemoriesEmptyEnvelope(t *testing.T) {
 	}
 }
 
-// TestRecentMemoriesBareArray verifies the bare-array shape still parses.
-func TestRecentMemoriesBareArray(t *testing.T) {
+// TestRecentBareArrayIsRejected proves the 4.0.0 removal: the server always
+// sends the {"records","count"} envelope (server/handler/record_session.go:455), so
+// a bare JSON array is now a decode error instead of a silently accepted page.
+func TestRecentBareArrayIsRejected(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		io.WriteString(responseWriter, `[]`)
+		io.WriteString(responseWriter, `[{"id":7}]`)
 	}))
 	defer server.Close()
 	mem := NewMemory("k", WithURL(server.URL))
-	records, err := mem.RecentMemories(context.Background(), 5)
-	if err != nil || len(records) != 0 {
-		t.Fatalf("bare empty array failed: err=%v len=%d", err, len(records))
+	records, err := mem.Recent(context.Background(), 5)
+	if err == nil {
+		t.Fatalf("a bare array must not decode any more, got %d records", len(records))
+	}
+	if !strings.Contains(err.Error(), "parsing recent response") {
+		t.Fatalf("want the envelope decode error, got: %v", err)
 	}
 }
 
-// TestRecentMemoriesPopulatedEnvelope verifies envelope rows map into Record.
-func TestRecentMemoriesPopulatedEnvelope(t *testing.T) {
+// TestRecentPopulatedEnvelope verifies envelope rows map into Record.
+func TestRecentPopulatedEnvelope(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		io.WriteString(responseWriter, `{"records":[{"id":7,"uuid":"u","type":"episodic","summary":"s","metadata":"{}","status":"saved"}]}`)
 	}))
 	defer server.Close()
 	mem := NewMemory("k", WithURL(server.URL))
-	records, err := mem.RecentMemories(context.Background(), 5)
+	records, err := mem.Recent(context.Background(), 5)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -62,13 +68,14 @@ func TestRecentMemoriesPopulatedEnvelope(t *testing.T) {
 	}
 }
 
-// TestAddForwardsScoreTypeMetadataOSS verifies the OSS records path forwards
-// caller score/type and merges metadata (container_tag still owned by SDK).
-func TestAddForwardsScoreTypeMetadataOSS(t *testing.T) {
+// TestAddForwardsScoreTypeMetadataToRecords verifies that pinning score/type/
+// metadata routes Add to POST /api/v1/records, forwards all three and merges
+// metadata (container_tag still owned by the SDK).
+func TestAddForwardsScoreTypeMetadataToRecords(t *testing.T) {
 	var captured map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/ingest") {
-			// Force the OSS fallback path.
+			t.Errorf("a pinned score/type/metadata must never reach /ingest")
 			http.NotFound(responseWriter, request)
 			return
 		}
@@ -88,8 +95,8 @@ func TestAddForwardsScoreTypeMetadataOSS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
-	if result.ID != 123 {
-		t.Fatalf("expected id 123, got %d", result.ID)
+	if result.ID != 123 || result.Mode != "records" {
+		t.Fatalf("expected id 123 mode records, got %d %q", result.ID, result.Mode)
 	}
 	if captured["score"] != float64(9) {
 		t.Fatalf("score not forwarded: %v", captured["score"])
@@ -109,12 +116,14 @@ func TestAddForwardsScoreTypeMetadataOSS(t *testing.T) {
 	}
 }
 
-// TestAddDefaultsBackwardCompatible verifies Add(ctx, text) with no options
-// still sends the historical defaults (score=5, type=episodic).
-func TestAddDefaultsBackwardCompatible(t *testing.T) {
+// TestAddRegularModeSendsRecordDefaults verifies the records path with no
+// score/type options still sends the historical defaults (score=5,
+// type=episodic).
+func TestAddRegularModeSendsRecordDefaults(t *testing.T) {
 	var captured map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/ingest") {
+			t.Errorf("regular mode must never reach /ingest")
 			http.NotFound(responseWriter, request)
 			return
 		}
@@ -125,7 +134,7 @@ func TestAddDefaultsBackwardCompatible(t *testing.T) {
 	defer server.Close()
 
 	mem := NewMemory("k", WithURL(server.URL))
-	if _, err := mem.Add(context.Background(), "hi", WithSessionID("test-sess")); err != nil {
+	if _, err := mem.Add(context.Background(), "hi", WithMode("regular"), WithSessionID("test-sess")); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 	if captured["score"] != float64(5) {
@@ -137,18 +146,20 @@ func TestAddDefaultsBackwardCompatible(t *testing.T) {
 }
 
 // TestAddDoesNotRetryTransient pins the transparent-pipe contract: the SDK owns
-// NO transport retry, so HTTP 500 surfaces to the caller after exactly ONE
-// record-create request.
+// NO transport retry, so HTTP 500 from /ingest surfaces to the caller after
+// exactly ONE ingest request and no write anywhere else.
 func TestAddDoesNotRetryTransient(t *testing.T) {
+	ingestCalls := 0
 	recordCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/ingest") {
-			http.NotFound(responseWriter, request)
+			ingestCalls++
+			responseWriter.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(responseWriter, `{"error":"transient server error"}`)
 			return
 		}
 		recordCalls++
-		responseWriter.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(responseWriter, `{"error":"transient server error"}`)
+		io.WriteString(responseWriter, `{"id":1}`)
 	}))
 	defer server.Close()
 
@@ -156,10 +167,74 @@ func TestAddDoesNotRetryTransient(t *testing.T) {
 	if _, err := mem.Add(context.Background(), "x", WithSessionID("test-sess")); err == nil {
 		t.Fatal("expected the 500 error to surface immediately, got nil")
 	}
-	// One ingest-404 probe caches unavailability, then a SINGLE records POST. No
-	// retry loop means the failing write is not re-sent by the SDK.
-	if recordCalls != 1 {
-		t.Fatalf("SDK must not retry; expected 1 record-create call, got %d", recordCalls)
+	if ingestCalls != 1 || recordCalls != 0 {
+		t.Fatalf("SDK must not retry or reroute; got ingest=%d records=%d", ingestCalls, recordCalls)
+	}
+}
+
+// TestAddIngestNotFoundNeverFallsBackToRecords proves the 4.0.0 removal of the
+// "OSS fallback": POST /api/v1/ingest is mounted unconditionally
+// (server/router.go:135), so a 404 is a real error. It must surface as
+// ErrNotFound, must NOT write through /records, and must not be remembered —
+// the next Add tries /ingest again (no sticky "ingest unavailable" state).
+func TestAddIngestNotFoundNeverFallsBackToRecords(t *testing.T) {
+	ingestCalls := 0
+	recordCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/ingest") {
+			ingestCalls++
+			http.NotFound(responseWriter, request)
+			return
+		}
+		recordCalls++
+		io.WriteString(responseWriter, `{"id":1}`)
+	}))
+	defer server.Close()
+
+	mem := NewMemory("k", WithURL(server.URL))
+	for attemptNumber := 1; attemptNumber <= 2; attemptNumber++ {
+		result, addErr := mem.Add(context.Background(), "x", WithSessionID("test-sess"))
+		if !errors.Is(addErr, ErrNotFound) {
+			t.Fatalf("attempt %d: want ErrNotFound, got result=%+v err=%v", attemptNumber, result, addErr)
+		}
+	}
+	if ingestCalls != 2 || recordCalls != 0 {
+		t.Fatalf("want 2 ingest calls and 0 records calls, got ingest=%d records=%d", ingestCalls, recordCalls)
+	}
+}
+
+// TestAddResultModeNamesTheDoor pins the 4.0.0 Mode values: "ingest" for the
+// /ingest door, "records" for /records (Add regular and Create). The old
+// "cloud"/"oss" values must never come back.
+func TestAddResultModeNamesTheDoor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/ingest") {
+			io.WriteString(responseWriter, `{"id":3,"records":[{"id":3,"type":"episodic","summary":"x"}]}`)
+			return
+		}
+		io.WriteString(responseWriter, `{"id":4}`)
+	}))
+	defer server.Close()
+	mem := NewMemory("k", WithURL(server.URL))
+
+	ingestResult, ingestErr := mem.Add(context.Background(), "x", WithSessionID("s"))
+	regularResult, regularErr := mem.Add(context.Background(), "x", WithSessionID("s"), WithMode("regular"))
+	createResult, createErr := mem.Create(context.Background(), "s", "x")
+	if ingestErr != nil || regularErr != nil || createErr != nil {
+		t.Fatalf("unexpected errors: %v / %v / %v", ingestErr, regularErr, createErr)
+	}
+	for _, modeCase := range []struct {
+		label    string
+		gotMode  string
+		wantMode string
+	}{
+		{"Add ingest", ingestResult.Mode, "ingest"},
+		{"Add regular", regularResult.Mode, "records"},
+		{"Create", createResult.Mode, "records"},
+	} {
+		if modeCase.gotMode != modeCase.wantMode {
+			t.Errorf("%s: Mode = %q, want %q", modeCase.label, modeCase.gotMode, modeCase.wantMode)
+		}
 	}
 }
 

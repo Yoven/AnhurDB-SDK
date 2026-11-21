@@ -29,8 +29,8 @@ func TestDeleteFileResultDecodesAlternativeSessions(t *testing.T) {
 	if decodeError := json.Unmarshal([]byte(zeroMatchServerJSON), &deleteResult); decodeError != nil {
 		t.Fatalf("decode: %v", decodeError)
 	}
-	if deleteResult.MatchedCount != 0 || deleteResult.RaftIndex != 0 {
-		t.Fatalf("expected matched 0 / raft_index 0, got %d / %d", deleteResult.MatchedCount, deleteResult.RaftIndex)
+	if deleteResult.MatchedCount != 0 {
+		t.Fatalf("expected matched 0, got %d", deleteResult.MatchedCount)
 	}
 	if len(deleteResult.AlternativeSessions) != 2 {
 		t.Fatalf("expected 2 alternative sessions, got %d", len(deleteResult.AlternativeSessions))

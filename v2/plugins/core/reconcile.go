@@ -26,7 +26,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 // confirmedCursorSuffix distingue o cursor de confirmação do cursor de tentativa,

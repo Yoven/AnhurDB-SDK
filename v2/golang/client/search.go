@@ -95,20 +95,11 @@ func (m *Memory) SearchWithRetrieval(ctx context.Context, query string, sessions
 	return m.runSearch(ctx, query, sessions, opts...)
 }
 
-// SearchWithSignals is the pre-3.0.0 name for SearchWithRetrieval.
-//
-// Deprecated: use SearchWithRetrieval, which now returns the same
-// *SearchOutcome. This alias exists so 2.x callers survive the 3.0.0 rename by
-// one release; it is removed in 4.0.0. One break, not two.
-func (m *Memory) SearchWithSignals(ctx context.Context, query string, sessions []string, opts ...SearchOption) (*SearchOutcome, error) {
-	return m.SearchWithRetrieval(ctx, query, sessions, opts...)
-}
-
 // runSearch is the shared implementation behind Search, SearchWithRetrieval and
-// SearchWithSignals — centralised so the three public entry points can never
-// drift in payload shape, validation, cross-version checking or response
-// decoding. Every one of them is a projection of the single SearchOutcome this
-// builds.
+// every scope-pinned search (SearchSession, SearchSessions, ...) — centralised so
+// the public entry points can never drift in payload shape, validation,
+// cross-version checking or response decoding. Every one of them is a
+// projection of the single SearchOutcome this builds.
 func (m *Memory) runSearch(ctx context.Context, query string, sessions []string, opts ...SearchOption) (*SearchOutcome, error) {
 	if m.conn == nil {
 		return nil, ErrEmptyAPIKey

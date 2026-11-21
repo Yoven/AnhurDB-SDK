@@ -124,7 +124,7 @@ var sdkWarningLogger = log.New(os.Stderr, "", 0)
 // motivated this ran three identical searches against one pre-ADR-0031 server
 // and counted lines — Go printed 3, TypeScript 1, Python 1. One knob, three
 // cadences, is the same divergence class the parity round exists to remove, and
-// an operator running a search loop against an old server got one line per
+// an operator running a search loop against a knob-ignoring server got one line per
 // query until the real signal drowned. ADR-0031 is explicit that this detection
 // may not become an environment variable or a constructor option: it is derived
 // from a response the server already sends, and a switch would let someone turn
@@ -181,7 +181,8 @@ func resetSearchKnobWarnings() {
 // PROMISE]: `mode`, `semantic_timeout_ms` and `debug_signals` were added as new
 // fields. A server that predates them does not reject them — it drops them into
 // unknownFields and answers 200. So a caller who asked for strict semantics
-// against an old server gets lexical results, no error, and no way to tell.
+// against a server that did not honour the knob gets lexical results, no error,
+// and no way to tell.
 // The honest detector is the RESPONSE, never the request: a current server
 // always resolves `retrieval.mode` to one of the three budgets, so an empty or
 // mismatched mode coming back means the field was ignored on the way in.
@@ -194,7 +195,7 @@ func resetSearchKnobWarnings() {
 // for scope=shared_all the REST handler builds its RetrievalMeta by hand
 // (handler/record_search_shared_all.go) and deliberately leaves Mode empty —
 // two legs, no single honest mode. A current server therefore returns mode=""
-// for shared_all, which is indistinguishable from an old server ignoring the
+// for shared_all, which is indistinguishable from a server ignoring the
 // field. Failing loud there would reject a perfectly healthy modern server on
 // every shared_all query, so that one case warns instead.
 func verifySearchKnobsHonoured(cfg *searchConfig, retrieval *RetrievalMeta, requestedScope string) error {

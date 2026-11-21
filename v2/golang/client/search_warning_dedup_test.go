@@ -22,7 +22,7 @@ import (
 // TestRepeatedSearchesWarnOncePerKnob is the measurement that motivated the
 // dedup: three identical searches against ONE pre-ADR-0031 server printed 3
 // lines in Go, 1 in TypeScript and 1 in Python. An operator running a search
-// loop against an old server got one line per query, which is how a real signal
+// loop against a knob-ignoring server got one line per query, which is how a real signal
 // drowns in its own repetition.
 //
 // The server here is the "old" generation: it answers 200 with results and no

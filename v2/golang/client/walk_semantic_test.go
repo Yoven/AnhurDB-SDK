@@ -13,7 +13,6 @@ import (
 // captureWalkBody stands up an httptest server that records the JSON body of the
 // single /api/v1/walk/semantic request and replies with a minimal valid walk
 // envelope. It returns the decoded body captured during the call.
-//
 func captureWalkBody(t *testing.T, startID int64, depth int, opts ...ReadOption) map[string]interface{} {
 	t.Helper()
 
@@ -52,7 +51,7 @@ func TestWalkSemanticBodySerialization(t *testing.T) {
 		wantAbsent  []string               // keys that must NOT be in the body
 	}{
 		{
-			name:    "no options keeps legacy Dijkstra body",
+			name:    "no options keeps the plain Dijkstra body",
 			options: nil,
 			wantPresent: map[string]interface{}{
 				"seed_id": float64(7),

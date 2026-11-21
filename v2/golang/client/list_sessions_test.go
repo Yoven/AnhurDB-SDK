@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -50,8 +51,11 @@ func TestListSessionsPopulatedEnvelope(t *testing.T) {
 	}
 }
 
-// TestListSessionsBareArray verifies the legacy bare-array shape still parses.
-func TestListSessionsBareArray(t *testing.T) {
+// TestListSessionsBareArrayIsRejected proves the 4.0.0 removal: the server
+// always sends the {"sessions",...,"has_more","next_offset"} envelope
+// (server/handler/record_session.go:135-142), so a bare JSON array is a decode
+// error now — never a silently accepted single page.
+func TestListSessionsBareArrayIsRejected(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		io.WriteString(responseWriter, `[{"uuid":"s2","record_count":1}]`)
 	}))
@@ -59,11 +63,11 @@ func TestListSessionsBareArray(t *testing.T) {
 
 	mem := NewMemory("k", WithURL(server.URL))
 	sessions, err := mem.ListSessions(context.Background())
-	if err != nil {
-		t.Fatalf("bare array errored: %v", err)
+	if err == nil {
+		t.Fatalf("a bare array must not decode any more, got %+v", sessions)
 	}
-	if len(sessions) != 1 || sessions[0].UUID != "s2" {
-		t.Fatalf("expected 1 session uuid=s2, got %+v", sessions)
+	if !strings.Contains(err.Error(), "parsing sessions response") {
+		t.Fatalf("want the envelope decode error, got: %v", err)
 	}
 }
 

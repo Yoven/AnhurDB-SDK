@@ -1,5 +1,79 @@
 # Go SDK Changelog
 
+## 4.0.0 — legacy removal (2026-11-21)
+
+AnhurDB has exactly one server and no external clients, so every SDK branch that
+existed only for an older server is removed. Identical removals ship in Go,
+Python and TypeScript (all three at 4.0.0). Server evidence is AnhurDB `main`
+(`server/`).
+
+### Removed
+
+- **`Memory.UpdateConsolidateIDs`** — deprecated alias of `LinkConsolidated`
+  (pre-2026-06-18 name).
+- **`Memory.RecentMemories`** — deprecated alias of `Recent`.
+- **`Memory.SearchWithSignals`** — deprecated alias of `SearchWithRetrieval`,
+  announced in 3.0.0 as "removed in 4.0.0".
+- **`models.StatusPending`** (`"pending"`, "Legacy (pre-v2)") — the server never
+  writes record status `pending`; only `ExtractionStatus` uses that word
+  (`service/ingest.go:233`, a different field).
+- **`DeleteFileResult.RaftIndex`** — never serialised (`json:"-"`,
+  `service/record_delete_file.go:42`); it could only read 0.
+- **`Add` ingest-404 → `/records` "OSS fallback"** and the sticky
+  `ingestAvailable` state. `POST /api/v1/ingest` is mounted unconditionally
+  (`router.go:135`); a 404 is now returned as `ErrNotFound` and nothing is
+  written through `/records`. The caller-pinned records path (`WithMode("regular")`,
+  `WithScore`, `WithType`, `WithMetadata`) is unchanged.
+- **Session-record-limit sentence matching** — the text prefix
+  "session has reached the maximum of" and the "maximum of N records" number
+  parse. The server always sends `code`, `limit`, `count`, `session_uuid`
+  (`handler/service_bridge.go:81-82,109-125`, produced only by
+  `service/record_session_cap.go:178`). A 409 without the code is an ordinary
+  `*APIError`.
+- **Tenant-library-collision sentence matching and the upload-400 branch.** The
+  collision is `409 && code == "tenant_library_collision"` only
+  (`handler/search_scope_request.go:35-43,109-118`; upload uses the same writer,
+  `handler/upload.go:133-135`). Kept: the ambiguous-upload-status 409 sentence
+  (the server sends no code for it) and the partial-delete 500 `partial:true`.
+- **Bare-array response fallbacks** on `ListSessions`
+  (`handler/record_session.go:135-142`), `Recent` (`record_session.go:455`),
+  `ManifestGlobal` (`handler/search_aux.go:224`), `ManifestSession`
+  (`record_session.go:305-311`), `ListChat` (`record_session.go:184`),
+  `SearchEntities` (`handler/entity.go:254-257`) and `GetRecordEntities`
+  (`entity.go:563-567`). A bare array is now a decode error. Kept:
+  `"records": null` → empty slice, and an empty body → empty result.
+
+### Changed
+
+- **Module path → `github.com/Yoven/AnhurDB-SDK/v2/golang/v4`** (semantic import
+  versioning: a v4 tag on the `/v3` path resolves to nothing). Migrate with
+  `sed -i 's#golang/v3#golang/v4#g'` over your imports and `go.mod`.
+- **`AddResult.Mode`** values: `"cloud"` → `"ingest"`, `"oss"` → `"records"`.
+  The value names the door that ran (Add, Create, CreateInSession).
+- **`SessionRecordLimitError.Limit` and `.Count` are `int`** (were `*int`), and
+  `SessionUUID` is always the server's. `Error()` is
+  `AnhurDB API error (HTTP 409): <server sentence> (session record limit: session=<uuid>, limit=<N>, count=<M>)`
+  — byte-identical in the three SDKs; no "unknown" placeholders.
+- **`TenantLibraryCollisionError.Status`** is always 409.
+- `client.Version` = `4.0.0` (User-Agent `AnhurSDK-Golang/4.0.0`).
+- Internal: `client.go` (1046 lines), `types.go` and `parity.go` were split by
+  domain (`add.go`, `create.go`, `sessions.go`, `manifest.go`, `entities.go`,
+  `record_links.go`, `record_type_counts.go`, `search_session.go` and their
+  `*_types.go`). No exported name changed except the removals above.
+
+### Migration
+
+| 3.x | 4.0.0 |
+|---|---|
+| `import ".../v2/golang/v3/..."` | `import ".../v2/golang/v4/..."` |
+| `mem.UpdateConsolidateIDs(ctx, ids, parent)` | `mem.LinkConsolidated(ctx, ids, parent)` |
+| `mem.RecentMemories(ctx, n)` | `mem.Recent(ctx, n)` |
+| `mem.SearchWithSignals(ctx, q, s, opts...)` | `mem.SearchWithRetrieval(ctx, q, s, opts...)` |
+| `result.Mode == "cloud"` / `"oss"` | `result.Mode == "ingest"` / `"records"` |
+| `*limitErr.Limit`, `*limitErr.Count` | `limitErr.Limit`, `limitErr.Count` |
+| `models.StatusPending` | (none — never written by the server) |
+| `deleteResult.RaftIndex` | (none — never sent by the server) |
+
 ## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
@@ -13,7 +87,7 @@ Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
   prefix); it was silently dropped on decode.
 - **Deprecated:** `DeleteFileResult.RaftIndex`. The server never serialises it
   (`json:"-"`), so it was always 0. Kept so existing code compiles; removed in
-  the next major. Same decision in all three SDKs.
+  the next major. Same decision in all three SDKs. **Done in 4.0.0** (removed).
 - **Behaviour change:** an invalid `WithTenantID` value (outside `[A-Za-z0-9_-]`
   or over 64 chars — the server's identifier rule) used to be DROPPED silently,
   which made a master-key call land on the `default` tenant. Every call now

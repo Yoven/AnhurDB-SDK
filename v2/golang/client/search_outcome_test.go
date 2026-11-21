@@ -53,14 +53,4 @@ func TestSearchWithRetrievalReturnsLegScores(t *testing.T) {
 	if strings.TrimSpace(logBuffer.String()) != "" {
 		t.Fatalf("a warning was logged for a call that dropped nothing: %q", logBuffer.String())
 	}
-
-	// The deprecated alias must be the SAME envelope, not a second code path.
-	aliasOutcome, aliasErr := memoryClient.SearchWithSignals(context.Background(), "q", SessionsAll(),
-		WithDebugSignals())
-	if aliasErr != nil {
-		t.Fatalf("SearchWithSignals returned error: %v", aliasErr)
-	}
-	if len(aliasOutcome.LegScores) != len(outcome.LegScores) {
-		t.Fatalf("alias LegScores=%d want %d", len(aliasOutcome.LegScores), len(outcome.LegScores))
-	}
 }

@@ -47,10 +47,6 @@ func (c *HTTPConnection) handleResponse(resp *http.Response) ([]byte, error) {
 			"server returned redirect (HTTP %d); redirects are disabled "+
 				"to prevent credential leakage", resp.StatusCode)
 	case resp.StatusCode == 400 || resp.StatusCode == 422:
-		// Servers older than 4574c4d refused a colliding tenant_shared upload with 400.
-		if scopeErr := scopeErrorFromResponse(resp.StatusCode, body); scopeErr != nil {
-			return nil, scopeErr
-		}
 		// Truncate body in error to prevent oversized log entries.
 		truncated := string(body)
 		if len(truncated) > 500 {

@@ -11,23 +11,29 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v3.0.1
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v4@v4.0.0
 ```
 
-> The pin above is the newest **published** tag (`v2/golang/v3.0.1`, verified on
-> proxy.golang.org), and it matches `client.Version` in this tree. TypeScript and
-> Python ship the same number.
+> This tree is **4.0.0** (`client.Version`); TypeScript and Python ship the same
+> number. Check [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases)
+> for the `v2/golang/v4.0.0` tag before pinning it — until it is published, the
+> newest published tag is `v2/golang/v3.0.1` on the old `/v3` path.
 >
-> **The module path moved to `/v3` in 3.0.0.** It contains TWO `v2`-looking segments:
-> `github.com/Yoven/AnhurDB-SDK/v2/golang/v3`. The first `v2` is this repository's
-> directory layout — it never changes. The trailing one is the Go major-version
-> suffix. Bumping only the version, `.../golang/v2@v3.0.1`, resolves to nothing:
-> Go refuses a v3+ version on a module path with no matching major suffix, and the
-> error names the path, not the version, so it reads like the module is missing.
+> **The module path moved to `/v4` in 4.0.0** (it moved to `/v3` in 3.0.0). It
+> contains TWO `v2`-looking segments: `github.com/Yoven/AnhurDB-SDK/v2/golang/v4`.
+> The first `v2` is this repository's directory layout — it never changes. The
+> trailing one is the Go major-version suffix. Bumping only the version,
+> `.../golang/v3@v4.0.0`, resolves to nothing: Go refuses a v4+ version on a
+> module path with no matching major suffix, and the error names the path, not
+> the version, so it reads like the module is missing. Migrate imports with
+> `sed -i 's#golang/v3#golang/v4#g'`.
 >
-> **3.0.0 is breaking.** Sixteen read methods dropped the `opts ...ReadOption`
-> parameter they silently discarded, `SmartSearch` and `SearchWithRetrieval` return
-> typed envelopes, and `GetSessionClusters` gained two parameters. See `CHANGELOG.md`.
+> **4.0.0 is breaking — legacy removal.** Every branch that existed only for an
+> older AnhurDB server is gone (the `/ingest` 404 → `/records` fallback, bare-array
+> responses, sentence-matched 409s), as are the aliases `UpdateConsolidateIDs`,
+> `RecentMemories`, `SearchWithSignals`, `models.StatusPending` and the
+> never-sent `DeleteFileResult.RaftIndex`. `AddResult.Mode` is now `"ingest"` or
+> `"records"`. See `CHANGELOG.md`.
 
 ## Quick Start
 
@@ -37,7 +43,7 @@ package main
 import (
     "context"
     "fmt"
-    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v4"
 )
 
 func main() {
@@ -115,7 +121,7 @@ hits, err = mem.Search(ctx, "query", anhurdb.SessionsAll(),
 
 // Ask for per-hit signals + per-leg score distributions, and read all three
 // parts of the outcome in one struct.
-outcome, err := mem.SearchWithSignals(ctx, "query", anhurdb.SessionsAll(),
+outcome, err := mem.SearchWithRetrieval(ctx, "query", anhurdb.SessionsAll(),
     anhurdb.WithDebugSignals())
 _ = outcome.Results       // []client.SearchResult
 _ = outcome.Retrieval     // *client.RetrievalMeta — which arms ran, degraded?
@@ -272,8 +278,8 @@ When nothing matched (`MatchedCount == 0`), `DeleteFileResult.AlternativeSession
 lists the sessions of the same store that DO hold that prefix
 (`FileSessionCandidate{SessionUUID, MatchedCount, RootChecksum, RootFilename}`) —
 check `RootChecksum` and re-issue `DeleteFile` with the right session. `Purge` tells
-whether the delete is final (true, shared plane) or a restorable tombstone. `RaftIndex`
-is deprecated and always 0 (the server never sends it).
+whether the delete is final (true, shared plane) or a restorable tombstone. There is
+no `RaftIndex` (removed in 4.0.0 — the server never sends it).
 
 ### AST Query (Query Builder)
 
@@ -282,8 +288,8 @@ Structured filtering via `POST /api/v1/query`. Build a `QueryRequest` directly o
 ```go
 import (
     "context"
-    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v4"
+    "github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 mem := anhurdb.NewMemory("anhur_xxx")
@@ -328,16 +334,17 @@ if err != nil {
 ### Full session (HTTP 409, `session_record_limit`)
 
 A write into a session that already holds its maximum number of records is
-refused with a typed, **non-retryable** `*client.SessionRecordLimitError`
-(old servers that send only the text are recognised too). Retrying the same
+refused with a typed, **non-retryable** `*client.SessionRecordLimitError`,
+recognised by `"code": "session_record_limit"` only (a 409 without the code is an
+ordinary `*APIError`). Retrying the same
 session gets the same answer; keep the data and retry later — never write it
 into another session to dodge the cap.
 
 ```go
 var limitErr *client.SessionRecordLimitError
 if errors.As(err, &limitErr) { // or errors.Is(err, client.ErrSessionRecordLimit)
-    // Limit/Count are *int: nil when an old server omitted them.
-    log.Printf("session %s is full (limit=%v count=%v)", limitErr.SessionUUID, limitErr.Limit, limitErr.Count)
+    // Limit and Count are plain ints: the server always sends both.
+    log.Printf("session %s is full (limit=%d count=%d)", limitErr.SessionUUID, limitErr.Limit, limitErr.Count)
 }
 ```
 
@@ -347,10 +354,10 @@ if errors.As(err, &limitErr) { // or errors.Is(err, client.ErrSessionRecordLimit
 ### Tenant library collision (`*client.TenantLibraryCollisionError`)
 
 When your tenant library store id collides with another registered tenant's
-store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
+store (an existing tenant named `<t>_lib`), the server refuses every tenant_shared
 search, by-id call, upload and delete: HTTP 409 with `"code":
-"tenant_library_collision"` (servers older than 4574c4d sent no code and used 400
-on upload; the SDK still recognises those by the sentence). The SDK returns
+"tenant_library_collision"`, which is the only thing the SDK matches (no sentence
+matching, no 400 since 4.0.0). The SDK returns
 a typed, **non-retryable** `*client.TenantLibraryCollisionError`
 (`errors.Is(err, client.ErrTenantLibraryCollision)`); it heals only when an
 operator renames one of the tenants. It is never confused with the session
@@ -362,7 +369,7 @@ the ordinary retryable `*APIError` with `KindUnavailable`.
 The SDK includes a retriever adapter for Go agentic frameworks:
 
 ```go
-import "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/integrations/dspy"
+import "github.com/Yoven/AnhurDB-SDK/v2/golang/v4/integrations/dspy"
 
 retriever := dspy.NewRetriever(mem, 10)
 docs, err := retriever.GetRelevantDocuments(ctx, "user's role?")

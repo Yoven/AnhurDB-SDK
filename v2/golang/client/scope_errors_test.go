@@ -7,8 +7,9 @@ package client
 // Server shapes copied from AnhurDB fix/l2-lib-scope:
 //   - collision (4574c4d): server/service/search_scope_admit.go GuardTenantLibraryCollision
 //     sentence + code "tenant_library_collision", HTTP 409 on every door including upload
-//     (handler/search_scope_request.go writeScopeLegError, handler/upload.go). The legacy
-//     bodies (no code; 400 on upload) are kept to prove the sentence fallback.
+//     (handler/search_scope_request.go writeScopeLegError, handler/upload.go). The
+//     pre-4574c4d bodies (no code; 400 on upload) are kept to prove they are NO
+//     LONGER typed (the 4.0.0 removal of the sentence fallback).
 //   - ambiguous upload status: server/handler/upload_status_scope.go:188-189.
 //   - partial delete: server/handler/record_delete_file_library.go:53-57 with legs from
 //     service/record_delete_file_library.go:34-44 and the message of :54-67.
@@ -27,9 +28,10 @@ import (
 const collisionBody409 = `{"error":"store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared","code":"tenant_library_collision"}`
 const collisionUploadBody409 = `{"error":"tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared","code":"tenant_library_collision"}`
 
-// Legacy (pre-4574c4d) bodies: no code; the upload door answered 400.
-const legacyCollisionBody409 = `{"error":"store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
-const legacyCollisionBody400 = `{"error":"tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
+// Pre-4574c4d bodies: no code; the upload door answered 400. Since 4.0.0 both
+// are plain *APIError answers.
+const preCodeCollisionBody409 = `{"error":"store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
+const preCodeCollisionBody400 = `{"error":"tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"}`
 const ambiguousBody = `{"error":"record 42 is a file upload in more than one plane; pass ?scope=sessions|tenant_shared|tenant_shared_legacy|client_shared"}`
 
 // partialDeleteBody is deliberately longer than the 500-character message excerpt.
@@ -70,16 +72,35 @@ func TestCollisionCodeWinsOverText(t *testing.T) {
 	}
 }
 
-// TestLegacyCollisionWithoutCodeStillTyped: servers older than 4574c4d sent no code and
-// refused the upload with 400; the sentence fallback keeps both typed.
-func TestLegacyCollisionWithoutCodeStillTyped(t *testing.T) {
-	getMemory := sessionLimitStubServer(t, 409, legacyCollisionBody409)
+// TestCollisionSentenceWithoutCodeIsNotTyped proves the 4.0.0 removal: the collision
+// is recognised by code on a 409 ONLY. The pre-4574c4d bodies — the sentence with no
+// code on a 409, and the upload door's 400 — are now ordinary *APIError answers.
+func TestCollisionSentenceWithoutCodeIsNotTyped(t *testing.T) {
+	getMemory := sessionLimitStubServer(t, 409, preCodeCollisionBody409)
 	_, getErr := getMemory.Get(context.Background(), 42, WithRecordScope(RecordScopeTenantShared))
-	assertCollision(t, getErr, 409, KindConflict)
+	assertPlainAPIError(t, getErr, 409, KindConflict)
 
-	uploadMemory := sessionLimitStubServer(t, 400, legacyCollisionBody400)
+	uploadMemory := sessionLimitStubServer(t, 400, preCodeCollisionBody400)
 	_, uploadErr := uploadMemory.UploadFile(context.Background(), "a.txt", []byte("hi"), "", 0, WithUploadMode("tenant_shared"))
-	assertCollision(t, uploadErr, 400, KindInvalidRequest)
+	assertPlainAPIError(t, uploadErr, 400, KindInvalidRequest)
+
+	// The code itself on a 400 is not the contract either: only 409 carries it.
+	codeOn400Memory := sessionLimitStubServer(t, 400, collisionUploadBody409)
+	_, codeOn400Err := codeOn400Memory.UploadFile(context.Background(), "a.txt", []byte("hi"), "", 0, WithUploadMode("tenant_shared"))
+	assertPlainAPIError(t, codeOn400Err, 400, KindInvalidRequest)
+}
+
+// assertPlainAPIError requires an untyped *APIError with the given status and kind.
+func assertPlainAPIError(t *testing.T, gotErr error, wantStatus int, wantKind ErrorKind) {
+	t.Helper()
+	var collisionErr *TenantLibraryCollisionError
+	if errors.As(gotErr, &collisionErr) || errors.Is(gotErr, ErrTenantLibraryCollision) {
+		t.Fatalf("must not be typed as a collision any more: %v", gotErr)
+	}
+	var apiErr *APIError
+	if !errors.As(gotErr, &apiErr) || apiErr.StatusCode != wantStatus || apiErr.Kind() != wantKind {
+		t.Fatalf("want plain *APIError %d (%s), got %T %v", wantStatus, wantKind, gotErr, gotErr)
+	}
 }
 
 // TestUploadRegistryUnavailableIsPlainUnavailable: an unreadable tenant registry is 503

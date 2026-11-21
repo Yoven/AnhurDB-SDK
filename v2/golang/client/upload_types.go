@@ -1,7 +1,8 @@
 package client
 
-// upload_types.go — one domain: the two response shapes of the file-upload
-// route (POST /api/v1/upload and GET /api/v1/upload/{id}/status).
+// upload_types.go — one domain: the shapes of the file-upload route — its one
+// input option (WithUploadMode, the shared plane) and its two response shapes
+// (POST /api/v1/upload and GET /api/v1/upload/{id}/status).
 //
 // Split out of types.go on 2026-09-14 (types.go was past the ~300-line house
 // cut) while both structs were being reconciled with the handler.
@@ -66,4 +67,19 @@ type UploadStatusResult struct {
 	Completed bool   `json:"completed"`
 	Summary   string `json:"summary,omitempty"`
 	Metadata  string `json:"metadata,omitempty"`
+}
+
+// UploadOption configures Memory.UploadFile (shared-plane mode).
+type UploadOption func(*uploadConfig)
+
+type uploadConfig struct {
+	mode string
+}
+
+// WithUploadMode selects the upload plane: "tenant_shared" or "client_shared".
+// Chat mode is inferred when sessionID is non-empty (linkedEpisodicID required).
+func WithUploadMode(uploadMode string) UploadOption {
+	return func(cfg *uploadConfig) {
+		cfg.mode = uploadMode
+	}
 }

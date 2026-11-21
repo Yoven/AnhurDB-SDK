@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v4"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 func main() {

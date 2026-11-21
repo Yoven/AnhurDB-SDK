@@ -44,12 +44,10 @@ type DeleteFileResult struct {
 	// different things — undoable or not. A UI that cannot tell them apart either
 	// promises an undo that does not exist or hides one that does.
 	Purge bool `json:"purge"`
-	// Deprecated: RaftIndex is never sent. The server keeps the consensus log
-	// index internal (json:"-" in service.DeleteFileResult,
-	// server/service/record_delete_file.go:42, owner decision 2026-08-11), so this
-	// field is ALWAYS 0. Kept only so existing code that reads it still compiles;
-	// it will be removed in the next major version. Do not branch on it.
-	RaftIndex int64 `json:"raft_index,omitempty"`
+	// There is deliberately no RaftIndex field (removed in 4.0.0): the server
+	// keeps the consensus log index internal (json:"-" in
+	// service.DeleteFileResult, server/service/record_delete_file.go:42), so a
+	// field here could only ever read 0.
 	// AlternativeSessions is filled ONLY when MatchedCount == 0: the sessions of
 	// this SAME store that do hold records with the requested ingest_key prefix.
 	// Server truth: database.FileSessionCandidate

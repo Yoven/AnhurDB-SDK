@@ -17,7 +17,7 @@ net/http, crypto/sha256, encoding/json, and other stdlib packages.
 package anhurdb
 
 import (
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 // NewMemory creates a new Memory instance connected to AnhurDB.
@@ -119,7 +119,7 @@ var WithSearchMode = client.WithSearchMode
 var WithSemanticTimeoutMs = client.WithSemanticTimeoutMs
 
 // WithDebugSignals asks the server for per-hit signals and per-leg score
-// distributions, readable via Memory.SearchWithSignals.
+// distributions, readable via Memory.SearchWithRetrieval.
 var WithDebugSignals = client.WithDebugSignals
 
 // The three legal search budgets, mirroring the server's handler.SearchMode*.

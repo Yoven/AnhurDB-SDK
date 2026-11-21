@@ -136,7 +136,7 @@ func TestUnknownSearchModeIsRefusedLocally(t *testing.T) {
 }
 
 // TestSemanticModeFailsLoudWhenServerIgnoredIt is the cross-VERSION guard from
-// ADR-0031's 2026-09-05 amendment. An old server drops `mode` into unknownFields
+// ADR-0031's 2026-09-05 amendment. A server that does not honour `mode` drops it into unknownFields
 // and answers 200 with balanced results; the ONLY honest detector is that it did
 // not echo retrieval.mode=semantic back.
 func TestSemanticModeFailsLoudWhenServerIgnoredIt(t *testing.T) {
@@ -146,17 +146,17 @@ func TestSemanticModeFailsLoudWhenServerIgnoredIt(t *testing.T) {
 		wantError    bool
 	}{
 		{
-			name:         "old server: no retrieval block at all",
+			name:         "knob ignored: no retrieval block at all",
 			responseJSON: `{"results":[{"record":{"id":1},"similarity":0.9}]}`,
 			wantError:    true,
 		},
 		{
-			name:         "old server: retrieval present but mode empty",
+			name:         "knob ignored: retrieval present but mode empty",
 			responseJSON: `{"results":[],"retrieval":{"mode":""}}`,
 			wantError:    true,
 		},
 		{
-			name:         "old server: silently ran balanced",
+			name:         "knob ignored: silently ran balanced",
 			responseJSON: `{"results":[],"retrieval":{"mode":"balanced"}}`,
 			wantError:    true,
 		},
@@ -224,9 +224,9 @@ func TestThirteenHitSignalsAndLegScoresDecode(t *testing.T) {
 	defer server.Close()
 
 	memoryClient := NewMemory("k", WithURL(server.URL))
-	outcome, searchErr := memoryClient.SearchWithSignals(context.Background(), "q", SessionsAll(), WithDebugSignals())
+	outcome, searchErr := memoryClient.SearchWithRetrieval(context.Background(), "q", SessionsAll(), WithDebugSignals())
 	if searchErr != nil {
-		t.Fatalf("SearchWithSignals returned error: %v", searchErr)
+		t.Fatalf("SearchWithRetrieval returned error: %v", searchErr)
 	}
 	if len(outcome.Results) != 1 || outcome.Results[0].Signals == nil {
 		t.Fatalf("expected one hit carrying signals, got %#v", outcome.Results)

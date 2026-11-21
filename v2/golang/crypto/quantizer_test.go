@@ -1,8 +1,8 @@
 package crypto_test
 
 import (
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/crypto"
 	"testing"
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/crypto"
 )
 
 func TestCosineSimilarity(t *testing.T) {

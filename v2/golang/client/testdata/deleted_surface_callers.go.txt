@@ -1,6 +1,7 @@
 // This file is NOT compiled as part of the SDK. It is the corpus for
 // TestDeletedSurfaceDoesNotCompile: every line below is a call or a reference
-// that WORKED before 3.0.0 and MUST NOT compile after it.
+// that WORKED before 3.0.0 (or before 4.0.0, last block) and MUST NOT compile
+// after it.
 //
 // A deleted option proves nothing by being absent — absence is exactly how the
 // old `_ = opts` sites looked to a caller. The proof is a compiler that refuses.
@@ -9,8 +10,8 @@ package probe
 import (
 	"context"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/models"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/models"
 )
 
 func mustNotCompile(ctx context.Context, memory *client.Memory) {
@@ -58,6 +59,15 @@ func mustNotCompile(ctx context.Context, memory *client.Memory) {
 	_ = client.WalkResult{}.StartID
 	_ = client.WalkResult{}.Depth
 	_ = client.WalkNode{}
+
+	// ── 4.0.0: legacy aliases, the never-sent field, nullable limit numbers ──
+	_ = memory.UpdateConsolidateIDs(ctx, []int64{1}, 2)
+	_, _ = memory.RecentMemories(ctx, 10)
+	_, _ = memory.SearchWithSignals(ctx, "q", client.SessionsAll())
+	_ = models.StatusPending
+	_ = client.DeleteFileResult{}.RaftIndex
+	var _ *int = client.SessionRecordLimitError{}.Limit
+	var _ *int = client.SessionRecordLimitError{}.Count
 }
 
 func mustBeBytes(raw []byte, err error) []byte { return raw }

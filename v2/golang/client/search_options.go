@@ -219,7 +219,7 @@ func WithUntil(until string) ReadOption {
 //
 // mode=SearchModeSemantic is a PROMISE, not a preference: the server answers
 // 503/504 rather than quietly returning lexical results when the embedding
-// cannot be resolved. Because an older server ignores the field entirely, the
+// cannot be resolved. Because a server that does not honour the knob ignores it, the
 // SDK verifies the promise against the response and fails loud when it was not
 // kept — see verifySearchKnobsHonoured.
 func WithSearchMode(searchMode string) SearchOption {

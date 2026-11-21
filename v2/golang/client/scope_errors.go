@@ -12,20 +12,23 @@ package client
 //   - collision: HTTP 409 {"error": "...tenant library store id is a registered
 //     tenant; rename one of the two tenants before using tenant_shared", "code":
 //     "tenant_library_collision"} on EVERY door — search, by-id, delete-by-file and
-//     upload (handler/search_scope_request.go writeScopeLegError). Older servers sent
-//     no code, and answered the upload with HTTP 400; both are still recognised by
-//     the sentence. An unreadable tenant registry is HTTP 503 (upload included) and
-//     stays an ordinary retryable *APIError.
+//     upload (handler/search_scope_request.go:35-43 and writeScopeLegError :109-118;
+//     the upload door uses the same writer, handler/upload.go:133-135). An unreadable
+//     tenant registry is HTTP 503 (upload included) and stays an ordinary retryable
+//     *APIError.
 //   - ambiguous upload status: HTTP 409 {"error": "record N is a file upload in more
 //     than one plane; pass ?scope=..."} (handler/upload_status_scope.go:186-191).
+//     The server sends NO code for this one, so the stable sentence is the contract.
 //   - library delete partial: HTTP 500 {"error": "...", "partial": true, "legs":
 //     [...]} (handler/record_delete_file_library.go:53-57).
 //
-// Junior Tip [the code first, the sentence only as a fallback]: the server's sentence
-// names the store and the fix and may be reworded; the "code" is the contract. The
-// sentence match stays ONLY for servers older than 4574c4d, which sent no code. The
-// session-record-limit 409 has its own code ("session_record_limit") and its own
-// prefix; it is checked FIRST in response.go, so the two can never be confused.
+// Junior Tip [the collision is recognised by its code ONLY, 4.0.0]: the server's
+// sentence names the store and the fix and may be reworded; the "code" is the
+// contract. Until 3.x the SDK also matched the sentence (and an upload 400) for
+// servers older than 4574c4d; every server now sends the code on a 409, so a body
+// without it is an ordinary *APIError. The session-record-limit 409 has its own
+// code ("session_record_limit") and is checked FIRST in response.go, so the two can
+// never be confused.
 
 import (
 	"encoding/json"
@@ -37,10 +40,6 @@ import (
 // TenantLibraryCollisionCode is the machine-readable "code" of the collision refusal
 // (server service.TenantLibraryCollisionErrorCode).
 const TenantLibraryCollisionCode = "tenant_library_collision"
-
-// tenantLibraryCollisionText is the sentence of the server's ErrTenantLibraryCollision,
-// matched only when the body carries no code (servers older than 4574c4d).
-const tenantLibraryCollisionText = "tenant library store id is a registered tenant"
 
 // uploadStatusAmbiguousText is the stable part of the ambiguous-upload-status 409.
 const uploadStatusAmbiguousText = "is a file upload in more than one plane"
@@ -55,12 +54,11 @@ var (
 )
 
 // TenantLibraryCollisionError: the caller's tenant library store {c}_{t}_lib is the
-// registered store of ANOTHER tenant (a legacy tenant named "t_lib"), so the server
+// registered store of ANOTHER tenant (an existing tenant named "t_lib"), so the server
 // refuses every tenant_shared read, by-id, upload and delete for this caller.
 // Not retryable: it heals only when one of the two tenants is renamed.
 type TenantLibraryCollisionError struct {
-	// Status is the HTTP status the server used (409; 400 on upload from servers
-	// older than 4574c4d).
+	// Status is the HTTP status the server used (always 409).
 	Status        int
 	ServerMessage string
 	response      *APIError
@@ -79,7 +77,7 @@ func (collisionErr *TenantLibraryCollisionError) Unwrap() []error {
 // StatusCode returns the HTTP status the server used.
 func (collisionErr *TenantLibraryCollisionError) StatusCode() int { return collisionErr.Status }
 
-// Kind follows the status (conflict for 409, invalid_request for 400).
+// Kind follows the status (conflict for the 409 the server sends).
 func (collisionErr *TenantLibraryCollisionError) Kind() ErrorKind {
 	return KindFor(collisionErr.Status)
 }
@@ -166,13 +164,13 @@ func decodeScopeErrorBody(body []byte) scopeErrorWireBody {
 // The caller passes the UNTRUNCATED body: the partial-delete legs can exceed the
 // 500-character excerpt used in messages.
 func scopeErrorFromResponse(statusCode int, body []byte) error {
-	if statusCode != 400 && statusCode != 409 && statusCode != 500 {
+	if statusCode != 409 && statusCode != 500 {
 		return nil
 	}
 	wireBody := decodeScopeErrorBody(body)
 	excerpt := truncateErrorBody(string(body))
 	switch {
-	case (statusCode == 400 || statusCode == 409) && isTenantLibraryCollision(wireBody):
+	case statusCode == 409 && wireBody.Code == TenantLibraryCollisionCode:
 		return &TenantLibraryCollisionError{
 			Status:        statusCode,
 			ServerMessage: wireBody.Error,
@@ -191,16 +189,6 @@ func scopeErrorFromResponse(statusCode int, body []byte) error {
 		}
 	}
 	return nil
-}
-
-// isTenantLibraryCollision branches on the code first; the sentence is a fallback for a
-// body WITHOUT a code (an older server). A body whose code names another refusal is
-// never re-read by its text.
-func isTenantLibraryCollision(wireBody scopeErrorWireBody) bool {
-	if wireBody.Code != "" {
-		return wireBody.Code == TenantLibraryCollisionCode
-	}
-	return strings.Contains(wireBody.Error, tenantLibraryCollisionText)
 }
 
 // truncateErrorBody bounds an error body quoted in a message (500 characters, the

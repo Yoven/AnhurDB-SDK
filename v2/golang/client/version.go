@@ -30,7 +30,18 @@ package client
 // SearchWithRetrieval stopped returning a tuple that could not carry
 // leg_scores. Every removal is a compile error, by design — the old code
 // compiled and lied.
-const Version = "3.0.1"
+//
+// 4.0.0 (2026-11-21) is the legacy-removal release, identical in the three
+// SDKs. AnhurDB has one server and no external clients, so every branch that
+// existed only for an older server was removed: the /ingest 404 → /records
+// fallback, the bare-array response fallbacks, the sentence-matching of the
+// session-record-limit and tenant-library-collision refusals (both are now
+// recognised by their `code` only, and SessionRecordLimitError.Limit/Count
+// became plain ints), the never-sent DeleteFileResult.RaftIndex, the deprecated
+// aliases UpdateConsolidateIDs / RecentMemories / SearchWithSignals and
+// models.StatusPending. AddResult.Mode now reads "ingest" or "records". Being a
+// major on a Go module, it also moves the import path to .../v2/golang/v4.
+const Version = "4.0.0"
 
 // UserAgentPrefix names the SDK in the User-Agent header. Kept separate from
 // Version so the two concerns (who I am / which release I am) never get

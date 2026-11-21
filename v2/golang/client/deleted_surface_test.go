@@ -1,8 +1,8 @@
 package client
 
-// deleted_surface_test.go — one domain: proving that the surface 3.0.0 DELETED
-// is really gone, by compiling a caller that uses it and requiring the build to
-// FAIL.
+// deleted_surface_test.go — one domain: proving that the surface 3.0.0 and
+// 4.0.0 DELETED is really gone, by compiling a caller that uses it and requiring
+// the build to FAIL.
 //
 // Junior Tip [why absence is not a proof, 2026-09-14]: a grep that finds no
 // `_ = opts` proves only that the string is gone. The defect was never the
@@ -39,8 +39,10 @@ func sdkModuleRoot(t *testing.T) string {
 }
 
 // TestDeletedSurfaceDoesNotCompile is the compile-fail proof for §1 (the 16
-// methods that lost `opts ...ReadOption`), §3 (the phantom struct fields) and
-// §9 (the three dead model types).
+// methods that lost `opts ...ReadOption`), §3 (the phantom struct fields), §9
+// (the three dead model types) and the 4.0.0 legacy removal (UpdateConsolidateIDs,
+// RecentMemories, SearchWithSignals, models.StatusPending,
+// DeleteFileResult.RaftIndex, and the *int Limit/Count of SessionRecordLimitError).
 func TestDeletedSurfaceDoesNotCompile(t *testing.T) {
 	if _, lookErr := exec.LookPath("go"); lookErr != nil {
 		t.Skip("go toolchain not on PATH; cannot run the compile-fail proof")
@@ -51,8 +53,8 @@ func TestDeletedSurfaceDoesNotCompile(t *testing.T) {
 	// it would be picked up by `go build ./...` and break the ordinary build.
 	probeDir := t.TempDir()
 	goModContents := "module anhurdb.parity/probe\n\ngo 1.24\n\n" +
-		"require github.com/Yoven/AnhurDB-SDK/v2/golang/v3 v3.0.0\n\n" +
-		"replace github.com/Yoven/AnhurDB-SDK/v2/golang/v3 => " + moduleRoot + "\n"
+		"require github.com/Yoven/AnhurDB-SDK/v2/golang/v4 v4.0.0\n\n" +
+		"replace github.com/Yoven/AnhurDB-SDK/v2/golang/v4 => " + moduleRoot + "\n"
 	if writeErr := os.WriteFile(filepath.Join(probeDir, "go.mod"), []byte(goModContents), 0o644); writeErr != nil {
 		t.Fatalf("writing probe go.mod: %v", writeErr)
 	}
@@ -75,7 +77,7 @@ func TestDeletedSurfaceDoesNotCompile(t *testing.T) {
 	buildOutput, buildErr := buildCommand.CombinedOutput()
 
 	if buildErr == nil {
-		t.Fatalf("the deleted 3.0.0 surface still compiles — every line in %s "+
+		t.Fatalf("the deleted 3.0.0/4.0.0 surface still compiles — every line in %s "+
 			"is supposed to be a compile error:\n%s", corpusPath, buildOutput)
 	}
 
@@ -104,7 +106,7 @@ func TestDeletedSurfaceDoesNotCompile(t *testing.T) {
 	for lineNumber, statement := range corpusStatements(string(corpus)) {
 		if !reportedLines[lineNumber] {
 			t.Fatalf("probe.go:%d still COMPILES: %s\n"+
-				"that surface was supposed to be deleted in 3.0.0.\nbuild output:\n%s",
+				"that surface was supposed to be deleted in 3.0.0 or 4.0.0.\nbuild output:\n%s",
 				lineNumber, statement, outputText)
 		}
 	}

@@ -7,9 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+	"github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
-
 
 func TestNewConnection(t *testing.T) {
 	conn := client.NewConnection("http://localhost:8080/", "test_key", 0)
