@@ -168,23 +168,3 @@ export interface SearchPayload {
   debug_signals?: boolean;
 }
 
-/**
- * Payload sent to POST /api/v1/search for a single-session query.
- *
- * Same wire shape as {@link SearchPayload} with `scope` pinned to `sessions`;
- * the one-chat case is just `sessions: [uuid]`.
- *
- * @deprecated Since 2.1.0 `searchSession()` assembles its body through the
- * SAME {@link SearchPayload} builder as `search()`. Two assembly sites for one
- * endpoint is exactly how `searchSession` came to silently drop every knob
- * except `limit`/`type_filter` — including, before this was unified, the
- * ADR-0031 `mode`. The interface is kept exported so no caller's import
- * breaks; nothing in the SDK constructs it any more.
- */
-export interface SearchSessionPayload {
-  sessions: string[];
-  text?: string;
-  type_filter?: string;
-  limit?: number;
-  scope: "sessions";
-}

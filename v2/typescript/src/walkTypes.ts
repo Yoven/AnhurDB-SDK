@@ -13,7 +13,7 @@
  * @module
  */
 
-import type { MemoryRecord } from "./types.js";
+import type { MemoryRecord } from "./coreTypes.js";
 
 /**
  * One edge of a walk: a directed pair of record ids and nothing else.
@@ -61,4 +61,42 @@ export interface WalkResult {
    * say", which is not the same claim as "nothing was cut".
    */
   truncated?: boolean;
+}
+
+/**
+ * Goal-directed steering mode for {@link WalkSemanticOptions.target}.
+ *
+ * server selects the traversal frontier by this exact string — `"semantic"`
+ * steers toward `vector` (cosine to the goal), `"tag"` toward `target_tag`,
+ * `"recency"` toward the most recent records. Omitting `target` entirely = the
+ * pre-existing pure-Dijkstra walk. These three literals must match Go/Python.
+ */
+export type WalkTarget = "semantic" | "tag" | "recency";
+
+/**
+ * Optional goal-directed steering for {@link WalkResult}-returning
+ * `Memory.walkSemantic`. Every field is omitted from the wire body when unset,
+ * so calling `walkSemantic` with no options preserves the pre-existing
+ * pure-Dijkstra walk verbatim.
+ *
+ * (`Target`/`GoalVector`/`TargetTag`/`MaxCost`) and the Python SDK
+ * (`target`/`goal_vector`/`target_tag`/`max_cost`). `goalVector` is raw bytes
+ * field so callers never touch base64.
+ */
+export interface WalkSemanticOptions {
+  /** Goal-directed mode. Omit for a pure-Dijkstra walk (default). */
+  target?: WalkTarget;
+  /**
+   * Goal vector as raw bytes; used when `target === "semantic"`. The SDK
+   * base64-encodes it into the request's `vector` field (server default:
+   * treated as absent when omitted).
+   */
+  goalVector?: Uint8Array;
+  /** Target tag to steer toward; used when `target === "tag"`. */
+  targetTag?: string;
+  /**
+   * Maximum accumulated path cost before the walk stops. Maps to the wire
+   * `max_cost` field; the server defaults it to 2.0 when omitted.
+   */
+  maxCost?: number;
 }

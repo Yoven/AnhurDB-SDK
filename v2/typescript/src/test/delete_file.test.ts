@@ -81,8 +81,6 @@ describe("Memory.deleteFile (wire contract)", () => {
     assert.equal(result?.matched_count, 511);
     assert.equal(result?.deleted_count, 511);
     assert.deepEqual(result?.deleted_ids, [1, 2, 3]);
-    // raft_index is json:"-" on the server; the deprecated field stays absent.
-    assert.equal(result?.raft_index, undefined);
     assert.equal(result?.dry_run, false);
   });
 
@@ -104,7 +102,6 @@ describe("Memory.deleteFile (wire contract)", () => {
     assert.equal(result?.matched_count, 511);
     assert.equal(result?.deleted_count, 0);
     assert.equal(result?.deleted_ids, undefined);
-    assert.equal(result?.raft_index, undefined);
   });
 
   it("trims both arguments so whitespace never becomes part of the identity", async () => {

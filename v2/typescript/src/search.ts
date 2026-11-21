@@ -231,7 +231,7 @@ export abstract class MemorySearchApi {
    * Widening is now spelled `search(query, sessionsAll())`.
    *
    * Junior Tip [why it stopped building its own payload, 2.1.0]: it used to
-   * assemble a `SearchSessionPayload` by hand and forward only `limit` and
+   * assemble its own single-session body by hand and forward only `limit` and
    * `typeFilter`, so `skipQueryEmbed`, the weight overrides, `expandRelated`
    * — and, once ADR-0031 landed, `mode` — were dropped in silence. Same wire
    * body as before for every existing caller; every knob honoured from now on.

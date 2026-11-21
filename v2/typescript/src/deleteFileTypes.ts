@@ -32,17 +32,16 @@ export interface DeleteFileResult {
   dry_run: boolean;
   /**
    * `true` = gone for good (shared plane); `false` = restorable tombstone (chat
-   * plane). Server: `json:"purge"`, always sent (`server/service/record_delete_file.go`).
-   * Optional only so a pre-`purge` server still type-checks; treat absent as unknown.
+   * plane). Server: `json:"purge"`, no omitempty — always sent
+   * (`server/service/record_delete_file.go:35`). Required since 4.0.0, matching
+   * Go `Purge bool` and Python `purge: bool`.
+   *
+   * Junior Tip [no consensus log index here, 4.0.0]: the server keeps it
+   * `json:"-"` (`record_delete_file.go:42`), so it never reaches a client. The
+   * SDK used to declare a field for it anyway, always `undefined` — a field
+   * that can only lie. Removed rather than kept "for compatibility".
    */
-  purge?: boolean;
-  /**
-   * @deprecated Never sent: the server keeps the consensus log index internal
-   * (`json:"-"` at `server/service/record_delete_file.go:42`), so this is always
-   * `undefined`. Kept only so existing code that reads it still compiles;
-   * removed in the next major. Do not branch on it.
-   */
-  raft_index?: number;
+  purge: boolean;
   /**
    * Present ONLY when `matched_count === 0`: the sessions of this SAME store
    * that do hold records with the requested prefix (server

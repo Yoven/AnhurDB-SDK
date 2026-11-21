@@ -153,14 +153,16 @@ describe("listSessions — auto-pagination", () => {
     );
   });
 
-  it("accepts the legacy bare array as one complete page", async () => {
-    const { value, requests } = await withFakeSessionsServer(
-      () => JSON.stringify([{ uuid: "legacy", record_count: 3, last_active: "" }]),
+  it("4.0.0: a bare array is a contract violation, not a page", async () => {
+    const { value, thrown, requests } = await withFakeSessionsServer(
+      () => JSON.stringify([{ uuid: "s1", record_count: 3, last_active: "" }]),
       (memory) => memory.listSessions(),
     );
 
-    assert.deepEqual(value?.map((session) => session.uuid), ["legacy"]);
-    assert.equal(requests.length, 1, "a bare array carries no has_more, so it is the whole answer");
+    assert.equal(value, undefined, "a non-envelope body must not read as sessions");
+    assert.ok(thrown instanceof AnhurError, String(thrown));
+    assert.equal((thrown as AnhurError).kind, "server");
+    assert.equal(requests.length, 1);
   });
 
   it("returns an empty list for a tenant with zero sessions", async () => {

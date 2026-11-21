@@ -108,14 +108,13 @@ interface SessionStatsEnvelope {
  * Requests `limit=500&offset=N` and keeps going while the envelope reports
  * `has_more: true`, concatenating the pages in server order.
  *
- * Two response shapes are accepted, matching Go:
- *   - the envelope `{ "sessions": [...], "has_more": ..., "next_offset": ... }`
- *   - a legacy BARE ARRAY `[...]`, which is treated as one complete page.
+ * The server always answers the envelope `{ "sessions", "count", "limit",
+ * "offset", "has_more", "next_offset" }` (`handler/record_session.go:135-142`).
  *
- * Junior Tip [the bare array is not dead code]: older deployments answer with a
- * naked array and no envelope. TypeScript used to read `data.sessions` off it,
- * find `undefined`, and return an EMPTY list — a tenant full of sessions
- * reported as having none. Go handles the array explicitly; so does this.
+ * Junior Tip [no bare-array branch, 4.0.0]: this used to also accept a naked
+ * `[...]` from deployments that predated the envelope. None exists any more,
+ * and a branch nothing can reach is a branch nothing tests. A non-object body
+ * is now a contract violation and fails loudly instead of reading as a page.
  *
  * @param httpClient - Transport used for the GET calls.
  * @returns Every session in the tenant, in server order.
@@ -128,7 +127,7 @@ export async function fetchAllSessionStats(
   let pageOffset = 0;
 
   for (let pagesFetched = 0; pagesFetched < SESSION_STATS_MAX_PAGES; pagesFetched += 1) {
-    const responseBody = await httpClient.get<SessionStatsEnvelope | SessionStats[] | null>(
+    const responseBody = await httpClient.get<SessionStatsEnvelope | null>(
       "/api/v1/sessions/stats",
       {
         limit: String(SESSION_STATS_PAGE_LIMIT),
@@ -136,16 +135,21 @@ export async function fetchAllSessionStats(
       },
     );
 
-    // Legacy bare array: one page, no envelope, nothing more to follow.
-    if (Array.isArray(responseBody)) {
-      return allSessions.concat(responseBody);
-    }
-    // Empty body or JSON `null`: no sessions, and not an error.
-    if (responseBody === null || typeof responseBody !== "object") {
+    // JSON `null` (or an empty body, which the transport turns into `{}`):
+    // no sessions, and not an error.
+    if (responseBody === null) {
       return allSessions;
     }
+    if (typeof responseBody !== "object" || Array.isArray(responseBody)) {
+      throw new AnhurError(
+        "listSessions: GET /api/v1/sessions/stats answered a non-envelope body " +
+          "(expected {sessions, has_more, next_offset})",
+        undefined,
+        "server",
+      );
+    }
 
-    const envelope = responseBody as SessionStatsEnvelope;
+    const envelope: SessionStatsEnvelope = responseBody;
     if (envelope.sessions) {
       allSessions.push(...envelope.sessions);
     }

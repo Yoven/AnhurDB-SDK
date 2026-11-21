@@ -1,147 +1,39 @@
 /**
- * TypeScript type definitions for the AnhurDB SDK.
+ * TypeScript type definitions for the AnhurDB SDK — the ONE import path.
  *
- * These interfaces model every request/response shape used by the
- * Memory class. They cover the full AnhurDB REST surface including:
- *   - Core memory CRUD
- *   - Batch operations
- *   - Entity knowledge graph (Layer 2)
- *   - File upload & ingestion
- *   - Temporal versioning
- *   - Graph traversal
+ * Every request/response shape lives in a domain file; this module only
+ * re-exports them, so `import type { X } from "./types.js"` (and the public
+ * `index.ts`) never has to know which file owns `X`:
  *
+ *   - `coreTypes.ts`      memory types, statuses, `MemoryOptions`, `MemoryRecord`
+ *   - `writeTypes.ts`     add/create/session options, `AddResult`, wire bodies
+ *   - `searchTypes.ts` / `searchResults.ts` / `smartSearchResults.ts`  search
+ *   - `queryTypes.ts`     AST query, manifest, list_chat
+ *   - `walkTypes.ts`      graph walks
+ *   - `groundingTypes.ts` topology context and grounding
+ *   - `entityTypes.ts`    entity knowledge graph (Layer 2)
+ *   - `profileTypes.ts`, `uploadTypes.ts`, `deleteFileTypes.ts`, `sessionStats.ts`
+ *   - `errors.ts`         the error taxonomy (re-exported as VALUES, see below)
+ *
+ * Split in 4.0.0 (this file was 681 lines; house cut ~300).
  */
 
-// ── Memory types (cognitive epistemology) ────────────────────
-
-/**
- * Cognitive memory types defined by the AnhurDB epistemology (13 types).
- *
- * The authority is AnhurCore's `core.yaml`, mirrored by the server's
- * `schema.MemoryTypes` and the MCP `list_types` tool — not this union. Because
- * this is a closed union, a type the server serves but that is missing here is a
- * COMPILE ERROR for the caller, not a runtime warning: it is the strictest of
- * the three SDKs, so it drifts loudest. Keep Go, Python, TypeScript and
- * `core.yaml` in step, in the same change.
- */
-export type MemoryType =
-  | "episodic"
-  | "fact"
-  | "preference"
-  | "decision"
-  | "task"
-  | "risk"
-  | "reasoning"
-  | "idea"
-  | "emotion"
-  | "consolidated"
-  | "hub"
-  | "file"
-  /** Macro-theme backbone: a hub of hubs (ADR-0005). */
-  | "router";
-
-/** Lifecycle status of a cognitive record. */
-export type MemoryStatus =
-  | "saved"
-  | "pending"
-  | "consolidated"
-  | "archived"
-  | "decayed"
-  | "processing"
-  | "completed"
-  | "linked"
-  | "hubbed"
-  | "failed"
-  | "pending_judge"
-  | "failed_judge"
-  | "failed_consolidation";
-
-// ── Constructor options ──────────────────────────────────────
-
-/** Options passed to `new Memory(...)`. */
-export interface MemoryOptions {
-  /** AnhurDB API key (required). */
-  apiKey: string;
-
-  /**
-   * Server URL. Defaults to `https://anhurdb.yoven.ai`.
-   * Pass `http://localhost:8000` for self-hosted / OSS.
-   */
-  url?: string;
-
-  /**
-   * Optional user identifier. Used as `container_tag` for grouping
-   * memories. When omitted the SDK derives a stable tag from a hash
-   * of the API key.
-   */
-  userId?: string;
-
-  /**
-   * Optional tenant ID for multi-tenant deployments.
-   * Sent as `X-Tenant-ID` header on every request.
-   */
-  tenantId?: string;
-}
-
-// ── add() ────────────────────────────────────────────────────
-
-/** Options for `Memory.add()`. */
-export interface AddOptions {
-  /** Importance rating 1-10 (default 5). */
-  score?: number;
-  /** Memory type (default "episodic"). */
-  type?: MemoryType;
-  /**
-   * Write path: `ingest` (POST /api/v1/ingest — default) or `regular`
-   * (POST /api/v1/records as episodic). Session-first servers require
-   * {@link Memory.createSession} before either path succeeds.
-   */
-  mode?: "ingest" | "regular";
-  /**
-   * Caller-supplied metadata.
-   *
-   * three SDKs expose the identical capability — `add(text, {score, type,
-   * metadata})`. The SDK merges it into the canonical
-   * `{"container_tag": "..."}` envelope before sending so it never
-   * overwrites the container tag (see the 2026-05-22 metadata corruption
-   * incident). Server stores `metadata` as a JSON string.
-   */
-  metadata?: Record<string, unknown>;
-  /**
-   * Pins the SESSION (uuid) the ingested record lands in. The tenant comes from
-   * the API key; the session is the caller's unit of conversation.
-   *
-   * Omit to use the client's current sessionUuid (from constructor, newSession,
-   * or createSession). Writes require createSession on session-first servers.
-   */
-  sessionId?: string;
-}
-
-/** Options for `Memory.createSession()`. */
-export interface CreateSessionOptions {
-  /** Session uuid to register. Omit to use the client's current sessionUuid. */
-  sessionId?: string;
-  /** Optional session-level metadata copied onto every record in this session. */
-  metadata?: Record<string, unknown>;
-}
-
-/** A single record descriptor returned inside `AddResult`. */
-export interface AddRecordSummary {
-  id: number;
-  type: MemoryType;
-  summary: string;
-}
-
-/** Value returned by `Memory.add()`. */
-export interface AddResult {
-  /** Session UUID that groups this memory. */
-  sessionId: string;
-  /** Records created by the server. */
-  records: AddRecordSummary[];
-  /** Whether the cloud ingest or OSS fallback was used. */
-  mode: "cloud" | "oss";
-}
-
+export type {
+  MemoryOptions,
+  MemoryRecord,
+  MemoryStatus,
+  MemoryType,
+} from "./coreTypes.js";
+export type {
+  AddOptions,
+  AddRecordSummary,
+  AddResult,
+  BatchUpdateResult,
+  CreateOptions,
+  CreateSessionOptions,
+  IngestPayload,
+  RecordPayload,
+} from "./writeTypes.js";
 // ── search() ─────────────────────────────────────────────────
 //
 // The hybrid-search wire contract lives in two domain files: `searchTypes.ts`
@@ -154,7 +46,6 @@ export type {
   SearchOptions,
   SearchPayload,
   SearchScope,
-  SearchSessionPayload,
 } from "./searchTypes.js";
 export type {
   LegScoreSummary,
@@ -184,159 +75,44 @@ export type {
   ProfileResult,
 } from "./profileTypes.js";
 
-// ── Extended Memory types ────────────────────────────────────
-
-/**
- * A full record as returned by the AnhurDB API.
- *
- * exact JSON keys the server serialises (internal fields are `json:"-"` and
- * never appear). The optional fields are omitempty server-side: `content` only
- * appears on history endpoints; `superseded_by`/`valid_from`/`valid_until`
- * only when set.
- */
-export interface MemoryRecord {
-  id: number;
-  uuid: string;
-  type: string;
-  summary: string;
-  status: string;
-  weight: number;
-  score: number;
-  created_at: string;
-  updated_at: string;
-  /** Raw JSON-as-string metadata envelope (e.g. `{"container_tag":"..."}`). */
-  metadata?: string;
-  related_ids?: number[];
-  main_ids?: number[];
-  consolidated?: boolean;
-  archived?: boolean;
-  /** Present only on history endpoints (the .gz body); omitted elsewhere. */
-  content?: string;
-  superseded_by?: number;
-  valid_from?: string;
-  valid_until?: string;
-}
-
-// POST /api/v1/walk and /walk/semantic. Shapes live in `walkTypes.ts`
-// (house 300-line cut); re-exported here as the established import path.
-export type { WalkEdge, WalkResult } from "./walkTypes.js";
-
-/**
- * Goal-directed steering mode for {@link WalkSemanticOptions.target}.
- *
- * server selects the traversal frontier by this exact string — `"semantic"`
- * steers toward `vector` (cosine to the goal), `"tag"` toward `target_tag`,
- * `"recency"` toward the most recent records. Omitting `target` entirely = the
- * pre-existing pure-Dijkstra walk. These three literals must match Go/Python.
- */
-export type WalkTarget = "semantic" | "tag" | "recency";
-
-/**
- * Optional goal-directed steering for {@link WalkResult}-returning
- * `Memory.walkSemantic`. Every field is omitted from the wire body when unset,
- * so calling `walkSemantic` with no options preserves the pre-existing
- * pure-Dijkstra walk verbatim (backward-compatible).
- *
- * (`Target`/`GoalVector`/`TargetTag`/`MaxCost`) and the Python SDK
- * (`target`/`goal_vector`/`target_tag`/`max_cost`). `goalVector` is raw bytes
- * field so callers never touch base64.
- */
-export interface WalkSemanticOptions {
-  /** Goal-directed mode. Omit for a pure-Dijkstra walk (default). */
-  target?: WalkTarget;
-  /**
-   * Goal vector as raw bytes; used when `target === "semantic"`. The SDK
-   * base64-encodes it into the request's `vector` field (server default:
-   * treated as absent when omitted).
-   */
-  goalVector?: Uint8Array;
-  /** Target tag to steer toward; used when `target === "tag"`. */
-  targetTag?: string;
-  /**
-   * Maximum accumulated path cost before the walk stops. Maps to the wire
-   * `max_cost` field; the server defaults it to 2.0 when omitted.
-   */
-  maxCost?: number;
-}
-
-/** Topology context around a specific record. */
-export interface ContextResult {
-  target: MemoryRecord;
-  neighbors: MemoryRecord[];
-}
+export type {
+  WalkEdge,
+  WalkResult,
+  WalkSemanticOptions,
+  WalkTarget,
+} from "./walkTypes.js";
+export type {
+  ContextResult,
+  GroundingAnchor,
+  GroundingConsolidation,
+  GroundingResult,
+  GroundingTarget,
+} from "./groundingTypes.js";
+export type {
+  AstQuery,
+  ListChatOptions,
+  ListChatResult,
+  ManifestGlobalOptions,
+  ManifestResult,
+  ManifestSessionOptions,
+  QueryFilterCondition,
+  QueryOperator,
+  QueryPagination,
+  QueryResult,
+  QuerySortClause,
+} from "./queryTypes.js";
+export type {
+  EntityEdge,
+  EntityGraphResult,
+  EntityRecord,
+  EntityTimelineResult,
+  UpsertEntityEdgeOptions,
+  UpsertEntityOptions,
+} from "./entityTypes.js";
 
 // One row of GET /api/v1/sessions/stats. The shape lives beside the paging
 // loop that consumes it, in `sessionStats.ts`; re-exported here unchanged.
 export type { SessionStats } from "./sessionStats.js";
-
-// ── Entity Knowledge Graph (Layer 2) ─────────────────────────
-
-/**
- * A named entity in the AnhurDB knowledge graph (Layer 2).
- *
- * Entities are real-world objects (people, organisations, concepts) linked to
- * memory records. Wire field is `entity_type` — not `record.type`
- * (episodic / fact / decision). The cross-layer link is the “tag”.
- */
-export interface EntityRecord {
-  id: number;
-  name: string;
-  entity_type: string;
-  summary?: string;
-  attributes?: Record<string, unknown>;
-  dimension?: number;
-  first_seen?: string;
-  last_seen?: string;
-  mention_count?: number;
-  weight?: number;
-}
-
-/**
- * A typed, temporal relationship between two entities.
- *
- * Examples: "works_at", "knows", "part_of", "created_by".
- */
-export interface EntityEdge {
-  source_id: number;
-  target_id: number;
-  relation: string;
-  event_time?: string;
-  valid_until?: string;
-  confidence?: number;
-  source_record_id?: number;
-}
-
-/** Options for `Memory.upsertEntity()`. */
-export interface UpsertEntityOptions {
-  entityType?: string;
-  summary?: string;
-  attributes?: Record<string, unknown>;
-}
-
-/** Options for `Memory.upsertEntityEdge()`. */
-export interface UpsertEntityEdgeOptions {
-  eventTime?: string;
-  confidence?: number;
-  sourceRecordId?: number;
-}
-
-/** Result from entity graph traversal. */
-export interface EntityGraphResult {
-  entity_id: number;
-  depth: number;
-  nodes: Array<{
-    entity: EntityRecord;
-    edges?: EntityEdge[];
-  }>;
-  node_count: number;
-}
-
-/** Result from entity timeline query. */
-export interface EntityTimelineResult {
-  entity: EntityRecord;
-  timeline: EntityEdge[];
-  record_ids?: number[];
-}
 
 // ── File Upload ──────────────────────────────────────────────
 //
@@ -344,29 +120,6 @@ export interface EntityTimelineResult {
 // `uploadTypes.ts` (house 300-line cut); re-exported here unchanged because
 // `types.ts` is the import path every module and `index.ts` already use.
 export type { UploadResult, UploadStatusResult } from "./uploadTypes.js";
-
-// ── Batch Operations ─────────────────────────────────────────
-
-/**
- * Result from batch status update — `PATCH /api/v1/records/mark-consolidated`.
- *
- * Junior Tip [`updated_count` never existed — 2026-09-14]: this interface used
- * to declare exactly one field, `updated_count: number`, and the handler has
- * never sent it. `handler/record_batch.go:212` is the only success path and it
- * writes a single literal: `{"message": "marked consolidated"}`. So every
- * caller writing `if (result.updated_count === ids.length)` was comparing
- * `undefined` to a number — a check that is always false, on a type that
- * promised the number was there. The server does not tell you how many rows
- * it touched on this route; the honest type says so, and a caller who needs
- * the count must re-read the records.
- *
- * The exported NAME is kept (it is public API via `index.ts`): changing the
- * body is the fix, deleting the name would be a second, pointless break.
- */
-export interface BatchUpdateResult {
-  /** Server ack, currently the literal `"marked consolidated"`. */
-  message: string;
-}
 
 // ── Delete file (whole ingested document) ────────────────────
 // Moved to `deleteFileTypes.ts` (house 300-line cut, 2026-11-20, when the L2
@@ -377,285 +130,6 @@ export type {
   DeleteFileResult,
   FileSessionCandidate,
 } from "./deleteFileTypes.js";
-
-// ── Internal / wire-level types ──────────────────────────────
-
-/**
- * Payload sent to POST /api/v1/ingest (cloud mode).
- *
- * Wire contract: `content` + `container_tag` + required `session_id`.
- * Create the session first via POST /api/v1/sessions. Callers that pin
- * score/type/metadata use `/api/v1/records` instead — matching Go and Python.
- */
-export interface IngestPayload {
-  content: string;
-  container_tag: string;
-  /** Session UUID from POST /api/v1/sessions — required on every ingest. */
-  session_id: string;
-}
-
-/** Payload sent to POST /api/v1/records (OSS fallback + full-fidelity create). */
-export interface RecordPayload {
-  uuid: string;
-  type: string;
-  dimension: number;
-  prefix: string;
-  weight: number;
-  score: number;
-  vector: string;
-  related_ids: number[];
-  main_ids: number[];
-  consolidate_id: number;
-  metadata: string;
-  summary: string;
-  content: string;
-  consolidated: boolean;
-  status: string;
-  /**
-   * RFC3339 UTC start of the temporal validity window. Omitted when unset.
-   * persist a bitemporal window verbatim, matching Go/Python `create`.
-   */
-  valid_from?: string;
-  /** RFC3339 UTC end of the temporal validity window. Omitted when unset. */
-  valid_until?: string;
-}
-
-// ── query() — AST query engine ───────────────────────────────
-
-/**
- * Comparison operators supported by the AST query engine.
- *
- * server implements EXACTLY these six operators. `$neq`/`$nin`/`$like` were
- * deliberately omitted — the server silently ignores them, so exposing them
- * would be a silent-loss bug. `$in` takes an array value; the rest take a
- * scalar. Mirrors the Python QueryBuilder `_OP_MAP`.
- */
-export type QueryOperator = "$eq" | "$gt" | "$gte" | "$lt" | "$lte" | "$in";
-
-/**
- * A single column's filter condition: a map of operator → value.
- *
- * Example: `{ "$gt": 0.8 }` or `{ "$in": ["risk", "decision"] }`.
- */
-export type QueryFilterCondition = Partial<Record<QueryOperator, unknown>>;
-
-/**
- * One sort clause for the AST query. `field` MUST be in the server column
- * whitelist (else HTTP 400 'invalid sort field'); `order` falls back to DESC
- * when absent or invalid.
- */
-export interface QuerySortClause {
-  field: string;
-  order: "asc" | "desc";
-}
-
-/**
- * Pagination block of the AST query. `limit` defaults to 50 and is hard-capped
- * at 1000 server-side; `offset` defaults to 0 and must be >= 0.
- */
-export interface QueryPagination {
-  limit?: number;
-  offset?: number;
-}
-
-/**
- * The compiled JSON Abstract Syntax Tree sent flat as the body of
- * POST /api/v1/query.
- *
- * server deserialises this directly into its `AstQuery` struct, so the fields
- * are sent FLAT at the top level — NOT wrapped in `{"query": ...}` (mirrors the
- * Python QueryExecutor note). `select` is parsed but ignored (the SQL SELECT
- * list is fixed). Filter/sort column names are whitelist-validated server-side.
- */
-export interface AstQuery {
-  filters?: Record<string, QueryFilterCondition>;
-  sort?: QuerySortClause[];
-  pagination?: QueryPagination;
-  /** Parsed but ignored by the server; included for forward-compat. */
-  select?: string[];
-}
-
-/**
- * Response from POST /api/v1/query.
- *
- * in `{record, similarity}` like /search). An empty result set serialises as
- * `records: null` with `count: 0`, so callers must default to `[]`.
- */
-export interface QueryResult {
-  records: MemoryRecord[];
-  count: number;
-}
-
-// ── manifest / list_chat / count_by_type ─────────────────────
-
-/**
- * Paginated manifest envelope returned by GET /api/v1/manifest and
- * GET /api/v1/chats/{uuid}/manifest.
- *
- * heuristic that can false-positive on an exactly-full last page — page until
- * an empty/short page to be certain, do not trust a single `has_more: true`.
- */
-export interface ManifestResult {
-  records: MemoryRecord[];
-  count: number;
-  limit: number;
-  offset: number;
-  has_more: boolean;
-}
-
-/**
- * Envelope returned by GET /api/v1/chats/{uuid} (list_chat).
- *
- * limit/offset/has_more — the entire matching set for the session is returned.
- * `content` is omitted (metadata only, not the .gz body).
- */
-export interface ListChatResult {
-  records: MemoryRecord[];
-  count: number;
-}
-
-/** Options for `Memory.manifestGlobal()`. */
-export interface ManifestGlobalOptions {
-  /** Keyword filter. Sent as the `q` query param. */
-  q?: string;
-  /** Max records (default 100, server-capped at 1000). */
-  limit?: number;
-  /** Pagination offset (default 0). Ignored when `q` is set. */
-  offset?: number;
-  /** RFC3339 UTC snapshot instant. Mutually exclusive with since/until. */
-  asOf?: string;
-  /** RFC3339 UTC lower bound (created_at >= since). */
-  since?: string;
-  /** RFC3339 UTC upper bound (created_at <= until). */
-  until?: string;
-}
-
-/** Options for `Memory.manifestSession()`. */
-export interface ManifestSessionOptions {
-  /** Keyword filter scoped to the session. Sent as `q`. */
-  q?: string;
-  /** Max records (default 500, server-capped at 2000). */
-  limit?: number;
-  /** Pagination offset (default 0). */
-  offset?: number;
-  /** RFC3339 UTC snapshot instant. Mutually exclusive with since/until. */
-  asOf?: string;
-  /** RFC3339 UTC lower bound (created_at >= since). */
-  since?: string;
-  /** RFC3339 UTC upper bound (created_at <= until). */
-  until?: string;
-}
-
-/** Options for `Memory.listChat()`. */
-export interface ListChatOptions {
-  /**
-   * Tri-state consolidation filter. `true` returns only consolidated records;
-   * `false` returns only non-consolidated; omitted returns all.
-   */
-  consolidated?: boolean;
-  /** Exact status filter (e.g. "saved", "processing", "failed"). */
-  status?: string;
-}
-
-// ── get_grounding ────────────────────────────────────────────
-
-/** The target record of a grounding lookup. */
-export interface GroundingTarget {
-  id: number;
-  type: string;
-  summary: string;
-  uuid: string;
-}
-
-/**
- * An anchor (source episodic record) discovered during grounding BFS.
- *
- * `content` is omitempty and holds ONLY whitelisted keys
- * ("user"/"assistant"/"full_text"); it is null/absent when the .gz is missing
- * or unparseable. `session_position` is omitempty (absent when unknown).
- */
-export interface GroundingAnchor {
-  id: number;
-  type: string;
-  uuid: string;
-  summary: string;
-  content?: Record<string, string>;
-  hops_from_target: number;
-  session_position?: number;
-}
-
-/** A consolidation node discovered during grounding BFS. */
-export interface GroundingConsolidation {
-  id: number;
-  uuid: string;
-  summary: string;
-  hops_from_target: number;
-}
-
-/**
- * Response from GET /api/v1/records/{id}/grounding.
- *
- * arrays (may be empty []). `found_count = len(anchors) + len(consolidations)`.
- * The cap flags are omitempty and use the JSON keys `anchors_capped` /
- * `consolidations_capped`.
- */
-export interface GroundingResult {
-  target: GroundingTarget;
-  anchors: GroundingAnchor[];
-  consolidations: GroundingConsolidation[];
-  depth_used: number;
-  max_depth: number;
-  found_count: number;
-  anchors_capped?: boolean;
-  consolidations_capped?: boolean;
-}
-
-// ── create() full-fidelity ───────────────────────────────────
-
-/**
- * Options for `Memory.create()` — the full-fidelity record-create surface.
- *
- * POST /api/v1/records (NOT the ingest pipeline), so every field is persisted
- * exactly as supplied — unlike `add()`, whose cloud-ingest path owns its own
- * type/score. The optional field set is identical in all three SDKs:
- * `type, score, status, related_ids, valid_from, valid_until, metadata`.
- * All optional; `type` defaults to "episodic" and `score` to 5.
- *
- * Junior Tip [the session is NOT in here any more — 3.0.0, 2026-09-14]: this
- * interface used to carry `sessionUuid` AND its alias `sessionId`, and
- * `create()` fell back to the client's ambient session when both were absent.
- * Three ways to name one thing, plus an invisible fourth. A caller who forgot
- * the option did not get an error — the record landed in whatever session the
- * Memory instance happened to be holding, which is the kind of misfile nobody
- * notices until a search comes back with someone else's turn in it. The
- * session is now the FIRST POSITIONAL ARGUMENT of `create()`, exactly as in
- * Go's `Create(ctx, sessionUUID, content, opts...)`: `POST /api/v1/records`
- * cannot succeed without a session and a body, so both are required, and
- * forgetting one is a compile error instead of a silent misfile.
- */
-export interface CreateOptions {
-  /** Memory type (default "episodic"). Written verbatim. */
-  type?: MemoryType;
-  /** Importance rating 1-10 (default 5). Written verbatim. */
-  score?: number;
-  /**
-   * Record status, written verbatim (default "saved").
-   *
-   * Present for parity with Go's `WithCreateStatus` and Python's
-   * `CreateRequest.status` — the three SDKs expose ONE optional field set on
-   * this endpoint: type, score, status, related_ids, valid_from, valid_until,
-   * metadata. TypeScript was the only arm that could not set it.
-   */
-  status?: string;
-  /** Parent/sibling record IDs to attach as `related_ids`. */
-  relatedIds?: number[];
-  /** RFC3339 UTC start of the record's validity window (`valid_from`). */
-  validFrom?: string;
-  /** RFC3339 UTC end of the record's validity window (`valid_until`). */
-  validUntil?: string;
-  /** Caller-supplied metadata, merged under the canonical container_tag. */
-  metadata?: Record<string, unknown>;
-}
 
 
 // ── Error types ──────────────────────────────────────────────

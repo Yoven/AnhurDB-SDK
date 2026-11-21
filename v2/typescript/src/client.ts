@@ -14,17 +14,14 @@
  *   - Error messages never include the full API key.
  */
 
-import { AnhurConnectionError } from "./types.js";
 import { buildRequestHeaders } from "./clientHeaders.js";
-// Response → typed result / typed error lives in clientResponse.ts. Both the
-// JSON path and the multipart path call the SAME mapper: when the two verbs
-// each owned a private copy, one of them dropped the HTTP status and turned
-// every 404 into a "retryable transport failure". See that file's Junior Tips.
-import {
-  readCappedText,
-  readErrorBodyExcerpt,
-  typedErrorForResponse,
-} from "./clientResponse.js";
+// One HTTP attempt (timeout, redirect guard, typed error) lives in
+// clientFetch.ts; response → typed error in clientResponse.ts. Both the JSON
+// verbs and the multipart upload go through the SAME functions: when the two
+// paths each owned a private copy, one of them dropped the HTTP status and
+// turned every 404 into a "retryable transport failure".
+import { fetchOnce, parseJsonBody } from "./clientFetch.js";
+import { readCappedText } from "./clientResponse.js";
 
 /** HTTP methods the client supports. */
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -59,29 +56,6 @@ interface RequestOptions {
    */
   rawText?: boolean;
 }
-
-/**
- * Per-request timeout in milliseconds.
- *
- * Default 30_000ms matches the Python SDK and the Go SDK so all three fail at
- * the same boundary. Override via ANHUR_REQUEST_TIMEOUT_MS for long-running
- * hosted paths (e.g. HEL1 E2E search auto-embed, which routinely exceeds 30s
- * under DeepInfra load while Go's e2e runner already uses 90s).
- */
-const REQUEST_TIMEOUT_MS = (() => {
-  const fromEnv = Number(process.env.ANHUR_REQUEST_TIMEOUT_MS || "");
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
-})();
-
-/*
- * Transport is a transparent pipe: exactly one HTTP attempt per call, then the
- * typed error is returned to the caller. No client-side retry loop.
- *
- * NOTE — there is ALSO no application-level anchor seeding. `createRecord` in
- * memory.ts makes exactly one request; a 422 "episodic anchor" surfaces as a
- * typed AnhurQueryError and is NEVER silently patched by fabricating a synthetic
- * episodic record.
- */
 
 /**
  * Lightweight HTTP wrapper around `fetch`.
@@ -148,54 +122,14 @@ export class HttpClient {
    * "failed to parse multipart form".
    */
   async postMultipart<T = unknown>(path: string, form: FormData): Promise<T> {
-    let url = `${this.baseUrl}${path}`;
-    const headers: Record<string, string> = { ...this.headers };
-    // Intentionally no Content-Type — FormData sets multipart boundary.
-
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: form,
-        redirect: "error",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        (err.name === "TimeoutError" || err.name === "AbortError")
-      ) {
-        throw new AnhurConnectionError(
-          `Failed to connect to AnhurDB: request timeout (${
-            REQUEST_TIMEOUT_MS / 1000
-          }s)`,
-          undefined,
-          "timeout",
-        );
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      throw new AnhurConnectionError(
-        `Failed to connect to AnhurDB: ${message}`,
-      );
-    }
-
-    if (!response.ok) {
-      throw typedErrorForResponse(
-        response.status,
-        path,
-        await readErrorBodyExcerpt(response),
-      );
-    }
-
+    // Intentionally no Content-Type — FormData sets the multipart boundary.
+    const response = await fetchOnce(`${this.baseUrl}${path}`, path, {
+      method: "POST",
+      headers: { ...this.headers },
+      body: form,
+    });
     // SECURITY: the 100 MB cap applies to uploads too — see readCappedText.
-    const text = await readCappedText(response);
-    if (!text) return {} as T;
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      return { message: text.slice(0, 1000) } as T;
-    }
+    return parseJsonBody<T>(await readCappedText(response));
   }
 
   /**
@@ -244,87 +178,28 @@ export class HttpClient {
    */
   private async request<T>(opts: RequestOptions): Promise<T> {
     let url = `${this.baseUrl}${opts.path}`;
-
     if (opts.params) {
-      const qs = new URLSearchParams(opts.params).toString();
-      if (qs) url += `?${qs}`;
+      const queryString = new URLSearchParams(opts.params).toString();
+      if (queryString) url += `?${queryString}`;
     }
 
     const headers: Record<string, string> = { ...this.headers };
-
-    const init: RequestInit = {
-      method: opts.method,
-      headers,
-      // SECURITY: Disable redirects to prevent X-API-Key header
-      redirect: "error",
-      // SECURITY / AVAILABILITY: abort the request after 30s so a stalled
-      // server can never hang the caller forever. fetch() has NO default
-      // timeout. 30s matches the Python SDK (timeout=30) and the Go SDK
-      // (http.Client{Timeout: 30 * time.Second}) so all three behave
-      // identically. On timeout the promise rejects with an AbortError, which
-      // we translate to AnhurConnectionError below.
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    };
-
+    const init: RequestInit = { method: opts.method, headers };
     if (opts.body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }
 
-    let response: Response;
-    try {
-      response = await fetch(url, init);
-    } catch (err: unknown) {
-      // A 30s timeout surfaces as a DOMException with name "TimeoutError"
-      // (some runtimes use "AbortError"). Map both to a clear connection error
-      // so callers get a precise, actionable message instead of a generic
-      // abort. SECURITY: never include the full URL (could be logged).
-      if (
-        err instanceof Error &&
-        (err.name === "TimeoutError" || err.name === "AbortError")
-      ) {
-        throw new AnhurConnectionError(
-          `Failed to connect to AnhurDB: request timeout (${
-            REQUEST_TIMEOUT_MS / 1000
-          }s)`,
-          undefined,
-          "timeout",
-        );
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      throw new AnhurConnectionError(
-        `Failed to connect to AnhurDB: ${message}`,
-      );
-    }
-
-    // Map HTTP error codes to typed exceptions.
-    // SECURITY: Error messages include status but not API key.
-    if (!response.ok) {
-      // straight to the caller — no transient-detection and no retry wrapper.
-      throw typedErrorForResponse(
-        response.status,
-        opts.path,
-        await readErrorBodyExcerpt(response),
-      );
-    }
-
+    const response = await fetchOnce(url, opts.path, init);
     // SECURITY: Cap response size to prevent memory exhaustion.
     const text = await readCappedText(response);
 
     // Raw-text mode: return the verbatim body (e.g. record content is
-    // text/plain). Must come BEFORE the empty-body and JSON.parse branches so
-    // content is never wrapped/truncated. Empty body → empty string.
+    // text/plain). Must come BEFORE JSON parsing so content is never
+    // wrapped/truncated. Empty body → empty string.
     if (opts.rawText) {
       return (text ?? "") as unknown as T;
     }
-
-    // 204 No Content or empty body — return empty object.
-    if (!text) return {} as T;
-
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      return { message: text.slice(0, 1000) } as T;
-    }
+    return parseJsonBody<T>(text);
   }
 }

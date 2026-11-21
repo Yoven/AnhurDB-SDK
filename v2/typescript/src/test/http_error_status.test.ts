@@ -150,15 +150,10 @@ describe("404 detection branches on the status, never on the message", () => {
   });
 
   it("add() does not disable the ingest path on a 500 mentioning 404", async () => {
-    // `ingestAvailable` is sticky: ONE false positive reroutes EVERY later
-    // write to the OSS `/records` fallback for the lifetime of the client.
-    //
-    // The proof cannot be "the call threw", because the fallback request hits
-    // the same 500 and throws an identical-looking error — that is exactly how
-    // this would slip through review. The proof is the ROUTE: with the message
-    // sniffing, the first add falls through to `/api/v1/records` and the second
-    // add never even attempts `/api/v1/ingest`. So we assert that every request
-    // the SDK made went to the ingest endpoint.
+    // Since 4.0.0 add() has no door-to-door fallback at all, but the proof
+    // stays the ROUTE, not "the call threw": a reroute to `/api/v1/records`
+    // would hit the same 500 and throw an identical-looking error. So we
+    // assert that every request the SDK made went to the ingest endpoint.
     const { requestUrls } = await withStubbedFetch(
       [{ status: 500, body: "handler panic: record 404 missing" }],
       async (memory) => {

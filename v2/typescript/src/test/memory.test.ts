@@ -135,7 +135,7 @@ describe("Memory.add() metadata pin routing (parity: Go len()>0, Python bool())"
         metadata: {},
         sessionId: "sess-1",
       });
-      assert.equal(result.mode, "cloud");
+      assert.equal(result.mode, "ingest");
       assert.equal(mock.calls.ingest, 1);
       assert.equal(mock.calls.records, 0);
     } finally {
@@ -151,7 +151,7 @@ describe("Memory.add() metadata pin routing (parity: Go len()>0, Python bool())"
         metadata: { k: "v" },
         sessionId: "sess-1",
       });
-      assert.equal(result.mode, "oss");
+      assert.equal(result.mode, "records");
       assert.equal(mock.calls.ingest, 0);
       assert.equal(mock.calls.records, 1);
     } finally {

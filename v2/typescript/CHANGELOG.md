@@ -1,5 +1,77 @@
 # TypeScript SDK Changelog
 
+## 4.0.0 — legacy removal (2026-11-21)
+
+**Breaking.** AnhurDB (`AnhurDB/server`, main) is the only server and it always
+speaks the current contract, so every branch that existed only for an older
+server, and every deprecated alias, is removed. Go, Python and TypeScript remove
+the same things in the same release.
+
+### Removed
+
+- `DeleteFileResult.raft_index` — the server keeps the consensus log index
+  internal (`RaftIndex int64 json:"-"`, `server/service/record_delete_file.go:42`);
+  the field was always `undefined`.
+- Session-record-limit **sentence fallback**: the `"session has reached the
+  maximum of"` prefix match, the regex that read `N` back from the sentence,
+  and the regex parse of a non-JSON body. The server always sends the structured
+  409 `{error, code: "session_record_limit", limit, count, session_uuid}`
+  (`server/handler/service_bridge.go:81-82,109-125`; sole producer
+  `server/service/record_session_cap.go:178` via `service/record_create.go:363`).
+  A 409 without that code — or with the code but a missing field — is now a
+  plain conflict `AnhurError`. Exported constant `SESSION_RECORD_LIMIT_TEXT_PREFIX`
+  (module-internal, not re-exported from `index.ts`) is gone.
+- Tenant-library-collision **sentence fallback and the 400 branch**: recognised
+  only as HTTP 409 with `code: "tenant_library_collision"`
+  (`server/handler/search_scope_request.go:35-43,109-118`; upload door
+  `server/handler/upload.go:133-135`). A 400 is always `AnhurQueryError`.
+  `AnhurTenantLibraryCollisionError.statusCode` is always 409.
+- `add()` **ingest-404 → `/records` "OSS fallback"** and its sticky
+  `ingestAvailable` state. `POST /api/v1/ingest` is mounted unconditionally
+  (`server/router.go:135`); a 404 there is now thrown (`AnhurQueryError`,
+  kind `not_found`) and nothing is written via `/records`. The caller-pinned
+  records path (score/type/non-empty metadata, or `mode: "regular"`) stays.
+- **Bare-array response fallbacks**: `listSessions()` (`GET /api/v1/sessions/stats`
+  always answers `{sessions, count, limit, offset, has_more, next_offset}`,
+  `server/handler/record_session.go:135-142`) and `recent()` (`GET /api/v1/recent`
+  always answers `{records, count}`, `server/handler/record_session.go` ListRecent).
+  A non-envelope body now throws `AnhurError` kind `server` instead of reading as
+  data. `records: null` → `[]` coalescing is kept (the server emits null for zero rows).
+- `Memory.updateConsolidateIds` — `@deprecated` alias of `linkConsolidated`
+  since 2026-06-18.
+- `SearchSessionPayload` (type export) — `@deprecated` since 2.1.0, constructed
+  by nothing.
+- `"pending"` from `MemoryStatus` — a pre-v2 record status the server never
+  writes (`"pending"` survives only as the ingest ExtractionStatus,
+  `server/service/ingest.go:233`, a different field).
+
+### Changed
+
+- `AddResult.mode`: `"cloud" | "oss"` → `"ingest" | "records"`. The value now
+  names the door that wrote (`/api/v1/ingest` or `/api/v1/records`), produced by
+  `add()`, `create()` and `createInSession()`.
+- `AnhurSessionRecordLimitError.sessionUuid: string`, `.limit: number`,
+  `.count: number` — no longer nullable (the server always sends them). Message:
+  `Conflict (HTTP 409): <server sentence, ≤500 chars> (session record limit:
+  session=<uuid>, limit=<N>, count=<M>)` — byte-identical to Python.
+- `DeleteFileResult.purge: boolean` is required (server `json:"purge"`, no
+  omitempty; Go `bool`, Python `bool`).
+- Internal layout only (no export changed): `memory.ts` (1532 lines) split by
+  domain into `lookupApi.ts`, `manifestApi.ts`, `graphApi.ts`, `entitiesApi.ts`,
+  `sessionsApi.ts`, `writeApi.ts`, `writePath.ts`, `memoryIdentity.ts`;
+  `types.ts` (681) into `coreTypes.ts`, `writeTypes.ts`, `entityTypes.ts`,
+  `queryTypes.ts`, `groundingTypes.ts` (+ walk options into `walkTypes.ts`);
+  `client.ts` (330) shares one attempt/timeout path in `clientFetch.ts`.
+  `Memory` is still one class; `types.ts` re-exports every type.
+
+### Migration
+
+- `mem.updateConsolidateIds(ids, star)` → `mem.linkConsolidated(ids, star)`.
+- `result.mode === "cloud"` → `=== "ingest"`; `=== "oss"` → `=== "records"`.
+- Drop `null` checks on `err.sessionUuid` / `err.limit` / `err.count`.
+- Stop reading `DeleteFileResult.raft_index`; replace `SearchSessionPayload`
+  with `SearchPayload` (`scope: "sessions"`, `sessions: [uuid]`).
+
 ## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
@@ -11,6 +83,7 @@ Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 - **Deprecated:** `DeleteFileResult.raft_index` (`@deprecated`). The server never
   serialises it (`json:"-"`), so it was always `undefined`. Kept so existing code
   compiles; removed in the next major. Same decision in all three SDKs.
+  **Done in 4.0.0** (see above).
 - **Behaviour change:** `tenantId` must follow the server's identifier rule
   (`[A-Za-z0-9_-]`, at most 64; `""` = not set). The constructor now throws
   `AnhurQueryError` (invalid_request) — previously a plain `Error`, and only for
@@ -38,7 +111,7 @@ TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
 - **New typed refusal:** `AnhurTenantLibraryCollisionError`: HTTP 409
   `"code": "tenant_library_collision"` on every door, upload included (server
   4574c4d). Classified by the code first; the sentence is a fallback only for a
-  body without a code (older servers, incl. their 400 on upload).
+  body without a code (older servers, incl. their 400 on upload). **Fallback removed in 4.0.0.**
   Non-retryable; the session-record-limit 409 is checked first and stays
   distinct. An unreadable tenant registry (503, upload too) stays the plain
   retryable `unavailable` error.

@@ -1,9 +1,10 @@
 /**
  * The session-record-limit refusal (ADR-0033) must arrive TYPED through the
  * real transport: a genuine `Memory` call against a stubbed `globalThis.fetch`,
- * for the new structured body, the old text-only body, and the multipart path.
- * A generic 409 must stay a plain `AnhurError`. gRPC is not covered because
- * this SDK has no gRPC transport.
+ * for the structured body and the multipart path. Since 4.0.0 the refusal is
+ * recognised by its `code` ONLY: the sentence without the code, or the code
+ * with a field missing, stays a plain 409 `AnhurError`. gRPC is not covered
+ * because this SDK has no gRPC transport.
  */
 
 import { describe, it } from "node:test";
@@ -19,7 +20,8 @@ const NEW_BODY = JSON.stringify({
   count: 503,
   session_uuid: "s-full-1",
 });
-const OLD_BODY = JSON.stringify({ error: "session has reached the maximum of 500 records" });
+/** The pre-code server body. Since 4.0.0 it is NOT the typed refusal. */
+const SENTENCE_ONLY_BODY = JSON.stringify({ error: "session has reached the maximum of 500 records" });
 
 /** Run `exercise` with every fetch answering 409 + `body`; return what it threw. */
 async function thrownBy(
@@ -54,24 +56,38 @@ function assertNonRetryableConflict(thrown: unknown): AnhurSessionRecordLimitErr
 }
 
 describe("session record limit (ADR-0033) is a typed, non-retryable refusal", () => {
-  it("new structured body carries session, limit and count", async () => {
+  it("structured body carries session, limit and count", async () => {
     const refusal = assertNonRetryableConflict(
       await thrownBy(NEW_BODY, (memory) => memory.create("s-full-1", "turn text")),
     );
     assert.equal(refusal.sessionUuid, "s-full-1");
     assert.equal(refusal.limit, 500);
     assert.equal(refusal.count, 503);
-    assert.match(refusal.message, /session=s-full-1, limit=500, count=503/);
+    assert.equal(
+      refusal.message,
+      "Conflict (HTTP 409): session has reached the maximum of 500 records (refused) " +
+        "(session record limit: session=s-full-1, limit=500, count=503)",
+    );
   });
 
-  it("old text-only body is still recognised; missing fields are null", async () => {
-    const refusal = assertNonRetryableConflict(
-      await thrownBy(OLD_BODY, (memory) => memory.create("s1", "turn text")),
-    );
-    assert.equal(refusal.sessionUuid, null);
-    assert.equal(refusal.limit, 500); // read back from the server's own sentence
-    assert.equal(refusal.count, null);
-    assert.match(refusal.message, /session=unknown, limit=500, count=unknown/);
+  it("4.0.0: the sentence without the code is a plain conflict, not the typed refusal", async () => {
+    const thrown = await thrownBy(SENTENCE_ONLY_BODY, (memory) => memory.create("s1", "turn text"));
+    assert.ok(thrown instanceof AnhurError, String(thrown));
+    assert.ok(!(thrown instanceof AnhurSessionRecordLimitError));
+    assert.equal((thrown as AnhurError).statusCode, 409);
+    assert.equal((thrown as AnhurError).kind, "conflict");
+  });
+
+  it("4.0.0: the code with a missing field is a plain conflict (no invented values)", () => {
+    for (const missing of ["limit", "count", "session_uuid"]) {
+      const fields: Record<string, unknown> = JSON.parse(NEW_BODY);
+      delete fields[missing];
+      assert.equal(
+        sessionRecordLimitFromResponse(409, JSON.stringify(fields)),
+        null,
+        `body without ${missing} must not be typed`,
+      );
+    }
   });
 
   it("multipart upload path is typed too", async () => {
@@ -90,15 +106,18 @@ describe("session record limit (ADR-0033) is a typed, non-retryable refusal", ()
     assert.equal((thrown as AnhurError).retryable, false);
   });
 
-  it("JSON cut short by the excerpt cap is still recognised from the raw text", () => {
-    const truncated = NEW_BODY.slice(0, NEW_BODY.indexOf('"session_uuid"') + 20);
-    const refusal = sessionRecordLimitFromResponse(409, truncated);
-    assert.ok(refusal instanceof AnhurSessionRecordLimitError);
-    assert.equal(refusal.limit, 500);
-    assert.equal(refusal.count, 503);
+  it("4.0.0: every field but no code is a plain conflict (the sentence is not the signal)", () => {
+    const fields: Record<string, unknown> = JSON.parse(NEW_BODY);
+    delete fields.code;
+    assert.equal(sessionRecordLimitFromResponse(409, JSON.stringify(fields)), null);
   });
 
-  it("the text on a non-409 status is not a session limit", () => {
-    assert.equal(sessionRecordLimitFromResponse(500, OLD_BODY), null);
+  it("4.0.0: a body that is not JSON is never read by regex", () => {
+    const truncated = NEW_BODY.slice(0, NEW_BODY.indexOf('"session_uuid"') + 20);
+    assert.equal(sessionRecordLimitFromResponse(409, truncated), null);
+  });
+
+  it("the structured body on a non-409 status is not a session limit", () => {
+    assert.equal(sessionRecordLimitFromResponse(500, NEW_BODY), null);
   });
 });

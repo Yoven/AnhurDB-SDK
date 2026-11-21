@@ -12,8 +12,9 @@
  *  - upload status ?scope= and the ambiguous 409: server/handler/upload_status_scope.go:147,188-189.
  *  - collision (4574c4d): server/service/search_scope_admit.go sentence + code
  *    "tenant_library_collision", HTTP 409 on every door including upload
- *    (handler/search_scope_request.go writeScopeLegError, handler/upload.go);
- *    legacy bodies (no code; 400 on upload) prove the sentence fallback.
+ *    (handler/search_scope_request.go writeScopeLegError, handler/upload.go).
+ *    Since 4.0.0 the code is the ONLY signal: the sentence without it (409) or
+ *    on a 400 is an ordinary error.
  *    Registry unavailable on upload: HTTP 503.
  *  - partial delete: server/handler/record_delete_file_library.go:53-57, legs
  *    from server/service/record_delete_file_library.go:34-44.
@@ -36,8 +37,9 @@ import type { RecordScope } from "../index.js";
 
 const COLLISION_409 = JSON.stringify({ error: "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", code: "tenant_library_collision" });
 const COLLISION_UPLOAD_409 = JSON.stringify({ error: "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", code: "tenant_library_collision" });
-const LEGACY_COLLISION_409 = JSON.stringify({ error: "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
-const LEGACY_COLLISION_400 = JSON.stringify({ error: "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
+/** The pre-4574c4d bodies (sentence, no code). Since 4.0.0 they are NOT typed. */
+const SENTENCE_ONLY_COLLISION = JSON.stringify({ error: "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
+const SENTENCE_ONLY_UPLOAD_COLLISION = JSON.stringify({ error: "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared" });
 const AMBIGUOUS_409 = JSON.stringify({ error: "record 42 is a file upload in more than one plane; pass ?scope=sessions|tenant_shared|tenant_shared_legacy|client_shared" });
 const PARTIAL_500 = JSON.stringify({
   error: "tenant library delete-by-file partially failed — retry is safe (idempotent): primary deleted=3 matched=3; legacy FAILED: " + "x".repeat(600),
@@ -210,16 +212,20 @@ describe("L2 typed errors (ADR-0029)", () => {
     });
   });
 
-  it("legacy collision without a code is still typed (409, and 400 on upload)", async () => {
-    await withStub(409, LEGACY_COLLISION_409, async (memory) => {
-      assert.ok(await caught(memory.get(42, { scope: "tenant_shared" })) instanceof AnhurTenantLibraryCollisionError);
+  it("4.0.0: the collision sentence without the code is NOT typed (409, and 400 on upload)", async () => {
+    await withStub(409, SENTENCE_ONLY_COLLISION, async (memory) => {
+      const thrown = await caught(memory.get(42, { scope: "tenant_shared" }));
+      assert.ok(thrown instanceof AnhurError, String(thrown));
+      assert.ok(!(thrown instanceof AnhurTenantLibraryCollisionError));
+      assert.equal(thrown.statusCode, 409);
+      assert.equal(thrown.kind, "conflict");
     });
-    await withStub(400, LEGACY_COLLISION_400, async (memory) => {
+    await withStub(400, SENTENCE_ONLY_UPLOAD_COLLISION, async (memory) => {
       const thrown = await caught(memory.uploadFile("a.txt", "hi", { mode: "tenant_shared" }));
-      assert.ok(thrown instanceof AnhurTenantLibraryCollisionError);
+      assert.ok(thrown instanceof AnhurQueryError, String(thrown));
+      assert.ok(!(thrown instanceof AnhurTenantLibraryCollisionError));
       assert.equal(thrown.statusCode, 400);
       assert.equal(thrown.kind, "invalid_request");
-      assert.equal(thrown.retryable, false);
     });
   });
 
@@ -235,7 +241,7 @@ describe("L2 typed errors (ADR-0029)", () => {
   });
 
   it("session limit and a generic 409 stay distinct", async () => {
-    await withStub(409, JSON.stringify({ error: "session has reached the maximum of 500 records", code: "session_record_limit" }), async (memory) => {
+    await withStub(409, JSON.stringify({ error: "session has reached the maximum of 500 records", code: "session_record_limit", limit: 500, count: 500, session_uuid: "s1" }), async (memory) => {
       assert.ok(await caught(memory.get(1)) instanceof AnhurSessionRecordLimitError);
     });
     await withStub(409, JSON.stringify({ error: "record already superseded" }), async (memory) => {

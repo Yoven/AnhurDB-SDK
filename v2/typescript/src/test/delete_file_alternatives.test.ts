@@ -44,7 +44,6 @@ describe("DeleteFileResult.alternative_sessions", () => {
   it("decodes both candidates from the exact server JSON", async () => {
     const result = await deleteFileAgainst(ZERO_MATCH_SERVER_JSON);
     assert.equal(result?.matched_count, 0);
-    assert.equal(result?.raft_index, undefined);
     assert.deepEqual(result?.alternative_sessions, [
       {
         session_uuid: "chat-42",

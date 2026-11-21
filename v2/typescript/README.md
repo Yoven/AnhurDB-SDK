@@ -28,11 +28,17 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v3.0.1/anhurdb-3.0.1.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v4.0.0/anhurdb-4.0.0.tgz
 ```
 
-> The pin above is the newest **published** tarball (`v2/typescript/v3.0.1`) and it
-> matches `SDK_VERSION` in this tree. Go and Python ship the same number.
+> The pin above names the `v2/typescript/v4.0.0` tarball, which matches
+> `SDK_VERSION` in this tree. Go and Python ship the same number.
+>
+> **4.0.0 is breaking (legacy removal).** `updateConsolidateIds` → `linkConsolidated`;
+> `AddResult.mode` is `"ingest" | "records"` (was `"cloud" | "oss"`); `add()` no
+> longer falls back to `/records` when `/ingest` answers 404; typed refusals are
+> recognised by their `code` only; `DeleteFileResult.raft_index`,
+> `SearchSessionPayload` and the `"pending"` record status are gone. See `CHANGELOG.md`.
 >
 > **3.0.0 is breaking.** `create()` takes the session as its first argument,
 > `SessionStats.last_active` is really `last_activity`, and `UploadResult`,
@@ -49,7 +55,7 @@ import { Memory, sessionsAll } from "anhurdb";
 // Cloud (default)
 const mem = new Memory({ apiKey: "anhur_xxx" });
 
-// Self-hosted / OSS
+// Self-hosted
 const mem = new Memory({
   url: "http://localhost:8000",
   apiKey: "my-local-key",
@@ -322,7 +328,7 @@ lists the sessions of the same store that DO hold that prefix
 (`FileSessionCandidate { session_uuid, matched_count, root_checksum?, root_filename? }`)
 — check `root_checksum` and re-issue `deleteFile` with the right session.
 `purge` tells whether the delete is final (true, shared plane) or a restorable
-tombstone. `raft_index` is deprecated and always absent (the server never sends it).
+tombstone (always sent).
 
 ### Query Builder (AST)
 
@@ -432,10 +438,10 @@ try {
 ```
 
 A write into a full session throws `AnhurSessionRecordLimitError` (extends
-`AnhurError`, HTTP 409, `retryable === false`) on both the new structured
-server answer and the old text-only one. `sessionUuid` and `count` are `null`
-when an old server omitted them. Keep the data and retry later — never write it
-into another session to dodge the cap:
+`AnhurError`, HTTP 409, `retryable === false`) when the server answers
+`"code": "session_record_limit"`; `sessionUuid`, `limit` and `count` are always
+set. A 409 without that code is a plain conflict `AnhurError`. Keep the data and
+retry later — never write it into another session to dodge the cap:
 
 ```typescript
 import { AnhurSessionRecordLimitError } from "anhurdb";
@@ -454,8 +460,7 @@ try {
 When your tenant library store id collides with another registered tenant's
 store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
 search, by-id call, upload and delete: HTTP 409 with `"code":
-"tenant_library_collision"` (servers older than 4574c4d sent no code and used 400
-on upload; still recognised by the sentence). The SDK throws
+"tenant_library_collision"`. The SDK recognises it by that code only and throws
 `AnhurTenantLibraryCollisionError`, **non-retryable**; it heals only when an
 operator renames one of the tenants. It is never the session-record-limit 409.
 An unreadable tenant registry is HTTP 503 (upload included) — the ordinary

@@ -185,10 +185,10 @@ export interface LegScoreSummary {
  * {@link SearchOptions.entityJaccardWeight} override was applied). Mirrors
  * `model.RetrievalMeta` in `AnhurDB/server/model/record.go` field-for-field.
  *
- * Junior Tip [why this is not on `search()`'s return type]: `search()` keeps
- * returning `SearchResult[]` for backward compatibility — existing callers
- * destructure/iterate the array directly and would break if it became
- * `{results, retrieval}`. Use {@link Memory.searchWithRetrieval} instead when
+ * Junior Tip [why this is not on `search()`'s return type]: `search()` returns
+ * `SearchResult[]` so the common case — iterate the hits — needs no
+ * unwrapping; folding this in would make it `{results, retrieval}` for every
+ * caller. Use {@link Memory.searchWithRetrieval} instead when
  * this diagnostic block is needed.
  */
 export interface RetrievalMeta {

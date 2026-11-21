@@ -15,12 +15,6 @@
  * ones the SDK raises BEFORE any HTTP happens — see `AnhurQueryError`.
  */
 
-/** Base error for all AnhurDB SDK errors.
- *
- * `statusCode` carries the HTTP status when the error came from an HTTP
- * response (undefined otherwise) — callers branch on the REAL status instead
- * of parsing the message (e.g. `waitForUpload` treats a transient 404 as
- * "pending"). Additive and backward-compatible. */
 /** Failure classification, so callers branch on meaning instead of on strings. */
 export type AnhurErrorKind =
   | "auth"
@@ -53,6 +47,12 @@ export function kindForStatus(statusCode?: number): AnhurErrorKind {
   return "server";
 }
 
+/** Base error for all AnhurDB SDK errors.
+ *
+ * `statusCode` carries the HTTP status when the error came from an HTTP
+ * response (undefined otherwise) — callers branch on the REAL status instead
+ * of parsing the message (e.g. `waitForUpload` treats a transient 404 as
+ * "still processing"). */
 export class AnhurError extends Error {
   readonly statusCode?: number;
   readonly kind: AnhurErrorKind;
@@ -135,11 +135,10 @@ export class AnhurUploadWaitTimeout extends AnhurError {
  * `*SessionRecordLimitError` / `ErrSessionRecordLimit`, Python
  * `AnhurSessionRecordLimitError`.
  *
- * Recognised on both server generations: the new structured 409 body
- * (`code: "session_record_limit"` plus `limit`/`count`/`session_uuid`) and the
- * old text-only 409 (`"session has reached the maximum of N records"`).
- * `sessionUuid` and `count` are `null` when an old server omitted them; `limit`
- * is read back from the server's own sentence when the field is absent.
+ * Recognised by the structured 409 body ONLY: `code: "session_record_limit"`
+ * plus `limit`/`count`/`session_uuid`, which the server always sends
+ * (`handler/service_bridge.go:109-125`, none omitempty). Since 4.0.0 the three
+ * fields are non-nullable and the old sentence-only 409 is a plain conflict.
  *
  * Junior Tip [non-retryable is not "drop it"]: repeating the same write into
  * the same session gets the same refusal until the cap changes server-side, so
@@ -150,17 +149,17 @@ export class AnhurUploadWaitTimeout extends AnhurError {
 export class AnhurSessionRecordLimitError extends AnhurError {
   static readonly CODE = "session_record_limit";
   readonly code = AnhurSessionRecordLimitError.CODE;
-  readonly sessionUuid: string | null;
-  readonly limit: number | null;
-  readonly count: number | null;
+  readonly sessionUuid: string;
+  readonly limit: number;
+  readonly count: number;
   readonly serverMessage: string;
 
   constructor(
     message: string,
     details: {
-      sessionUuid: string | null;
-      limit: number | null;
-      count: number | null;
+      sessionUuid: string;
+      limit: number;
+      count: number;
       serverMessage: string;
     },
   ) {
