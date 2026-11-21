@@ -5,7 +5,10 @@ package client
 // field name, read from the AnhurDB handlers (server/handler/client_*.go);
 // the comment on each type names the handler that writes or reads it.
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // KeyScope is the RBAC scope an impersonation token is minted with.
 // The server accepts exactly these three values (plus "" on the plain route,
@@ -149,4 +152,15 @@ type ImpersonatedKey struct {
 type RevokeResult struct {
 	Revoked bool   `json:"revoked"`
 	KeyID   string `json:"key_id"`
+}
+
+// String prints the token WITHOUT its secret.
+//
+// Junior Tip [why a Stringer on a data type]: `log.Printf("%+v", token)` is
+// the first thing anyone writes while debugging, and without this method it
+// would print APIKey into the log. Python's ImpersonatedKey.__repr__ hides the
+// secret the same way. Read APIKey explicitly when you need it.
+func (key ImpersonatedKey) String() string {
+	return fmt.Sprintf("ImpersonatedKey{KeyID:%s TenantID:%s Scope:%s L1Only:%t ExpiresAt:%s}",
+		key.KeyID, key.TenantID, key.Scope, key.L1Only, key.ExpiresAt.Format(time.RFC3339))
 }

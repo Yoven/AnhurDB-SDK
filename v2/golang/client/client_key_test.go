@@ -6,8 +6,10 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -274,5 +276,14 @@ func TestClientAPI_PlainListAndRevokeWire(t *testing.T) {
 	var apiError *ClientAPIError
 	if !errors.As(unknownError, &apiError) || apiError.Code != "key_not_found" || !errors.Is(unknownError, ErrNotFound) {
 		t.Errorf("unknown key: %v", unknownError)
+	}
+}
+
+func TestClientAPI_ImpersonatedKeyStringHidesSecret(t *testing.T) {
+	token := &ImpersonatedKey{APIKey: "anhur_secret", KeyID: "ik_42", Scope: KeyScopeWrite}
+	for _, rendered := range []string{fmt.Sprintf("%v", token), fmt.Sprintf("%+v", token), fmt.Sprintf("%s", *token)} {
+		if strings.Contains(rendered, "anhur_secret") || !strings.Contains(rendered, "ik_42") {
+			t.Errorf("rendering leaks or loses data: %s", rendered)
+		}
 	}
 }
