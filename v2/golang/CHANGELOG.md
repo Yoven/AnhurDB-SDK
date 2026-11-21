@@ -1,5 +1,26 @@
 # Go SDK Changelog
 
+## Unreleased
+
+### Added — client-key API (ADR-0034), identical in Go, Python and TypeScript
+
+- `NewClientAPI(clientKey, opts...)` and `*ClientAPI` for `/api/v1/client/*`:
+  `CreateChild`, `ListChildren`, `SuspendChild`, `ResumeChild`, `ListTenants`,
+  `ListChildTenants`, `CreateTenant`, `CreateChildTenant` (optional
+  `AgentProfile{Config, MaxRPM *int}`), `Impersonate`, `ImpersonateChild`
+  (`ImpersonateRequest{TenantID, Scope, L1Only, Description, TTL}` →
+  `ImpersonatedKey`), `RevokeImpersonation`. Never sends `X-Tenant-ID`.
+  Files `client/client_key*.go`; shapes taken from the AnhurDB handlers
+  `server/handler/client_*.go` (branch `feat/phase1-client-children`).
+- `*ClientAPIError` exposes the server code (`body.error`), `detail` and
+  `error_type`; unwraps to the existing status sentinels. `child_limit` and
+  `tenant_limit` are not retryable.
+- Fail-closed impersonation echo: `ErrL1OnlyNotHonoured`,
+  `ErrScopeNotHonoured` and `ErrUnexpectedResponse` via
+  `*ClientAPIResponseError` (carries the minted `KeyID`).
+- `newConnectionFromConfig` extracted from `NewMemory` (shared redirect guard
+  for an injected `*http.Client`); `NewMemory` behaviour unchanged.
+
 ## 4.0.0 — legacy removal (2026-11-21)
 
 AnhurDB has exactly one server and no external clients, so every SDK branch that

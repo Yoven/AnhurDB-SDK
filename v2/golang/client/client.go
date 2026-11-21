@@ -90,15 +90,7 @@ func NewMemory(apiKey string, opts ...Option) *Memory {
 		opt(cfg)
 	}
 
-	conn := NewConnection(cfg.url, apiKey, cfg.timeout)
-	if cfg.httpClient != nil {
-		injected := *cfg.httpClient // shallow copy: never mutate the caller's client
-		injected.CheckRedirect = conn.HTTPClient.CheckRedirect
-		if injected.Timeout == 0 {
-			injected.Timeout = conn.HTTPClient.Timeout
-		}
-		conn.HTTPClient = &injected
-	}
+	conn := newConnectionFromConfig(apiKey, cfg)
 	if cfg.tenantID != "" {
 		conn.TenantID = cfg.tenantID
 	}
@@ -122,6 +114,29 @@ func NewMemory(apiKey string, opts ...Option) *Memory {
 		sessionUUID:       sessionUUID,
 		sessionRegistered: false,
 	}
+}
+
+// newConnectionFromConfig builds the transport shared by NewMemory and
+// NewClientAPI: URL, timeout and an optional injected *http.Client. It never
+// sets TenantID — that decision belongs to the caller (NewClientAPI must
+// never send X-Tenant-ID).
+//
+// Junior Tip [the redirect guard travels with the injected client]: an
+// injected *http.Client usually has CheckRedirect == nil, which FOLLOWS 3xx
+// and replays X-API-Key to whatever host Location names. The SDK's guard is
+// copied onto a shallow copy, so the caller's client is never mutated and no
+// constructor can forget the guard.
+func newConnectionFromConfig(apiKey string, cfg *memoryConfig) *HTTPConnection {
+	conn := NewConnection(cfg.url, apiKey, cfg.timeout)
+	if cfg.httpClient != nil {
+		injected := *cfg.httpClient // shallow copy: never mutate the caller's client
+		injected.CheckRedirect = conn.HTTPClient.CheckRedirect
+		if injected.Timeout == 0 {
+			injected.Timeout = conn.HTTPClient.Timeout
+		}
+		conn.HTTPClient = &injected
+	}
+	return conn
 }
 
 // randomHex generates n random hex characters using crypto/rand

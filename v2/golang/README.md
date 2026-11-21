@@ -303,6 +303,58 @@ records, err := mem.Query(context.Background(), req)
 
 Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`. Filterable columns match the server whitelist (`type`, `score`, `weight`, `status`, `created_at`, etc.).
 
+### Client key API (child clients, agent profile, impersonation — ADR-0034)
+
+`client.NewClientAPI` takes a **client key** (kind=client), never a tenant key.
+It talks only to `/api/v1/client/*` and **never sends `X-Tenant-ID`** (the
+tenant travels in the body; `WithTenantID` is ignored here).
+
+```go
+api := client.NewClientAPI(clientKey, client.WithURL("http://localhost:8000"))
+
+child, err := api.CreateChild(ctx, accountRef)        // 201 created / 200 same id (idempotent per ref)
+_, err = api.CreateChildTenant(ctx, child.ChildClientID, client.CreateTenantRequest{
+    TenantID: "contabilidade",
+    Profile:  &client.AgentProfile{Config: map[string]string{"search_top_k": "8"}, MaxRPM: &maxRPM},
+})
+token, err := api.ImpersonateChild(ctx, child.ChildClientID, client.ImpersonateRequest{
+    TenantID: "contabilidade", Scope: client.KeyScopeWrite, L1Only: true, TTL: time.Hour,
+})
+// token.APIKey, token.KeyID, token.Scope, token.L1Only, token.ExpiresAt
+_, err = api.RevokeImpersonation(ctx, token.KeyID)
+```
+
+| Method | Route |
+|---|---|
+| `CreateChild(ctx, externalRef)` | `POST /api/v1/client/children` |
+| `ListChildren(ctx)` | `GET /api/v1/client/children` |
+| `SuspendChild(ctx, childID)` / `ResumeChild(ctx, childID)` | `POST /api/v1/client/children/{child_id}/suspend` / `resume` |
+| `ListTenants(ctx)` / `ListChildTenants(ctx, childID)` | `GET /api/v1/client/tenants` / `GET /api/v1/client/children/{child_id}/tenants` |
+| `CreateTenant(ctx, req)` / `CreateChildTenant(ctx, childID, req)` | `POST /api/v1/client/tenants` / `POST /api/v1/client/children/{child_id}/tenants` |
+| `Impersonate(ctx, req)` / `ImpersonateChild(ctx, childID, req)` | `POST /api/v1/client/impersonate` / `POST /api/v1/client/children/{child_id}/impersonate` |
+| `RevokeImpersonation(ctx, keyID)` | `POST /api/v1/client/impersonate/revoke` |
+
+**Trust the echo, not the request.** The server lowers a scope above the
+client key's ceiling without an error, so always read `token.Scope` and
+`token.L1Only`. The SDK fails closed when the echo is WEAKER than requested:
+l1_only requested but not echoed true → `ErrL1OnlyNotHonoured`; echoed scope
+unknown or higher than requested → `ErrScopeNotHonoured` (both
+`*client.ClientAPIResponseError`, whose `KeyID` names the minted token so you
+can revoke it). A lower scope than requested is accepted.
+
+**Errors.** A refusal is `*client.ClientAPIError` with `Status`, `Code`
+(= the server's `body.error`: `child_suspended`, `child_not_found`,
+`child_limit`, `tenant_limit`, `invalid_scope`, `invalid_tenant_id`,
+`invalid_profile`, `invalid_child_id`, `key_not_found`, `key_not_owned`, …),
+`Detail` and `ErrorType` (`IsNotLeader()` for the provably-uncommitted 503).
+`errors.Is` still matches `ErrUnauthorized` (401/403), `ErrNotFound` (404),
+`ErrInvalidQuery` (400/422) and `ErrServerError` (5xx). `child_limit` and
+`tenant_limit` are hard caps: `Retryable()` is false. The SDK never retries.
+Inputs that can never succeed (empty ref/tenant/key id, tenant `*`,
+non-canonical child id, unknown scope, child impersonate without scope,
+fractional TTL, `max_rpm < 1`) are refused locally with a 400 `*APIError`
+before any request.
+
 ## Error Handling
 
 ```go
