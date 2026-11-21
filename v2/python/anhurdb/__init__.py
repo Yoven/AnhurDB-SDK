@@ -72,6 +72,20 @@ from .models import (
     SmartSearchHit,
 )
 from .client import Memory
+from .client.client_key import ClientAPI
+from .client.client_key_types import (
+    AgentProfile,
+    ChildClient,
+    ChildStatus,
+    ClientTenant,
+    ImpersonatedKey,
+    KeyScope,
+    RevokeResult,
+)
+from .client.client_key_errors import (
+    AnhurClientAPIError,
+    AnhurClientAPIResponseError,
+)
 from .client.session_filter import (
     MAX_SESSION_FILTER_UUIDS,
     SESSION_WILDCARD,
@@ -110,6 +124,17 @@ __all__ = [
     "__version__",
     # Client class
     "Memory",
+    # Client-key surface (ADR-0034): child clients, tenants, impersonation.
+    "ClientAPI",
+    "AgentProfile",
+    "ChildClient",
+    "ChildStatus",
+    "ClientTenant",
+    "ImpersonatedKey",
+    "KeyScope",
+    "RevokeResult",
+    "AnhurClientAPIError",
+    "AnhurClientAPIResponseError",
     # Models
     "MemoryType",
     "MemoryStatus",

@@ -1,5 +1,25 @@
 # Python SDK Changelog
 
+## Unreleased
+
+### Added — client-key API (ADR-0034), identical in Go, Python and TypeScript
+
+- `ClientAPI(client_key, url=…, timeout=…)` (async context manager) for
+  `/api/v1/client/*`: `create_child`, `list_children`, `suspend_child`,
+  `resume_child`, `list_tenants`, `list_child_tenants`, `create_tenant`,
+  `create_child_tenant` (optional `AgentProfile(config, max_rpm)`),
+  `impersonate`, `impersonate_child` (`scope`, `l1_only`, `description`,
+  `ttl_seconds` → `ImpersonatedKey`), `revoke_impersonation`. Never sends
+  `X-Tenant-ID`. Modules `anhurdb/client/client_key*.py`; shapes taken from the
+  AnhurDB handlers `server/handler/client_*.go` (branch
+  `feat/phase1-client-children`). Exported from `anhurdb`.
+- `AnhurClientAPIError` exposes the server code (`body.error`), `detail`,
+  `error_type` and `is_not_leader`; `child_limit`/`tenant_limit` are not
+  retryable.
+- Fail-closed impersonation echo: `AnhurClientAPIResponseError` with `code`
+  `l1_only_not_honoured`, `scope_not_honoured` or `unexpected_response` (carries
+  the minted `key_id`). `ImpersonatedKey.__repr__` never prints the secret.
+
 ## 4.0.0 — legacy removal (2026-11-21)
 
 Breaking. Go, Python and TypeScript remove the same set together (house parity

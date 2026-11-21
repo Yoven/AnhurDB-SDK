@@ -354,6 +354,53 @@ it, so the method returned a plain filter query while its name promised ranking 
 one failure mode with no symptom. Use `search()` / `POST /api/v1/search`. The pseudo-key
 itself is still reachable by hand through `Filter` for anyone probing the server.
 
+## Client key API (child clients, agent profile, impersonation — ADR-0034)
+
+`ClientAPI` takes a **client key** (kind=client), never a tenant key. It talks
+only to `/api/v1/client/*` and **never sends `X-Tenant-ID`** (the tenant
+travels in the body).
+
+```python
+from anhurdb import AgentProfile, ClientAPI, KeyScope
+
+async with ClientAPI(client_key, url="http://localhost:8000") as api:
+    child = await api.create_child(account_ref)          # created=True once, then False with the same id
+    await api.create_child_tenant(child.child_client_id, "contabilidade",
+                                  profile=AgentProfile(config={"search_top_k": "8"}, max_rpm=1200))
+    token = await api.impersonate_child(child.child_client_id, "contabilidade",
+                                        scope=KeyScope.WRITE, l1_only=True, ttl_seconds=3600)
+    # token.api_key, token.key_id, token.scope, token.l1_only, token.expires_at
+    await api.revoke_impersonation(token.key_id)
+```
+
+| Method | Route |
+|---|---|
+| `create_child(external_ref)` | `POST /api/v1/client/children` |
+| `list_children()` | `GET /api/v1/client/children` |
+| `suspend_child(child_id)` / `resume_child(child_id)` | `POST /api/v1/client/children/{child_id}/suspend` / `resume` |
+| `list_tenants()` / `list_child_tenants(child_id)` | `GET /api/v1/client/tenants` / `GET /api/v1/client/children/{child_id}/tenants` |
+| `create_tenant(tenant_id, description, profile)` / `create_child_tenant(child_id, …)` | `POST /api/v1/client/tenants` / `POST /api/v1/client/children/{child_id}/tenants` |
+| `impersonate(tenant_id, scope, l1_only, description, ttl_seconds)` / `impersonate_child(child_id, …)` | `POST /api/v1/client/impersonate` / `POST /api/v1/client/children/{child_id}/impersonate` |
+| `revoke_impersonation(key_id)` | `POST /api/v1/client/impersonate/revoke` |
+
+**Trust the echo, not the request.** The server lowers a scope above the
+client key's ceiling without an error, so always read `token.scope` and
+`token.l1_only`. The SDK fails closed when the echo is WEAKER than requested:
+`AnhurClientAPIResponseError` with `code` `l1_only_not_honoured` or
+`scope_not_honoured` (and `key_id` of the minted token, so you can revoke it).
+A lower scope than requested is accepted.
+
+**Errors.** A refusal is `AnhurClientAPIError` (subclass of `AnhurError`) with
+`status_code`, `code` (= the server's `body.error`: `child_suspended`,
+`child_not_found`, `child_limit`, `tenant_limit`, `invalid_scope`,
+`invalid_tenant_id`, `invalid_profile`, `invalid_child_id`, `key_not_found`,
+`key_not_owned`, …), `detail`, `error_type` and `is_not_leader`. `kind`
+follows the status; `child_limit`/`tenant_limit` are hard caps
+(`retryable` False). The SDK never retries. Inputs that can never succeed
+(empty ref/tenant/key id, tenant `*`, non-canonical child id, unknown scope,
+child impersonate without scope, negative TTL, `max_rpm < 1`) raise
+`AnhurQueryError` (400) before any request.
+
 ## Error Handling
 
 ```python
