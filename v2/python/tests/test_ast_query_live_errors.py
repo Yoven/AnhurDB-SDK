@@ -147,6 +147,10 @@ SERVER_REJECTIONS = [
      'limit/offset must live inside the \\"pagination\\" object'),
     ("err.raw_top_level_offset", {"offset": 5},
      'limit/offset must live inside the \\"pagination\\" object'),
+    # 2026-11-21: unknown top-level keys are refused (a typo like "filter" used to
+    # return every row unfiltered). Was the ignore.unknown_top_level_key case.
+    ("err.raw_unknown_top_level_key", {"filter": {"type": {"$eq": "risk"}}},
+     'unknown field \\"filter\\" in query body'),
 ]
 
 
@@ -257,14 +261,6 @@ def test_the_server_silently_ignores_select_semantic_search_and_unknown_keys(ast
                         lambda: memory.query(semantic_ast),
                         note="semantic_search is skipped before the whitelist check")
     assert semantic.id_set == ast_fixture.expect(lambda row: row["type"] == "risk")
-
-    unknown_key = run_case(ast_fixture, "ignore.unknown_top_level_key",
-                           'raw {"unknown_top":"x", ...}',
-                           lambda: memory.query({"unknown_top": "x",
-                                                 "filters": {"uuid": {"$eq": session}},
-                                                 "pagination": {"limit": 200}}),
-                           note="unknown top-level keys are dropped, unlike limit/offset")
-    assert unknown_key.id_set == baseline
 
     unknown_direction = run_case(
         ast_fixture, "ignore.sort_unknown_direction",
