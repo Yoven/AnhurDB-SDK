@@ -1,5 +1,24 @@
 # Python SDK Changelog
 
+## Unreleased — metadata update is a merge patch (2026-11-21)
+
+Server side: AnhurDB feat/metadata-merge-patch (ADR-0035). Same change in Go,
+Python and TypeScript.
+
+- **`update` metadata semantics documented as RFC 7396 merge patch.** Keys
+  present overwrite, a null value deletes the key, keys absent from the patch
+  are untouched, nested objects merge, arrays are replaced whole. A non-object
+  patch, or an update over stored metadata that is not a JSON object, is
+  refused by the server with 400. Callers no longer need read-merge-write.
+- **`metadata` may be a dict** besides the JSON string. It is encoded to
+  the JSON string the REST handler decodes (`Metadata string`), keeping
+  `None` as `null` so a key can be deleted. NaN/Infinity are refused (JSON has neither). An unencodable value
+  raises `AnhurQueryError(status_code=400)` (`invalid_request``) before any request, message
+  `INVALID_PARAM: update: metadata cannot be encoded as JSON: <cause>`.
+  Before this change a dict reached the wire as a nested object and the
+  server answered 400. String metadata is sent byte-for-byte as before.
+  New `anhurdb/client/record_metadata_patch.py`, tests `tests/test_record_metadata_patch.py`.
+
 ## 4.0.0 — legacy removal (2026-11-21)
 
 Breaking. Go, Python and TypeScript remove the same set together (house parity

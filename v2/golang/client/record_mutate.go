@@ -28,6 +28,22 @@ import (
 // The updates map can contain any subset of record fields
 // (e.g. {"summary": "new summary", "status": "archived"}).
 //
+// "metadata" is an RFC 7396 JSON merge patch applied by the server onto the
+// stored metadata object (AnhurDB ADR-0035): keys present overwrite, a null
+// value deletes the key, keys absent from the patch are left untouched, nested
+// objects merge and arrays are replaced whole. It is NOT a full replace: to
+// drop a key, send it as null. Pass it either as a JSON string (unchanged since
+// 3.x) or as a map[string]interface{} — the map is JSON-encoded with nil values
+// kept as null (see record_metadata_patch.go). A patch that is not a JSON
+// object, or an update over stored metadata that is not a JSON object, is
+// refused by the server with 400 (*APIError, Kind() == KindInvalidRequest).
+//
+// Junior Tip [read-merge-write is no longer needed]: before ADR-0035 the server
+// replaced the whole metadata column, so callers read the record, merged their
+// keys and wrote the full map back — and a concurrent writer's keys were lost
+// in between. Send only the keys you change; the merge runs inside the Raft
+// apply, so two patches on different keys both survive.
+//
 // It REFUSES a "score" key. PATCH /api/v1/records/{id} has no score field, so
 // the server answers 200 and drops it — the same shape as an earlier defect
 // with "archived". Silently succeeding while writing nothing is worse than an
@@ -45,8 +61,13 @@ func (m *Memory) Update(ctx context.Context, recordID int64, updates map[string]
 		return scopeErr
 	}
 
+	encodedUpdates, encodeError := encodeUpdateMetadata("Update", updates)
+	if encodeError != nil {
+		return encodeError
+	}
+
 	path := byIDPath(fmt.Sprintf("/api/v1/records/%d", recordID), scope)
-	_, err := m.conn.Patch(ctx, path, updates)
+	_, err := m.conn.Patch(ctx, path, encodedUpdates)
 	return err
 }
 

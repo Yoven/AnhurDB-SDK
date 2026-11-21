@@ -142,6 +142,7 @@ export {
   uploadStatusScope,
 } from "./recordScope.js";
 export type { ByIdOptions, RecordScope } from "./recordScope.js";
+export type { MetadataPatch } from "./recordMetadataPatch.js";
 export type { EntitiesListPage } from "./entitiesApi.js";
 export {
   AnhurTenantLibraryCollisionError,

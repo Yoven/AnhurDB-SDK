@@ -282,11 +282,22 @@ const created = await mem.create(sessionId, "Ship the parity release", {
 ```typescript
 // Update fields
 await mem.update(42, { summary: "Updated", status: "archived" });
+// metadata is a merge patch: only the named keys change, null deletes a key.
+await mem.update(42, { metadata: { reviewed: true, draft_of: null } });
 await mem.setScore(42, 8); // score NAO passa pelo update — ver nota abaixo
 
 // Archive (soft delete)
 await mem.delete(42);
 ```
+
+`metadata` on `update` is an RFC 7396 JSON merge patch (AnhurDB ADR-0035): keys
+present overwrite, a `null` value deletes the key (`undefined` does not — JSON
+drops it), keys you do not name are left untouched, nested objects merge,
+arrays are replaced whole. Pass a JSON string or a plain object (encoded with
+`null` kept; `NaN`/`Infinity` throw instead of silently becoming a delete). A
+patch that is not a JSON object — or stored metadata that is not one — is
+refused with 400. There is no need to read, merge and write back the whole
+object.
 
 ### By-id scope (records from a shared plane, ADR-0029)
 

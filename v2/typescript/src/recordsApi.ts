@@ -28,6 +28,8 @@
  */
 
 import { MemorySearchApi } from "./search.js";
+import { encodeUpdateMetadata } from "./recordMetadataPatch.js";
+import type { MetadataPatch } from "./recordMetadataPatch.js";
 import { resolveRecordScope, scopeParams, withScopeQuery } from "./recordScope.js";
 import type { ByIdOptions } from "./recordScope.js";
 import type { ContextResult, GroundingResult } from "./types.js";
@@ -137,6 +139,24 @@ export abstract class MemoryRecordsApi extends MemorySearchApi {
   /**
    * Partially update a record.
    *
+   * `metadata` is an RFC 7396 JSON merge patch applied by the server onto the
+   * stored metadata object (AnhurDB ADR-0035): keys present overwrite, a `null`
+   * value deletes the key, keys absent from the patch are left untouched,
+   * nested objects merge and arrays are replaced whole. It is NOT a full
+   * replace: to drop a key, send it as `null` (`undefined` is dropped by JSON
+   * and leaves the key untouched). Pass it as a JSON string (unchanged since
+   * 3.x) or as a plain object — the object is JSON-encoded with `null` kept
+   * (see `recordMetadataPatch.ts`). A patch that is not a JSON object, or an
+   * update over stored metadata that is not a JSON object, is refused by the
+   * server with 400 (`AnhurQueryError`, `kind === "invalid_request"`).
+   *
+   * Junior Tip [read-merge-write is no longer needed]: before ADR-0035 the
+   * server replaced the whole metadata column, so callers read the record,
+   * merged their keys and wrote the full object back — and a concurrent
+   * writer's keys were lost in between. Send only the keys you change; the
+   * merge runs inside the Raft apply, so two patches on different keys both
+   * survive.
+   *
    * `score` is NOT accepted here. `PATCH /api/v1/records/{id}` has no score
    * field, so the server answers 200 and drops the key — the same shape as an
    * earlier defect with `archived`. Succeeding silently while writing nothing
@@ -144,12 +164,16 @@ export abstract class MemoryRecordsApi extends MemorySearchApi {
    * Measured 2026-08-15.
    *
    * @param options - `{ scope }`: plane the id lives in (see `get`).
+   * @throws AnhurQueryError (400) before any request when a metadata object
+   *         cannot be encoded as JSON.
+   * @example
+   * await mem.update(42, { metadata: { reviewed: true, draft_of: null } });
    */
   async update(
     recordId: number,
     fields: Partial<{
       summary: string;
-      metadata: string;
+      metadata: string | MetadataPatch;
       status: string;
       type: string;
     }> & { score?: never },
@@ -160,7 +184,8 @@ export abstract class MemoryRecordsApi extends MemorySearchApi {
         "field and drops the key while answering 200; use setScore(recordId, score)");
     }
     const scope = resolveRecordScope("update", options?.scope);
-    await this.searchTransport.patch(withScopeQuery(`/api/v1/records/${recordId}`, scope), fields);
+    const encodedFields = encodeUpdateMetadata("update", fields);
+    await this.searchTransport.patch(withScopeQuery(`/api/v1/records/${recordId}`, scope), encodedFields);
   }
 
   /**
