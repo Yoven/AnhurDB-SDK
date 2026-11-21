@@ -4,9 +4,14 @@
  *   ANHUR_API_KEY=... npx tsx AnhurDB-SDK/v2/scripts/parity/probe_typescript.ts
  */
 import { Memory, sessionsAll } from "../../typescript/src/index.js";
+import { runL2Section } from "./probe_typescript_l2.js";
 
 function emit(operation: string, ok: boolean, detail = "", err?: unknown): void {
-  const status = ok ? "PASS" : "FAIL";
+  emitStatus(operation, ok ? "PASS" : "FAIL", detail, err);
+}
+
+/** One RESULT line; status is PASS | FAIL | SKIP (run_all.sh parses it). */
+function emitStatus(operation: string, status: "PASS" | "FAIL" | "SKIP", detail = "", err?: unknown): void {
   const errPart = err !== undefined ? ` err=${String(err)}` : "";
   console.log(`RESULT sdk=typescript op="${operation}" status=${status}${errPart} detail=${detail}`);
 }
@@ -83,16 +88,18 @@ async function main(): Promise<number> {
   }
 
   try {
-    const createRes = await mem.create(`parity-ts create fact token=${token}`, {
+    // create(sessionUuid, text, options): the session is the first argument
+    // (same as Go/Python), never an option.
+    const createSession = recordUuid || mem.sessionId;
+    const createRes = await mem.create(createSession, `parity-ts create fact token=${token}`, {
       type: "fact",
       score: 8,
-      sessionUuid: recordUuid || undefined,
     });
     // AddResult (create()'s return type) has no top-level `id` — the created
     // record's id lives at `records[0].id`, same shape `addRecordId()`
     // already extracts for Add above. `createRes.id` does not exist on
     // AddResult and always printed "id=undefined".
-    emit("Create", true, `id=${addRecordId(createRes)} session=${recordUuid}`);
+    emit("Create", true, `id=${addRecordId(createRes)} session=${createSession}`);
   } catch (err) {
     failCount++;
     emit("Create", false, "", err);
@@ -224,6 +231,9 @@ async function main(): Promise<number> {
     failCount++;
     emit("GetGrounding", false, "", err);
   }
+
+  // L2/ADR-0033: tenant library by-id scope (probe_typescript_l2.ts).
+  failCount += await runL2Section(mem, token, emitStatus);
 
   if (failCount > 0) {
     console.log(`SUMMARY sdk=typescript FAIL count=${failCount}`);

@@ -46,6 +46,9 @@ func main() {
 		failCount++
 		fmt.Printf("RESULT sdk=go op=%q status=FAIL err=%v detail=%s\n", operation, opErr, detail)
 	}
+	skip := func(operation, detail string) {
+		fmt.Printf("RESULT sdk=go op=%q status=SKIP detail=%s\n", operation, detail)
+	}
 
 	// ── Health ────────────────────────────────────────────────────────────
 	health, healthErr := mem.Health(ctx)
@@ -257,6 +260,9 @@ func main() {
 	} else {
 		pass("GetGrounding", "ok")
 	}
+
+	// ── L2/ADR-0033: tenant library by-id scope (l2_scope.go) ──────────────
+	runL2Section(mem, token, l2Reporter{pass: pass, failOp: failOp, skip: skip})
 
 	if failCount > 0 {
 		fmt.Printf("SUMMARY sdk=go FAIL count=%d\n", failCount)

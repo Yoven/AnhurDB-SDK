@@ -12,21 +12,33 @@ from typing import Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../python"))
 
 from anhurdb import (  # noqa: E402
-    CreateRequest,
-    EntityModel,
+    AddResult,
     Memory,
     MemoryType,
     sessions_all,
 )
+from probe_python_l2 import run_l2_section  # noqa: E402
 
 
 def emit(operation: str, ok: bool, detail: str = "", err: Any = None) -> None:
-    status = "PASS" if ok else "FAIL"
+    emit_status(operation, "PASS" if ok else "FAIL", detail, err)
+
+
+def emit_status(operation: str, status: str, detail: str = "", err: Any = None) -> None:
+    """One RESULT line; status is PASS | FAIL | SKIP (run_all.sh parses it)."""
     err_part = f" err={err}" if err is not None else ""
     print(f'RESULT sdk=python op="{operation}" status={status}{err_part} detail={detail}')
 
 
 def add_record_id(add_res: Any) -> int:
+    # Junior Tip [typed AddResult]: add()/create() return the pydantic
+    # AddResult (id only on the /records door, records[] on both); the old dict
+    # branch is kept for a server/SDK that still answers a plain mapping.
+    if isinstance(add_res, AddResult):
+        if add_res.id:
+            return int(add_res.id)
+        if add_res.records and add_res.records[0].id:
+            return int(add_res.records[0].id)
     if isinstance(add_res, dict):
         if add_res.get("id"):
             return int(add_res["id"])
@@ -95,14 +107,12 @@ async def main() -> int:
         try:
             create_session = str(got.get("uuid") or "") or mem.session_id
             create_res = await mem.create(
-                CreateRequest(
-                    uuid=create_session,
-                    content=f"parity-py create fact token={token}",
-                    type=MemoryType.FACT,
-                    score=8,
-                )
+                create_session,
+                f"parity-py create fact token={token}",
+                type=MemoryType.FACT,
+                score=8,
             )
-            emit("Create", True, f"id={create_res.get('id')} session={create_session}")
+            emit("Create", True, f"id={add_record_id(create_res)} session={create_session}")
         except Exception as exc:  # noqa: BLE001
             fail_count += 1
             emit("Create", False, err=exc)
@@ -139,11 +149,11 @@ async def main() -> int:
         entity_base = f"paritychromepy{token}"
         try:
             first = await mem.upsert_entity(f"  {entity_base} ", "product", "parity probe")
-            first_id = int(first["id"])
+            first_id = int(first.id or 0)
             emit(
                 "UpsertEntity(caseA)",
                 True,
-                f"id={first_id} type={first.get('entity_type')} name={first.get('name')!r}",
+                f"id={first_id} type={first.entity_type} name={first.name!r}",
             )
         except Exception as exc:  # noqa: BLE001
             fail_count += 1
@@ -152,13 +162,13 @@ async def main() -> int:
 
         try:
             second = await mem.upsert_entity(entity_base.upper(), "product", "parity probe")
-            if int(second["id"]) != first_id:
+            if int(second.id or 0) != first_id:
                 fail_count += 1
                 emit(
                     "UpsertEntity.dedup",
                     False,
                     detail=(
-                        f"{first_id} vs {second['id']} — "
+                        f"{first_id} vs {second.id} — "
                         "redeploy AnhurDB if server lacks NormalizeEntityName"
                     ),
                 )
@@ -177,7 +187,7 @@ async def main() -> int:
 
         try:
             entities = await mem.get_record_entities(record_id)
-            typed = sum(1 for entity in entities if EntityModel.model_validate(entity).entity_type)
+            typed = sum(1 for entity in entities if entity.entity_type)
             if entities and typed == 0:
                 fail_count += 1
                 emit("GetRecordEntities.entity_type", False, "all empty")
@@ -189,8 +199,8 @@ async def main() -> int:
 
         try:
             listed = await mem.list_entities(limit=50, offset=0)
-            entities = listed.get("entities", []) if isinstance(listed, dict) else listed
-            typed = sum(1 for entity in entities if EntityModel.model_validate(entity).entity_type)
+            entities = listed.entities
+            typed = sum(1 for entity in entities if entity.entity_type)
             if entities and typed == 0:
                 fail_count += 1
                 emit("ListEntities.entity_type", False, "all empty")
@@ -202,20 +212,19 @@ async def main() -> int:
 
         try:
             found = await mem.search_entities(query=entity_base, entity_type="product", limit=10)
-            entities = found.get("entities", found) if isinstance(found, dict) else found
-            emit("SearchEntities", True, f"n={len(entities) if isinstance(entities, list) else '?'}")
+            emit("SearchEntities", True, f"n={len(found)}")
         except Exception as exc:  # noqa: BLE001
             fail_count += 1
             emit("SearchEntities", False, err=exc)
 
         try:
             other = await mem.upsert_entity(f"parity-org-py-{token}", "organization")
-            await mem.upsert_entity_edge(first_id, int(other["id"]), "related_to", confidence=1.0)
+            await mem.upsert_entity_edge(first_id, int(other.id or 0), "related_to", confidence=1.0)
             emit("UpsertEntityEdge", True, "ok")
             graph = await mem.get_entity_graph(first_id, depth=2)
-            emit("EntityGraph", True, f"keys={list(graph)[:5]}")
+            emit("EntityGraph", True, f"nodes={graph.node_count}")
             timeline = await mem.entity_timeline(first_id)
-            emit("EntityTimeline", True, f"keys={list(timeline)[:5]}")
+            emit("EntityTimeline", True, f"edges={timeline.edge_count}")
         except Exception as exc:  # noqa: BLE001
             fail_count += 1
             emit("EntityGraphFamily", False, err=exc)
@@ -226,6 +235,9 @@ async def main() -> int:
         except Exception as exc:  # noqa: BLE001
             fail_count += 1
             emit("GetGrounding", False, err=exc)
+
+        # L2/ADR-0033: tenant library by-id scope (probe_python_l2.py).
+        fail_count += await run_l2_section(mem, token, emit_status)
 
     if fail_count:
         print(f"SUMMARY sdk=python FAIL count={fail_count}")
