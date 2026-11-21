@@ -204,7 +204,7 @@ every plane you can upload to and raises `AnhurUploadStatusAmbiguousError`
 
 | Method | Description |
 |--------|-------------|
-| `update(record_id, **fields)` | Partial update — **raises on `score`** (see below) |
+| `update(record_id, **fields)` | Partial update — **raises on `score`** (see below). `metadata` is an RFC 7396 merge patch (AnhurDB ADR-0035): a JSON `str` or a `dict`; `None` deletes a key, keys you do not name stay, nested objects merge, lists are replaced; a non-object patch is refused with 400 |
 | `set_score(record_id, score)` | Set importance 1-10 durably (`POST /records/set-score`) |
 | `delete(record_id)` | **Soft delete** — archives the record (`archived=1`, `status='deleted'`); it disappears from reads but is not erased |
 

@@ -25,7 +25,7 @@ removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose
 | create_memory | `Create` / `create` / `create` | `POST /api/v1/records` — one typed record, **no** extraction LLM (embed only) |
 | create_in_session | `CreateInSession` / `create_in_session` / `createInSession` | `POST /api/v1/records` |
 | get_memory | `Get` / `get` / `get` | `GET /api/v1/records/{id}` |
-| update_memory | `Update` / `update` / `update` | `PATCH /api/v1/records/{id}` |
+| update_memory | `Update` / `update` / `update` | `PATCH /api/v1/records/{id}`. `metadata` = RFC 7396 merge patch (AnhurDB ADR-0035; null apaga a chave, chave ausente fica). Aceita string JSON ou mapa/dict/objeto, codificado para string JSON mantendo null; valor não codificável (NaN/Infinity) = invalid_request local, mensagem `INVALID_PARAM: <method>: metadata cannot be encoded as JSON: <cause>` (2026-11-21) |
 | delete | `Delete` / `delete` / `delete` | `DELETE /api/v1/records/{id}` |
 | forget | `Forget` / `forget` / `forget` | Stub (not yet available) |
 | supersede_record | `Supersede` / `supersede` / `supersede` | `POST /api/v1/records/supersede` |

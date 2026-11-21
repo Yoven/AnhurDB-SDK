@@ -27,6 +27,7 @@ record. With a scope the server proves the row lives in the plane or answers
 from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
+from .record_metadata_patch import encode_update_metadata
 from .record_scope import resolve_record_scope, scope_params
 
 
@@ -95,22 +96,44 @@ class RecordByIdMixin:
     async def update(self, record_id: int, *, scope: Optional[str] = None, **fields: Any) -> None:
         """Partially update a record.
 
+        ``metadata`` is an RFC 7396 JSON merge patch applied by the server onto
+        the stored metadata object (AnhurDB ADR-0035): keys present overwrite,
+        a ``None``/null value deletes the key, keys absent from the patch are
+        left untouched, nested objects merge and lists are replaced whole. It
+        is NOT a full replace: to drop a key, send it as ``None``. Pass it as a
+        JSON string (unchanged since 3.x) or as a ``dict`` — the dict is
+        JSON-encoded with ``None`` kept as null (see
+        ``record_metadata_patch.py``). A patch that is not a JSON object, or an
+        update over stored metadata that is not a JSON object, is refused by
+        the server with 400 (``AnhurQueryError``, ``kind == "invalid_request"``).
+
+        Junior Tip [read-merge-write is no longer needed]: before ADR-0035 the
+        server replaced the whole metadata column, so callers read the record,
+        merged their keys and wrote the full dict back — and a concurrent
+        writer's keys were lost in between. Send only the keys you change; the
+        merge runs inside the Raft apply, so two patches on different keys both
+        survive.
+
         Args:
             record_id: The record ID to update.
             scope:     Plane the id lives in (see ``get``). Keyword-only, so it
                        can never be mistaken for a record field.
             **fields:  Keyword arguments for fields to update
-                       (e.g. ``summary="new"``, ``status="archived"``).
+                       (e.g. ``summary="new"``, ``status="archived"``,
+                       ``metadata={"stale_key": None, "owner": "ana"}``).
 
         Raises:
             ValueError: if ``score`` is among the fields — use
                 :meth:`set_score`, which reaches the endpoint that
                 actually persists it.
+            AnhurQueryError: invalid_request (400) before any request when a
+                ``metadata`` dict cannot be encoded as JSON.
 
         Example::
 
             await mem.update(42, summary="Updated summary")
-            await mem.update(42, scope="tenant_shared", summary="Library fix")"""
+            await mem.update(42, scope="tenant_shared", summary="Library fix")
+            await mem.update(42, metadata={"reviewed": True, "draft_of": None})"""
         if "score" in fields:
             raise ValueError(
                 "update() cannot change score: PATCH /api/v1/records/{id} has no "
@@ -120,8 +143,9 @@ class RecordByIdMixin:
                 "2026-08-15; this call used to succeed and write nothing."
             )
         resolved_scope = resolve_record_scope("update", scope)
+        encoded_fields = encode_update_metadata("update", fields)
         await self._connection.patch(
-            f"/api/v1/records/{record_id}", fields, params=scope_params(resolved_scope)
+            f"/api/v1/records/{record_id}", encoded_fields, params=scope_params(resolved_scope)
         )
 
     async def set_score(self, record_id: int, score: int) -> None:

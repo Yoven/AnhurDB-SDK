@@ -238,8 +238,19 @@ fmt.Println(mem.ContainerTag())                            // Recall/profile tag
 
 ```go
 err = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
+// metadata is a merge patch: only the named keys change, nil deletes a key.
+err = mem.Update(ctx, 42, map[string]interface{}{
+	"metadata": map[string]interface{}{"reviewed": true, "draft_of": nil},
+})
 err = mem.Delete(ctx, 42)
 ```
+
+`metadata` on `Update` is an RFC 7396 JSON merge patch (AnhurDB ADR-0035): keys
+present overwrite, a `nil`/null value deletes the key, keys you do not name are
+left untouched, nested objects merge, arrays are replaced whole. Pass a JSON
+string or a `map[string]interface{}` (encoded with `nil` kept as null). A patch
+that is not a JSON object — or stored metadata that is not one — is refused
+with 400. There is no need to read, merge and write back the whole map.
 
 ### By-id scope (records from a shared plane, ADR-0029)
 

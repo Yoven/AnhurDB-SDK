@@ -39,6 +39,23 @@
 - `DEFAULT_CLOUD_URL` in `src/memory.ts` is now exported internally so the new
   transport reuses it (not re-exported from the package root).
 
+Server side: AnhurDB feat/metadata-merge-patch (ADR-0035). Same change in Go,
+Python and TypeScript.
+
+- **`update` metadata semantics documented as RFC 7396 merge patch.** Keys
+  present overwrite, a null value deletes the key, keys absent from the patch
+  are untouched, nested objects merge, arrays are replaced whole. A non-object
+  patch, or an update over stored metadata that is not a JSON object, is
+  refused by the server with 400. Callers no longer need read-merge-write.
+- **`metadata` may be a plain object (`MetadataPatch`, exported type)** besides the JSON string. It is encoded to
+  the JSON string the REST handler decodes (`Metadata string`), keeping
+  `null` as `null` so a key can be deleted. `undefined` is not a delete (JSON drops it); `NaN`/`Infinity` are refused instead of becoming `null` (which would delete the key). An unencodable value
+  raises `AnhurQueryError` (400, `invalid_request``) before any request, message
+  `INVALID_PARAM: update: metadata cannot be encoded as JSON: <cause>`.
+  Before this change a plain object reached the wire as a nested object and the
+  server answered 400. String metadata is sent byte-for-byte as before.
+  New `src/recordMetadataPatch.ts`, tests `src/test/record_metadata_patch.test.ts`.
+
 ## 4.0.0 — legacy removal (2026-11-21)
 
 **Breaking.** AnhurDB (`AnhurDB/server`, main) is the only server and it always

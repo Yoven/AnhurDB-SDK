@@ -40,6 +40,23 @@
 - `newConnectionFromConfig` extracted from `NewMemory` (shared redirect guard
   for an injected `*http.Client`); `NewMemory` behaviour unchanged.
 
+Server side: AnhurDB feat/metadata-merge-patch (ADR-0035). Same change in Go,
+Python and TypeScript.
+
+- **`Update` metadata semantics documented as RFC 7396 merge patch.** Keys
+  present overwrite, a null value deletes the key, keys absent from the patch
+  are untouched, nested objects merge, arrays are replaced whole. A non-object
+  patch, or an update over stored metadata that is not a JSON object, is
+  refused by the server with 400. Callers no longer need read-merge-write.
+- **`metadata` may be a map[string]interface{}** besides the JSON string. It is encoded to
+  the JSON string the REST handler decodes (`Metadata string`), keeping
+  `nil` as `null` so a key can be deleted. NaN/Infinity are refused (JSON has neither). An unencodable value
+  returns `*APIError` with `Kind() == KindInvalidRequest` before any request, message
+  `INVALID_PARAM: Update: metadata cannot be encoded as JSON: <cause>`.
+  Before this change a map[string]interface{} reached the wire as a nested object and the
+  server answered 400. String metadata is sent byte-for-byte as before.
+  New `client/record_metadata_patch.go`, tests `client/record_metadata_patch_test.go`.
+
 ## 4.0.0 — legacy removal (2026-11-21)
 
 AnhurDB has exactly one server and no external clients, so every SDK branch that

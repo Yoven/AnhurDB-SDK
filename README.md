@@ -180,7 +180,7 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
 | `read_content(record_id)` | Full content payload of a record | GET /api/v1/records/{id}/content |
-| `update(record_id, ...)` | Modify record fields — **raises on `score`** (see below) | PATCH /api/v1/records/{id} |
+| `update(record_id, ...)` | Modify record fields — **raises on `score`** (see below). `metadata` is an RFC 7396 merge patch (ADR-0035): null deletes a key, unnamed keys stay | PATCH /api/v1/records/{id} |
 | `set_score(record_id, score)` | Set importance 1-10 durably | POST /api/v1/records/set-score |
 | `delete(record_id)` | **Soft-delete** — archives the record (`archived=1`, `status='deleted'`), hidden from reads, not erased | DELETE /api/v1/records/{id} |
 
