@@ -198,5 +198,3 @@ class RequestExecutionMixin:
                 f"Failed to connect to AnhurDB: {type(exc).__name__}",
                 kind=AnhurError.KIND_TRANSPORT,
             ) from exc
-
-    # -- MCP tunnel (alternative transport, mode="mcp") ----------------------

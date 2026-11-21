@@ -123,7 +123,6 @@ Memory(
     url="https://anhurdb.yoven.ai",  # Open Beta data plane (default)
     user_id="user-123",        # Optional explicit container tag
     tenant_id="tenant-a",      # Optional X-Tenant-ID: [A-Za-z0-9_-], <= 64, else AnhurQueryError
-    mode="rest",               # "rest" (default) or "mcp" (tunnel)
     timeout=30.0,              # Per-request budget in SECONDS (default 30.0)
 )
 ```
@@ -464,30 +463,12 @@ returns an empty `retrieval.mode` (a two-plane fan-out has no single honest mode
 report), so the check cannot run there. `mode="semantic"` + `scope="shared_all"`
 warns that it could not be verified.
 
-## Transport Modes
+## Transport
 
-- **REST direct** (default): Calls AnhurDB REST endpoints directly. **Use this.**
-- **MCP tunnel** (`mode="mcp"`): legacy/alternative transport. It rewrites exactly two
-  paths — `POST /api/v1/records` → MCP tool `create_memory`, and `POST /api/v1/query`
-  → MCP tool `query` — and posts them to `/api/v1/mcp/direct`. Every other call
-  falls through to plain REST.
-
-> ⚠️ **`mode="mcp"` is unusable against a normal deployment.** Corrected 2026-09-05:
-> an earlier version of this note blamed the retired `execute_ast` tool. That cause was
-> false — the SDK maps `/api/v1/query` to the live `query` tool
-> (`client/connection.py`, `_MCP_TOOL_MAP`), and `tests/test_mcp_tunnel.py` pins it.
-> The real blocker is the ENDPOINT: `/api/v1/mcp/direct` is registered only on the MCP
-> server's metrics listener (`ANHUR_MCP_METRICS_PORT`, default 9092), never on the
-> data-plane port that this SDK's `url` points at, so the tunnel 404s unless a
-> deployment proxies it. Second, smaller trap: the 22-tool schemas are strict
-> (`additionalProperties: false`), so any argument the tool does not declare is
-> rejected server-side.
->
-> `/api/v1/mcp/direct` is also served only on the MCP server's metrics listener
-> (`ANHUR_MCP_METRICS_PORT`, default 9092), not on the data-plane port the SDK's `url`
-> points at — a deployment has to proxy it for the tunnel to be reachable at all.
->
-> **Use `mode="rest"` (the default).** The REST surface is unaffected by the MCP cut.
+REST, directly against AnhurDB — the same single transport as the Go and
+TypeScript SDKs. The Python-only `mode="mcp"` tunnel was removed in 4.0.0: it
+posted to `/api/v1/mcp/direct`, which is served only on the MCP server's
+metrics listener, never on the data-plane port `url` points at.
 
 ```python
 # REST direct — the supported transport

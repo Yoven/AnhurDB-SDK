@@ -3,11 +3,11 @@
 Domain, in one sentence: hold an open session to AnhurDB and expose the four
 REST verbs over it.
 
-Provides two transport modes:
-  1. **REST Direct** (default) — calls AnhurDB REST endpoints directly,
-     matching the TypeScript and Go SDKs. This is the recommended mode.
-  2. **MCP Tunnel** — routes requests through ``/api/v1/mcp/direct``,
-     useful when the client only has access to the MCP gateway.
+One transport: REST, directly against AnhurDB, exactly like the TypeScript
+and Go SDKs. (The Python-only ``mode="mcp"`` tunnel through
+``/api/v1/mcp/direct`` was removed in 4.0.0: that route is served only on the
+MCP server's metrics listener, never on the data-plane port ``base_url`` points
+at, so the mode could not work against a normal deployment.)
 
 Security hardening:
   - ``X-API-Key`` header for auth (matches server middleware).
@@ -34,7 +34,6 @@ neighbours, each named by the one responsibility it owns:
   - ``connection_request.py``     ONE round trip, and which exception a status
                                   code becomes.
   - ``connection_multipart.py``   file upload, the only non-JSON request shape.
-  - ``connection_mcp_tunnel.py``  the second transport mode, ``mode="mcp"``.
 
 What is LEFT here is the connection itself: its configuration, its lifetime
 (``connect``/``close``/``async with``) and the four public verbs. The three
@@ -56,11 +55,9 @@ from .connection_guards import (
     validate_tenant_id,
 )
 from .connection_host import (
-    McpTunnelHost,
     MultipartUploadHost,
     RequestExecutionHost,
 )
-from .connection_mcp_tunnel import McpTunnelMixin
 from .connection_multipart import MultipartUploadMixin
 from .connection_request import RequestExecutionMixin
 
@@ -78,21 +75,19 @@ __all__ = ["HTTPConnection", "QueryParams"]
 
 
 
-class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin):
+class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin):
     """Asynchronous HTTP transport for AnhurDB.
 
     Attributes:
         base_url:  Server root URL (e.g. ``http://localhost:8080``).
         api_key:   API key sent via ``X-API-Key`` header.
-        tenant_id: Optional tenant ID for multi-tenant deployments.
-        mode:      ``"rest"`` (direct REST) or ``"mcp"`` (MCP tunnel)."""
+        tenant_id: Optional tenant ID for multi-tenant deployments."""
 
     def __init__(
         self,
         base_url: str,
         api_key: str,
         tenant_id: str = "",
-        mode: str = "rest",
         timeout: float = 30.0,
         max_response_size: int = MAX_RESPONSE_SIZE,
     ):
@@ -102,7 +97,6 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
             base_url:          Server URL (trailing slash stripped automatically).
             api_key:           AnhurDB API key (required).
             tenant_id:         Optional tenant identifier for ``X-Tenant-ID``.
-            mode:              Transport — ``"rest"`` (default) or ``"mcp"``.
             timeout:           Request timeout in seconds (default: 30).
             max_response_size: Maximum response body size in bytes (default: 100 MB).
 
@@ -117,7 +111,6 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.tenant_id = tenant_id
-        self.mode = mode
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._max_response_size = max_response_size
 
@@ -207,14 +200,10 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
         Args:
             path:      API path (e.g. ``/api/v1/records``).
             json_data: Request body (dict or Pydantic-serialisable object).
-            params:    Optional query string (e.g. the by-id ``scope``). A
-                       request with params never takes the MCP tunnel, which
-                       has no place to carry them.
+            params:    Optional query string (e.g. the by-id ``scope``).
 
         Returns:
             Parsed JSON response body."""
-        if self.mode == "mcp" and path in self._MCP_TOOL_MAP and not params:
-            return await self._mcp_tunnel(path, json_data or {})
         return await self._request("POST", path, params=params, body=json_data)
 
     async def patch(
@@ -271,4 +260,3 @@ class HTTPConnection(RequestExecutionMixin, MultipartUploadMixin, McpTunnelMixin
 if TYPE_CHECKING:
     _REQUEST_EXECUTION_CONTRACT: RequestExecutionHost = cast(HTTPConnection, None)
     _MULTIPART_UPLOAD_CONTRACT: MultipartUploadHost = cast(HTTPConnection, None)
-    _MCP_TUNNEL_CONTRACT: McpTunnelHost = cast(HTTPConnection, None)

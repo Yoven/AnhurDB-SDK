@@ -7,7 +7,29 @@ rule). AnhurDB main is the only server and every fallback below targeted a
 server generation that no longer exists; each removal is checked against the
 server source (`AnhurDB/server`, paths below).
 
+### Aligned across the three SDKs (identical behaviour, 2026-11-21)
+
+- **Envelope rule on the eight listing routes.** `list_sessions`, `recent`, `manifest_global`, `manifest_session`, `list_chat`, `search_entities`, `list_entities`, `get_record_entities` (and `count_by_type`, which walks the manifest) require the JSON
+  object envelope with its list key (`sessions` / `records` / `entities`); the
+  value may be a list or `null` (`null` = zero rows). A bare array, an empty
+  body, a missing key or a non-list value now raises `AnhurUnexpectedResponseError` (subclass of `AnhurError`, `kind == "server"`, exported from `anhurdb`), new module `anhurdb/client/envelope.py`, message
+  `unexpected response from GET <route template>: expected a JSON object with "<key>"`
+  — byte-identical in all three. 3.x read several of these shapes as "no rows".
+- **`GET /api/v1/profile` 404 fallback removed.** `profile()` no longer returns an
+  empty "OSS mode" profile on 404; the route is mounted unconditionally
+  (`server/router.go:136`), so a 404 surfaces as `AnhurQueryError(status_code=404)`.
+- **Session-record-limit message.** already used the shared layout below; a body whose `limit`/`count`/`session_uuid` is missing or mistyped stays the generic 409. Shared layout:
+  `Conflict (HTTP 409): <server error, first 500 characters> (session record limit: session=<uuid>, limit=N, count=M)`.
+
 ### Removed
+
+- **`mode="mcp"` transport** (`Memory(mode=...)`, `Memory.from_api_key(mode=...)`,
+  `Memory.from_client_key(mode=...)`, `HTTPConnection(mode=...)`,
+  `HTTPConnection.mode`, module `client/connection_mcp_tunnel.py`). Python-only
+  (no Go/TypeScript twin) and self-described "legacy/alternative": it posted to
+  `/api/v1/mcp/direct`, which AnhurDB serves only on the MCP metrics listener,
+  never on the data-plane port. REST is the only transport. Passing `mode=` is
+  now a `TypeError`.
 
 | Symbol | Why | Server evidence |
 |---|---|---|

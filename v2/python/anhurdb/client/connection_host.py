@@ -1,6 +1,6 @@
 """What each transport mixin REQUIRES from the connection that hosts it.
 
-Domain, in one sentence: the typed contract ``HTTPConnection`` owes to the three
+Domain, in one sentence: the typed contract ``HTTPConnection`` owes to the two
 behaviour mixins it composes — one protocol per mixin, listing only what that
 mixin actually reads.
 
@@ -24,15 +24,14 @@ There are two ways to make that green, and only one of them is worth having:
     bottom of ``connection.py``. Remove ``base_url`` from the host and that
     proof fails by name.
 
-Junior Tip [why three protocols and not one]: precision is the whole point. The
-MCP tunnel never touches ``api_key``; the multipart upload never touches
-``_before_request``. A single fat ``ConnectionHost`` would let any mixin reach
+Junior Tip [why one protocol per mixin and not one]: precision is the whole
+point. The multipart upload never touches ``_before_request``. A single fat ``ConnectionHost`` would let any mixin reach
 for any piece of the connection without the type checker noticing that it had
 quietly grown a new dependency on its host. One protocol per mixin keeps each
 dependency list honest and small enough to read in one breath.
 """
 
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Optional, Protocol
 
 import aiohttp
 
@@ -71,34 +70,3 @@ class MultipartUploadHost(Protocol):
     tenant_id: str
     _session: Optional[aiohttp.ClientSession]
     _max_response_size: int
-
-
-class McpTunnelHost(Protocol):
-    """The connection as ``McpTunnelMixin`` sees it from the inside.
-
-    ``_request`` is the part that comes from the HOST: the tunnel is not a
-    second transport, it wraps a normal REST round trip to
-    ``/api/v1/mcp/direct``. Delete ``_request`` from the composition and the
-    conformance proof in ``connection.py`` fails.
-
-    Junior Tip [why the two tables are listed here too]: typing ``self`` as this
-    protocol REPLACES the mixin's static view of itself, so the tool map and the
-    declared-argument table — which the mixin owns — have to be part of the
-    shape as well, or the mixin could no longer read its own constants. They
-    cost two lines and they do not weaken the check that matters: ``_request``
-    is still only satisfiable by the host.
-    """
-
-    _MCP_TOOL_MAP: Dict[str, str]
-    _MCP_TOOL_DECLARED_ARGS: Dict[str, frozenset]
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        body: Any = None,
-        params: Optional[QueryParams] = None,
-        raw_text: bool = False,
-    ) -> Any:
-        """One HTTP round trip, provided by ``RequestExecutionMixin``."""
-        ...

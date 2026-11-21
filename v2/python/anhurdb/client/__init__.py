@@ -107,7 +107,6 @@ class Memory(
         user_id:   Explicit container tag. When omitted, derived from
                    API key hash.
         tenant_id: Optional ``X-Tenant-ID`` header for multi-tenant.
-        mode:      Transport — ``"rest"`` (default) or ``"mcp"``.
         timeout:   Per-request budget in seconds (default 30.0), applied to
                    every call this client makes, uploads included. There is no
                    client-side retry, so this is the whole wall clock a call
@@ -119,7 +118,6 @@ class Memory(
         url: str = DEFAULT_CLOUD_URL,
         user_id: Optional[str] = None,
         tenant_id: str = "",
-        mode: str = "rest",
         timeout: float = 30.0,
     ):
         # Junior Tip [why a constructor parameter and never an env var]: the
@@ -142,7 +140,6 @@ class Memory(
             api_key=key,
             tenant_id=tenant_id,
             timeout=timeout,
-            mode=mode,
         )
 
         # Container tag: explicit user_id or SHA-256 derived from API key.
@@ -174,7 +171,6 @@ class Memory(
         expires_in: int = 3600,
         url: str = DEFAULT_CLOUD_URL,
         user_id: Optional[str] = None,
-        mode: str = "rest",
         timeout: float = 30.0,
     ) -> "Memory":
         """Build a Memory by minting a short-lived tenant token from a client key.
@@ -198,7 +194,6 @@ class Memory(
             api_key=temp_key,
             url=url,
             user_id=user_id,
-            mode=mode,
             timeout=timeout,
         )
         memory._client_key = client_key
@@ -216,7 +211,6 @@ class Memory(
         url: str = DEFAULT_CLOUD_URL,
         user_id: Optional[str] = None,
         tenant_id: str = "",
-        mode: str = "rest",
         timeout: float = 30.0,
     ) -> "Memory":
         """Explicit factory for tenant (or already-minted impersonation) keys."""
@@ -225,7 +219,6 @@ class Memory(
             url=url,
             user_id=user_id,
             tenant_id=tenant_id,
-            mode=mode,
             timeout=timeout,
         )
 

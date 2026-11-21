@@ -41,13 +41,11 @@ class TestHTTPConnection(unittest.TestCase):
         conn = HTTPConnection("http://localhost:8080", "key")
         self.assertNotIn("X-Tenant-ID", conn.headers)
 
-    def test_mode_default_is_rest(self):
-        conn = HTTPConnection("http://localhost:8080", "key")
-        self.assertEqual(conn.mode, "rest")
-
-    def test_mode_can_be_mcp(self):
-        conn = HTTPConnection("http://localhost:8080", "key", mode="mcp")
-        self.assertEqual(conn.mode, "mcp")
+    def test_mcp_tunnel_mode_is_gone(self):
+        """4.0.0: REST is the only transport (the Python-only mode="mcp" was removed)."""
+        with self.assertRaises(TypeError):
+            HTTPConnection("http://localhost:8080", "key", mode="mcp")  # type: ignore[call-arg]
+        self.assertFalse(hasattr(HTTPConnection("http://localhost:8080", "key"), "mode"))
 
     def test_rejects_crlf_in_tenant_id(self):
         """Header injection protection: CRLF in tenant_id must raise (typed)."""
