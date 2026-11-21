@@ -76,6 +76,58 @@ removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose
 | get_record_entities | `GetRecordEntities` / `get_record_entities` / `getRecordEntities` | `GET /api/v1/records/{id}/entities` |
 | get_profile | `Profile` / `profile` / `profile` | `GET /api/v1/profile` — every HTTP error is raised, a 404 included (the "OSS: empty profile on 404" fallback was removed in 4.0.0; the route is always mounted, `server/router.go:136`). An unknown tag is still an all-zero profile with HTTP 200 |
 
+## Client key API (ADR-0034, unreleased — 2026-11-21)
+
+A second handle, separate from `Memory`, for a **client key** (kind=client):
+Go `NewClientAPI(key, opts...)` / Python `ClientAPI(key, url=, timeout=)`
+(async context manager) / TypeScript `new ClientAPI({ clientKey, url, timeoutMs })`.
+Server truth: AnhurDB `server/router_client.go` and `server/handler/client_*.go`
+(branch `feat/phase1-client-children`). It **never sends `X-Tenant-ID`**.
+
+| Operation | Go / Python / TypeScript | HTTP route |
+|---|---|---|
+| create_child | `CreateChild` / `create_child` / `createChild` | `POST /api/v1/client/children` `{"external_ref"}` → 201 `created:true` / 200 `created:false`, same `child_client_id` |
+| list_children | `ListChildren` / `list_children` / `listChildren` | `GET /api/v1/client/children` → `{"children":[…]}` |
+| suspend_child | `SuspendChild` / `suspend_child` / `suspendChild` | `POST /api/v1/client/children/{child_id}/suspend` → `{"child_client_id","status"}` |
+| resume_child | `ResumeChild` / `resume_child` / `resumeChild` | `POST /api/v1/client/children/{child_id}/resume` |
+| list_tenants | `ListTenants` / `list_tenants` / `listTenants` | `GET /api/v1/client/tenants` → `{"tenants":[{"tenant_id"}]}`, returned as a list of ids |
+| list_child_tenants | `ListChildTenants` / `list_child_tenants` / `listChildTenants` | `GET /api/v1/client/children/{child_id}/tenants` |
+| create_tenant | `CreateTenant` / `create_tenant` / `createTenant` | `POST /api/v1/client/tenants` `{"tenant_id","description","profile":{"config","max_rpm"}}` |
+| create_child_tenant | `CreateChildTenant` / `create_child_tenant` / `createChildTenant` | `POST /api/v1/client/children/{child_id}/tenants` |
+| impersonate | `Impersonate` / `impersonate` / `impersonate` | `POST /api/v1/client/impersonate` |
+| impersonate_child | `ImpersonateChild` / `impersonate_child` / `impersonateChild` | `POST /api/v1/client/children/{child_id}/impersonate` |
+| revoke_impersonation | `RevokeImpersonation` / `revoke_impersonation` / `revokeImpersonation` | `POST /api/v1/client/impersonate/revoke` `{"key_id"}` |
+
+Identical behaviour in the three:
+
+- **Wire.** Impersonate sends `tenant_id`; `scope` only when set; `l1_only` only
+  when true; `description` only when set; `expires_in` AND `ttl_seconds` (equal)
+  only when a TTL is given. A nil/absent profile omits the key; an empty profile
+  sends `"profile":{}`; empty `config` is omitted; `max_rpm` only when set.
+- **Local refusals** (typed invalid_request, status 400, not retryable, no
+  request): empty (after trim) `external_ref`/`tenant_id`/`key_id`; `tenant_id`
+  `*`; child id that is not 36-char hyphenated hex; scope outside
+  `admin|write|read_only`; child impersonate without scope; TTL negative or not
+  whole seconds; `max_rpm < 1`. Message prefix `INVALID_PARAM: client API: `.
+- **Refusals from the server** → Go `*ClientAPIError` / `AnhurClientAPIError`
+  with status, `code` (= `body.error`, verbatim — a code on the ADR-0034
+  envelope, or a frozen sentence such as `client API key required`), `detail`,
+  `error_type` and is-not-leader. Kind follows the status; `child_limit` and
+  `tenant_limit` are NOT retryable. No SDK retries (`not_leader` included).
+  Message: `Client API error (HTTP <s>) on <METHOD> <path>: <code>[: <detail>]`
+  (non-JSON body: the first 500 characters; empty: `(empty body)`).
+- **Fail-closed echo** → Go `*ClientAPIResponseError` (`errors.Is`
+  `ErrL1OnlyNotHonoured` / `ErrScopeNotHonoured` / `ErrUnexpectedResponse`) /
+  `AnhurClientAPIResponseError` with `code` `l1_only_not_honoured`,
+  `scope_not_honoured` or `unexpected_response`, kind `server`, not retryable,
+  carrying the minted key id. l1_only requested and not echoed `true` → refused;
+  scope requested and echo unknown or higher (read_only < write < admin) →
+  refused; lower → accepted. Missing `api_key`/`key_id`/parseable `expires_at`,
+  a non-canonical `child_client_id` on create, a missing list key, or a non-object
+  2xx body → `unexpected_response`.
+- Not covered: `GET /api/v1/client/impersonations` (exists on the server, not in
+  this surface yet).
+
 ## Behavioral notes
 
 | Topic | Behavior |

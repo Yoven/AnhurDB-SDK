@@ -236,6 +236,26 @@ that value: `upload["record_id"]` (Python), `upload.record_id` (TypeScript),
 | `get_session_history(uuid)` | Paginated full-text session history | GET /api/v1/sessions/{uuid}/history |
 | `get_session_clusters(uuid)` | Thematic clusters within a session | GET /api/v1/sessions/{uuid}/clusters |
 
+### Client key API (ADR-0034, unreleased)
+
+A separate handle, built from a **client key** (kind=client), never a tenant
+key: Go `client.NewClientAPI(key)`, Python `ClientAPI(key)`, TypeScript
+`new ClientAPI({ clientKey })`. It never sends `X-Tenant-ID`. Names below are
+Python; Go is PascalCase, TypeScript camelCase.
+
+| Method | What it does | Endpoint |
+|--------|-------------|----------|
+| `create_child(external_ref)` | Create or confirm a child client (idempotent per ref: 201 then 200, same id) | POST /api/v1/client/children |
+| `list_children()` | The caller's children | GET /api/v1/client/children |
+| `suspend_child(id)` / `resume_child(id)` | Absolute status; a suspended child's tokens get 403 `child_suspended` | POST /api/v1/client/children/{child_id}/suspend · /resume |
+| `list_tenants()` / `list_child_tenants(id)` | Tenant ids owned by the caller / by a child | GET /api/v1/client/tenants · /children/{child_id}/tenants |
+| `create_tenant(...)` / `create_child_tenant(id, ...)` | Create or confirm a tenant, optional agent profile (`config`, `max_rpm`) | POST /api/v1/client/tenants · /children/{child_id}/tenants |
+| `impersonate(...)` / `impersonate_child(id, ...)` | Mint a short-lived token with `scope`, `l1_only`, TTL; **read the echoed scope/l1_only** (the SDK fails closed on a weaker echo) | POST /api/v1/client/impersonate · /children/{child_id}/impersonate |
+| `revoke_impersonation(key_id)` | Revoke a token of the caller or of one of its children | POST /api/v1/client/impersonate/revoke |
+
+Refusals carry the server code (`body.error`): Go `*ClientAPIError.Code`,
+Python/TypeScript `AnhurClientAPIError.code`.
+
 ---
 
 ## Examples by Language
