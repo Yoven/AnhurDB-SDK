@@ -18,6 +18,7 @@ import json
 from typing import Any, Dict, Optional
 
 from ..version import USER_AGENT
+from .auth_errors import auth_error_from_response
 from .connection_guards import read_capped_body
 from .scope_errors import scope_error_from_response
 from .session_limit import session_record_limit_from_response
@@ -26,7 +27,6 @@ from .exceptions import (
     AnhurError,
     AnhurConnectionError,
     AnhurQueryError,
-    AnhurAuthError,
 )
 
 
@@ -95,7 +95,9 @@ class MultipartUploadMixin:
                 body_text = raw.decode("utf-8", errors="replace")
 
                 if response.status in (401, 403):
-                    raise AnhurAuthError(f"Authentication failed (HTTP {response.status})")
+                    # Same typed refusal as the JSON path; this path used to
+                    # drop status_code too, so kind read "transport".
+                    raise auth_error_from_response(response.status, body_text)
                 elif response.status in (400, 422):
                     raise AnhurQueryError(
                         f"Invalid request (HTTP {response.status}): {body_text[:500]}",

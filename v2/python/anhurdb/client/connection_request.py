@@ -6,7 +6,8 @@ into either a parsed body or the right typed exception.
 Junior Tip [why the mapping is the domain, 2026-09-05]: the public verbs above
 (``get``/``post``/``patch``/``delete``) are grammar — they choose a method and a
 path and nothing else. Everything that decides what an ANSWER MEANS lives here:
-401 is ``AnhurAuthError``, 409/415 are ``AnhurQueryError``, 429 is a retryable
+401/403 is ``AnhurAuthRefusedError`` (an ``AnhurAuthError`` with the server's
+code), 409/415 are ``AnhurQueryError``, 429 is a retryable
 ``AnhurError``, a transport failure is ``AnhurConnectionError`` with the URL
 stripped out (the URL carries the server address and would end up in logs). One
 place to read when the question is "why did I get this exception?", split out of
@@ -25,6 +26,7 @@ import json
 from typing import Any, Optional
 from urllib.parse import urlencode
 
+from .auth_errors import auth_error_from_response
 from .connection_guards import QueryParams, read_capped_body
 from .scope_errors import scope_error_from_response
 from .session_limit import session_record_limit_from_response
@@ -33,7 +35,6 @@ from .exceptions import (
     AnhurError,
     AnhurConnectionError,
     AnhurQueryError,
-    AnhurAuthError,
 )
 
 
@@ -73,7 +74,8 @@ class RequestExecutionMixin:
                        string rather than wrapped in ``{"message": ...}``.
 
         Raises:
-            AnhurAuthError: On 401/403.
+            AnhurAuthRefusedError: On 401/403 (an ``AnhurAuthError`` carrying
+                the server's ``code``/``detail``).
             AnhurQueryError: On 400/404/409/415/422.
             AnhurError: On 429, redirect (3xx), or 5xx.
             AnhurConnectionError: On network failure or timeout."""
@@ -111,10 +113,9 @@ class RequestExecutionMixin:
                 # SECURITY: Error messages include status + server body but
                 # never the API key or full URL (which could leak in logs).
                 if response.status in (401, 403):
-                    raise AnhurAuthError(
-                        f"Authentication failed (HTTP {response.status})",
-                        status_code=response.status,
-                    )
+                    # Typed so the server's reason (l1_only, child_suspended,
+                    # insufficient scope, ...) survives; still an AnhurAuthError.
+                    raise auth_error_from_response(response.status, body_text)
                 elif response.status in (400, 422):
                     raise AnhurQueryError(
                         f"Invalid request (HTTP {response.status}): {body_text[:500]}",

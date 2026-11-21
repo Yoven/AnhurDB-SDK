@@ -82,6 +82,14 @@ from .client.client_key_types import (
     KeyScope,
     RevokeResult,
 )
+from .client.auth_errors import (
+    AUTH_CODE_CHILD_SUSPENDED,
+    AUTH_CODE_IMPERSONATION_REQUIRED,
+    AUTH_CODE_INSUFFICIENT_SCOPE_PREFIX,
+    AUTH_CODE_INVALID_KEY,
+    AUTH_CODE_L1_ONLY,
+    AnhurAuthRefusedError,
+)
 from .client.client_key_errors import (
     AnhurClientAPIError,
     AnhurClientAPIResponseError,
@@ -206,6 +214,12 @@ __all__ = [
     # Exceptions
     "AnhurError",
     "AnhurAuthError",
+    "AnhurAuthRefusedError",
+    "AUTH_CODE_L1_ONLY",
+    "AUTH_CODE_CHILD_SUSPENDED",
+    "AUTH_CODE_INSUFFICIENT_SCOPE_PREFIX",
+    "AUTH_CODE_IMPERSONATION_REQUIRED",
+    "AUTH_CODE_INVALID_KEY",
     "AnhurQueryError",
     "AnhurConnectionError",
     "AnhurSessionRecordLimitError",

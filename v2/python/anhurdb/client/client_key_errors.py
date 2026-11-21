@@ -9,10 +9,10 @@ Messages are byte-identical to Go (``client/client_key_errors.go``) and
 TypeScript (``src/clientKeyErrors.ts``).
 """
 
-import json
 import re
 from typing import Optional
 
+from .auth_errors import decode_error_envelope
 from .client_key_types import scope_rank
 from .exceptions import AnhurError, AnhurQueryError
 
@@ -36,9 +36,11 @@ class AnhurClientAPIError(AnhurError):
     ``not_leader`` on the provably-uncommitted 503.
 
     Junior Tip [why the transport's generic mapping is bypassed]: the shared
-    request path turns every 401/403 into ``AnhurAuthError`` WITHOUT the body,
-    so a 403 ``child_suspended`` would read like a bad key. This surface reads
-    the body on every status; ``kind`` still follows the status.
+    request path only types 401/403 (``AnhurAuthRefusedError``) and a few
+    409/500 bodies; this surface needs the code on EVERY status (``child_limit``
+    429, ``not_leader`` 503, …), so it decodes the same envelope
+    (``auth_errors.decode_error_envelope``) itself. ``kind`` still follows the
+    status.
 
     Junior Tip [429 is not always "slow down"]: ``child_limit`` and
     ``tenant_limit`` are caps — the same call is refused until an operator
@@ -83,18 +85,13 @@ class AnhurClientAPIError(AnhurError):
         """Decode ``{"error","detail","error_type"}`` when the body is a JSON
         object (whatever its Content-Type — ClientKeyOnly answers text/plain
         with a JSON body); otherwise keep a bounded excerpt."""
-        try:
-            envelope = json.loads(body_text)
-        except ValueError:
-            envelope = None
-        if isinstance(envelope, dict) and isinstance(envelope.get("error"), str) and envelope["error"]:
-            detail = envelope.get("detail")
-            error_type = envelope.get("error_type")
+        envelope = decode_error_envelope(body_text)
+        if envelope is not None:
             return cls(
                 status_code, method, path,
-                code=envelope["error"],
-                detail=detail if isinstance(detail, str) else "",
-                error_type=error_type if isinstance(error_type, str) else "",
+                code=envelope.code,
+                detail=envelope.detail,
+                error_type=envelope.error_type,
             )
         return cls(status_code, method, path, body=body_text.strip()[:_EXCERPT_CHARACTERS])
 

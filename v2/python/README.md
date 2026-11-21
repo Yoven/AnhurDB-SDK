@@ -419,6 +419,34 @@ except AnhurQueryError as e:
     print(f"Bad request: {e}")
 ```
 
+Every 401/403 raises `AnhurAuthRefusedError` — a subclass of `AnhurAuthError`,
+so `except AnhurAuthError` keeps working — with `status_code`, `code` (the
+server's `body.error`, verbatim, read whatever the Content-Type), `detail` and
+`error_type`. A scope refusal no longer reads as an invalid key:
+
+```python
+from anhurdb import AnhurAuthRefusedError
+
+try:
+    await mem.add("turn", mode="ingest", session_id=session_id)
+except AnhurAuthRefusedError as refused:
+    if refused.is_l1_only:                  # 403 l1_only: token restricted to L1 sessions
+        ...
+    elif refused.is_child_suspended:        # 403 child_suspended
+        ...
+    elif refused.is_insufficient_scope:     # 403 "insufficient scope — ..."
+        ...
+    elif refused.is_impersonation_required: # 403 client_key_requires_impersonation
+        ...
+    elif refused.is_invalid_key:            # 401 "invalid or inactive API key"
+        ...
+```
+
+Message: `Authentication failed (HTTP <s>): <code>[: <detail>]` (identical in Go
+and TypeScript). A body that is not a JSON object with a string `error` keeps
+`Authentication failed (HTTP <s>)`, with `code == ""`. Not retryable. This SDK
+has no gRPC transport.
+
 A write into a full session raises `AnhurSessionRecordLimitError` (a subclass
 of `AnhurQueryError`, HTTP 409, `retryable == False`) when the server answers
 409 with `"code": "session_record_limit"`. `session_uuid` (`str`), `limit` and

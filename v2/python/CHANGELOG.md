@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed — 401/403 keep the server's reason (identical in Go, Python and TypeScript)
+
+- Every 401/403 now raises `AnhurAuthRefusedError` (subclass of
+  `AnhurAuthError`, so existing `except AnhurAuthError` still catches it) with
+  `status_code`, `code` (`body.error` verbatim, parsed whatever the
+  Content-Type — the auth middleware answers `text/plain` with a JSON body),
+  `detail`, `error_type`, and the properties `is_l1_only`,
+  `is_child_suspended`, `is_insufficient_scope` (prefix `insufficient scope`),
+  `is_impersonation_required`, `is_invalid_key`; constants `AUTH_CODE_*`.
+  Module `anhurdb/client/auth_errors.py`; exported from `anhurdb`.
+- Message with a code: `Authentication failed (HTTP <s>): <code>[: <detail>]`.
+  Non-JSON body: unchanged (`Authentication failed (HTTP <s>)`).
+- Fixed: the multipart (`upload_file`) path raised its auth error WITHOUT
+  `status_code`, so `kind` read `transport` and `retryable` True; it now
+  carries the status (kind `auth`, not retryable) like the JSON path.
+- `AnhurClientAPIError.from_body` uses the same envelope decoder
+  (`decode_error_envelope`); behaviour unchanged.
+- No gRPC transport exists in this SDK, so there is no gRPC mapping.
+
 ### Added — client-key API (ADR-0034), identical in Go, Python and TypeScript
 
 - `ClientAPI(client_key, url=…, timeout=…)` (async context manager) for
