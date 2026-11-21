@@ -7,9 +7,9 @@ simulates AnhurDB responses. Tests cover:
   - Memory.add() OSS fallback path
   - Memory.search() result parsing
   - Memory.profile() success and 404 fallback
-  - AnhurClient.create() record creation
-  - AnhurClient.batch_read_content()
-  - AnhurClient.search_entities()
+  - Memory.create() record creation
+  - Memory.batch_read_content()
+  - Memory.search_entities()
   - Error handling (401, 400, 409, 415, 429, 403, 500, timeout, oversized response)
   - Redirect blocking (credential leak protection)
   - Response size cap enforcement
@@ -29,7 +29,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from anhurdb.client import Memory, AnhurClient
+from anhurdb.client import Memory
 from anhurdb.client.session_filter import sessions_all
 from anhurdb.client.connection import HTTPConnection
 from anhurdb.client.exceptions import (
@@ -70,12 +70,14 @@ async def handle_ingest(request):
 
 
 async def handle_ingest_404(request):
-    """Simulates POST /api/v1/ingest returning 404 (OSS mode)."""
+    """Simulates POST /api/v1/ingest returning 404 (wrong URL / proxy)."""
+    request.app["ingest_calls"] = request.app.get("ingest_calls", 0) + 1
     return web.Response(status=404, text="Not Found")
 
 
 async def handle_records(request):
-    """Simulates POST /api/v1/records (OSS fallback)."""
+    """Simulates POST /api/v1/records (typed create)."""
+    request.app["records_calls"] = request.app.get("records_calls", 0) + 1
     data = await request.json()
     return web.json_response({"id": 100, "uuid": data.get("uuid", "")})
 
@@ -281,7 +283,7 @@ def create_app_cloud():
 
 
 def create_app_oss():
-    """App without ingest (OSS mode — 404 on ingest)."""
+    """App whose /ingest answers 404 (no profile engine either)."""
     app = web.Application()
     app.router.add_post("/api/v1/sessions", handle_sessions_create)
     app.router.add_post("/api/v1/ingest", handle_ingest_404)
@@ -315,7 +317,7 @@ class TestMemoryCloudMode(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("I'm a data scientist at Google")
-            self.assertEqual(result.mode, "cloud")
+            self.assertEqual(result.mode, "ingest")
             self.assertEqual(len(result.records), 2)
             self.assertEqual(result.records[0].id, 42)
             self.assertEqual(len(self.app["sessions_created"]), 1)
@@ -428,20 +430,37 @@ class TestMemoryCloudMode(AioHTTPTestCase):
             self.assertEqual(len(records), 1)
 
 
-class TestMemoryOSSFallback(AioHTTPTestCase):
-    """Tests Memory cloud→OSS fallback."""
+class TestIngest404IsAnError(AioHTTPTestCase):
+    """4.0.0 removal: an /ingest 404 is a normal error, not an OSS fallback."""
 
     async def get_application(self):
         return create_app_oss()
 
     @unittest_run_loop
-    async def test_add_falls_back_to_oss(self):
+    async def test_ingest_404_raises_and_never_writes_via_records(self):
         url = f"http://localhost:{self.server.port}"
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
-            result = await mem.add("Test text for OSS mode")
-            self.assertEqual(result.mode, "oss")
-            self.assertEqual(result.records[0].id, 100)
+            for _attempt in range(2):
+                with self.assertRaises(AnhurQueryError) as caught:
+                    await mem.add("Test text that must not be rerouted")
+                self.assertEqual(caught.exception.status_code, 404)
+        # Both calls went to /ingest (no sticky "ingest unavailable" state)
+        # and NOTHING was written through /records behind the caller's back.
+        self.assertEqual(self.app.get("ingest_calls", 0), 2)
+        self.assertEqual(self.app.get("records_calls", 0), 0)
+        self.assertFalse(hasattr(mem, "_ingest_available"))
+
+    @unittest_run_loop
+    async def test_pinned_add_still_uses_records_door(self):
+        url = f"http://localhost:{self.server.port}"
+        async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
+            await mem.create_session()
+            result = await mem.add("pinned", score=8)
+        self.assertEqual(result.mode, "records")
+        self.assertEqual(result.records[0].id, 100)
+        self.assertEqual(self.app.get("ingest_calls", 0), 0)
+        self.assertEqual(self.app.get("records_calls", 0), 1)
 
     @unittest_run_loop
     async def test_profile_404_returns_empty(self):
@@ -456,8 +475,8 @@ class TestMemoryOSSFallback(AioHTTPTestCase):
             self.assertFalse(hasattr(profile, "status"))
 
 
-class TestAnhurClientMock(AioHTTPTestCase):
-    """Tests AnhurClient full API against mock server."""
+class TestMemoryFullApiMock(AioHTTPTestCase):
+    """Tests the Memory full API against mock server."""
 
     async def get_application(self):
         return create_app_cloud()
@@ -465,7 +484,7 @@ class TestAnhurClientMock(AioHTTPTestCase):
     @unittest_run_loop
     async def test_create_record(self):
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             result = await client.create(
                 "test-session",
                 "Full content",
@@ -474,12 +493,12 @@ class TestAnhurClientMock(AioHTTPTestCase):
             )
             self.assertEqual(result.id, 100)
             self.assertEqual(result.records[0].id, 100)
-            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.mode, "records")
 
     @unittest_run_loop
     async def test_batch_read_content(self):
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             result = await client.batch_read_content([1, 2, 3])
             self.assertEqual(result["1"], "content-1")
             self.assertEqual(result["2"], "content-2")
@@ -487,17 +506,17 @@ class TestAnhurClientMock(AioHTTPTestCase):
     @unittest_run_loop
     async def test_search_entities(self):
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             entities = await client.search_entities(query="Google")
             self.assertEqual(len(entities), 1)
             self.assertEqual(entities[0].name, "Google")
 
     @unittest_run_loop
-    async def test_search_with_ast(self):
+    async def test_query_full_api(self):
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             from anhurdb.query import Filter
-            records = await client.search_with_ast(
+            records = await client.query(
                 Filter({"type": {"$eq": "risk"}}),
                 session_uuid="session-uuid",
             )
@@ -538,9 +557,9 @@ class TestASTQueryIntegration(AioHTTPTestCase):
     async def test_ast_sent_flat_not_wrapped(self):
         """The AST must arrive at the server flat, not inside {"query": ...}."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             from anhurdb.query import Filter
-            records = await client.search_with_ast(
+            records = await client.query(
                 Filter({"type": {"$eq": "risk"}}),
             )
             # If we got records, the mock didn't reject the format.
@@ -556,9 +575,9 @@ class TestASTQueryIntegration(AioHTTPTestCase):
     async def test_session_uuid_injected_as_filter(self):
         """session_uuid must become a uuid filter, not a separate field."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             from anhurdb.query import Filter
-            await client.search_with_ast(
+            await client.query(
                 Filter({"type": {"$eq": "risk"}}),
                 session_uuid="my-session-123",
             )
@@ -573,9 +592,9 @@ class TestASTQueryIntegration(AioHTTPTestCase):
 
     @unittest_run_loop
     async def test_query_builder_end_to_end(self):
-        """Full QueryBuilder → search_with_ast → server pipeline."""
+        """Full QueryBuilder → query → server pipeline."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             from anhurdb.query import QueryBuilder
             qb = (
                 QueryBuilder()
@@ -583,7 +602,7 @@ class TestASTQueryIntegration(AioHTTPTestCase):
                 .order_by("weight", "desc")
                 .limit(20)
             )
-            records = await client.search_with_ast(qb)
+            records = await client.query(qb)
 
             payload = self.app["last_ast_payload"]
             self.assertEqual(payload["filters"]["type"]["$eq"], "risk")
@@ -747,7 +766,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
     async def test_409_raises_query_error(self):
         """HTTP 409 Conflict must raise AnhurQueryError (not silently return a dict)."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             from anhurdb.models import CreateRequest, MemoryType
             with self.assertRaises(AnhurQueryError) as ctx:
                 await client.create("s1", "test")
@@ -757,7 +776,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
     async def test_415_raises_query_error(self):
         """HTTP 415 Unsupported Media Type must raise AnhurQueryError."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             with self.assertRaises(AnhurQueryError) as ctx:
                 await client.upload_file("test.pdf", b"fake pdf content")
             self.assertIn("415", str(ctx.exception))
@@ -766,7 +785,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
     async def test_429_raises_anhur_error(self):
         """HTTP 429 Rate Limited must raise AnhurError."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             with self.assertRaises(AnhurError) as ctx:
                 await client.search("test", sessions_all())
             self.assertIn("429", str(ctx.exception))
@@ -775,7 +794,7 @@ class TestHTTPStatusCodes(AioHTTPTestCase):
     async def test_403_raises_auth_error(self):
         """HTTP 403 Forbidden must raise AnhurAuthError."""
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(url=url, api_key="test-key") as client:
+        async with Memory(url=url, api_key="test-key") as client:
             with self.assertRaises(AnhurAuthError):
                 await client.profile("tag1")
 
@@ -826,7 +845,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("plain text", mode="ingest")
-            self.assertEqual(result.mode, "cloud")
+            self.assertEqual(result.mode, "ingest")
         self.assertEqual(len(self.app["ingest_calls"]), 1)
         self.assertEqual(len(self.app["records_calls"]), 0)
 
@@ -838,7 +857,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("pinned score", mode="ingest", score=8)
-            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.mode, "records")
         self.assertEqual(
             len(self.app["ingest_calls"]), 0,
             "ingest must be skipped entirely when a pin is present",
@@ -856,7 +875,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
             result = await mem.add(
                 "pinned type", mode="ingest", type=MemoryType.FACT
             )
-            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.mode, "records")
         self.assertEqual(len(self.app["ingest_calls"]), 0)
         self.assertEqual(len(self.app["records_calls"]), 1)
         self.assertEqual(self.app["records_calls"][0]["type"], "fact")
@@ -871,7 +890,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
             result = await mem.add(
                 "pinned metadata", mode="ingest", metadata={"k": "v"}
             )
-            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.mode, "records")
         self.assertEqual(len(self.app["ingest_calls"]), 0)
         self.assertEqual(len(self.app["records_calls"]), 1)
         sent_metadata = json.loads(self.app["records_calls"][0]["metadata"])
@@ -886,7 +905,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("empty metadata", mode="ingest", metadata={})
-            self.assertEqual(result.mode, "cloud")
+            self.assertEqual(result.mode, "ingest")
         self.assertEqual(len(self.app["ingest_calls"]), 1)
         self.assertEqual(len(self.app["records_calls"]), 0)
 
@@ -897,7 +916,7 @@ class TestAddForceRecordsPathOnPin(AioHTTPTestCase):
         async with Memory(api_key="test-key", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("regular text", mode="regular")
-            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.mode, "records")
         self.assertEqual(len(self.app["ingest_calls"]), 0)
         self.assertEqual(len(self.app["records_calls"]), 1)
 

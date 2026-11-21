@@ -67,10 +67,11 @@ def test_every_public_entry_point_returns_the_same_rows(ast_fixture):
         note="execute() returns raw dicts, query() returns Record objects")
     assert executor.id_set == expected
 
-    deprecated = run_case(ast_fixture, "surface.search_with_ast_deprecated",
-                          "mem.search_with_ast(Filter(...))",
-                          lambda: memory.search_with_ast(Filter({"uuid": {"$eq": session}})))
-    assert deprecated.id_set == expected
+    # search_with_ast() was removed in 4.0.0; a raw Filter goes to query().
+    raw_filter = run_case(ast_fixture, "surface.query_raw_filter",
+                          "mem.query(Filter(...))",
+                          lambda: memory.query(Filter({"uuid": {"$eq": session}})))
+    assert raw_filter.id_set == expected
 
 
 def test_session_uuid_kwarg_scopes_and_overrides(ast_fixture):

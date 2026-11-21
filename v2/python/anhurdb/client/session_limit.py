@@ -4,79 +4,74 @@ Domain, in one sentence: turn "this session is full" into a typed
 ``AnhurSessionRecordLimitError`` carrying the session, the cap and the count,
 so the refusal can never be mistaken for an outage or a generic conflict.
 
-Wire contract (ADR-0033, AnhurDB):
-  - NEW servers: HTTP 409 ``{"error": "session has reached the maximum of N
-    records ...", "code": "session_record_limit", "limit": N, "count": M,
-    "session_uuid": "..."}``
-  - OLD servers (production until the deploy): HTTP 409
-    ``{"error": "session has reached the maximum of N records"}`` (or the same
-    sentence as plain text).
+Wire contract (ADR-0033, AnhurDB): HTTP 409
+``{"error": "session has reached the maximum of N records ...", "code":
+"session_record_limit", "limit": N, "count": M, "session_uuid": "..."}`` — all
+five keys always present (``server/handler/service_bridge.go:81-82,109-125``;
+only producer ``server/service/record_session_cap.go:178``).
 
-gRPC (ResourceExhausted + ErrorInfo ``SESSION_RECORD_LIMIT``; legacy
-AlreadyExists with the same text) is part of the contract too, but this SDK has
-no gRPC transport, so there is no gRPC path to classify here.
+Junior Tip [code-only since 4.0.0]: earlier SDKs also matched the sentence
+prefix and read N back out of it with a regex, for servers that sent no
+``code``. No such server exists any more, and the sentence is prose the server
+may reword — a contract keyed on prose breaks the day a comma moves. The
+``code`` is the contract; a 409 without it is the generic conflict.
+
+gRPC (ResourceExhausted + ErrorInfo ``SESSION_RECORD_LIMIT``,
+``server/grpc/service_errors.go:39-40,123``) is part of the contract too, but
+this SDK has no gRPC transport, so there is no gRPC path to classify here.
 """
 
 import json
-import re
 from typing import Any, Optional
 
 from .exceptions import AnhurSessionRecordLimitError
 
 SESSION_RECORD_LIMIT_CODE = AnhurSessionRecordLimitError.CODE
-SESSION_RECORD_LIMIT_TEXT_PREFIX = "session has reached the maximum of"
-_LIMIT_IN_TEXT = re.compile(r"maximum of (\d+) records")
 
 
-def _optional_int(value: Any) -> Optional[int]:
+def _wire_int(value: Any) -> Optional[int]:
     """An int from the wire, or None. ``bool`` is an int subclass — refuse it."""
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
 
 
-def _text(value: Optional[int]) -> str:
-    return "unknown" if value is None else str(value)
-
-
 def session_record_limit_from_response(
     status: int, body_text: str
 ) -> Optional[AnhurSessionRecordLimitError]:
-    """Return the typed refusal, or None when the answer is anything else."""
+    """Return the typed refusal, or None when the answer is anything else.
+
+    Junior Tip [a malformed body is NOT typed]: ``limit``, ``count`` and
+    ``session_uuid`` are required on the typed error because the server always
+    sends them. A body that carries the code but lacks one of them breaks the
+    contract; inventing ``0`` or ``""`` would hand the caller a number the
+    server never said. Such a body stays the generic 409 ``AnhurQueryError``,
+    whose message quotes the raw body for diagnosis. Same rule as the
+    TypeScript SDK (``src/sessionLimit.ts``).
+    """
     if status != 409:
         return None
-    parsed: Any = None
     try:
-        parsed = json.loads(body_text) if body_text else None
+        parsed: Any = json.loads(body_text) if body_text else None
     except json.JSONDecodeError:
-        parsed = None
+        return None
     if not isinstance(parsed, dict):
-        # A plain-text body (old server path, a proxy) can still carry the text.
-        parsed = {"error": body_text}
-    server_message = str(parsed.get("error") or "").strip()
-    code = parsed.get("code")
-    if code != SESSION_RECORD_LIMIT_CODE and not server_message.startswith(
-        SESSION_RECORD_LIMIT_TEXT_PREFIX
-    ):
+        return None
+    if parsed.get("code") != SESSION_RECORD_LIMIT_CODE:
         return None
 
-    limit = _optional_int(parsed.get("limit"))
-    if limit is None:
-        # Junior Tip [the server's own number, not a guess]: an old server
-        # writes N into the sentence. Count has no such source and stays None.
-        text_match = _LIMIT_IN_TEXT.search(server_message)
-        if text_match:
-            limit = int(text_match.group(1))
-    count = _optional_int(parsed.get("count"))
-    session_value = parsed.get("session_uuid")
-    session_uuid = session_value if isinstance(session_value, str) and session_value else None
+    limit = _wire_int(parsed.get("limit"))
+    count = _wire_int(parsed.get("count"))
+    session_uuid = parsed.get("session_uuid")
+    if limit is None or count is None or not isinstance(session_uuid, str):
+        return None
+    server_message = str(parsed.get("error") or "").strip()
 
     # Server sentence first: log readers truncate, and it is what a human
-    # recognises. Same layout as the Go and TypeScript SDKs.
+    # recognises. Byte-identical layout to the TypeScript SDK.
     message = (
         f"Conflict (HTTP 409): {server_message[:500]} (session record limit: "
-        f"session={session_uuid or 'unknown'}, limit={_text(limit)}, "
-        f"count={_text(count)})"
+        f"session={session_uuid}, limit={limit}, count={count})"
     )
     return AnhurSessionRecordLimitError(
         message,

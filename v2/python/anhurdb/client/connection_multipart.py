@@ -97,10 +97,6 @@ class MultipartUploadMixin:
                 if response.status in (401, 403):
                     raise AnhurAuthError(f"Authentication failed (HTTP {response.status})")
                 elif response.status in (400, 422):
-                    # Servers older than 4574c4d refused a colliding upload with 400.
-                    scope_error = scope_error_from_response(response.status, body_text)
-                    if scope_error is not None:
-                        raise scope_error
                     raise AnhurQueryError(
                         f"Invalid request (HTTP {response.status}): {body_text[:500]}",
                         status_code=response.status,

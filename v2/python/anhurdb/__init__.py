@@ -1,10 +1,9 @@
 """
 AnhurDB Python SDK — The Cognitive Database for AI Agents.
 
-Two entry points:
-
-- **Memory**: Simple 3-method API (add, search, profile) — start here.
-- **AnhurClient**: Full API covering all 40+ AnhurDB endpoints.
+One client: **Memory** — dead-simple to start (add, search, profile) and
+carrying the full 40+ endpoint surface. (``AnhurClient``, its deprecated alias,
+was removed in 4.0.0.)
 
 Quick start::
 
@@ -19,14 +18,14 @@ Quick start::
         )
         hits = await mem.search("what does the user do?", sessions_all())
 
-Full API::
+Full API (same class)::
 
-    from anhurdb import AnhurClient, MemoryType
+    from anhurdb import Memory, MemoryType
 
-    async with AnhurClient(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as client:
-        session_id = await client.create_session()
-        await client.create(session_id, "...", type=MemoryType.FACT)
-        entities = await client.search_entities(query="Google")
+    async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
+        session_id = await mem.create_session()
+        await mem.create(session_id, "...", type=MemoryType.FACT)
+        entities = await mem.search_entities(query="Google")
 """
 
 from .version import __version__
@@ -72,7 +71,7 @@ from .models import (
     SmartSearchResponse,
     SmartSearchHit,
 )
-from .client import Memory, AnhurClient
+from .client import Memory
 from .client.session_filter import (
     MAX_SESSION_FILTER_UUIDS,
     SESSION_WILDCARD,
@@ -108,9 +107,8 @@ from .client.search_mode import (
 __all__ = [
     # Version (PEP 396) — the same string the User-Agent carries.
     "__version__",
-    # Client classes
+    # Client class
     "Memory",
-    "AnhurClient",
     # Models
     "MemoryType",
     "MemoryStatus",

@@ -19,7 +19,7 @@ Covers:
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 
-from anhurdb import Memory, AnhurClient, MemoryType, AnhurError
+from anhurdb import Memory, MemoryType, AnhurError
 
 
 # ── Mock handlers that capture what the SDK sends ────────────────────────────
@@ -80,8 +80,8 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
                 score=8,
                 type=MemoryType.PREFERENCE,
             )
-            # Routed to the records (oss) path, not cloud ingest.
-            self.assertEqual(result.mode, "oss")
+            # Routed to the records door, not ingest.
+            self.assertEqual(result.mode, "records")
             # The record sent is the preference, carrying score+type.
             sent = self.app["last_record"]
             self.assertEqual(sent["type"], "preference")
@@ -112,7 +112,7 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
         async with Memory(api_key="k", url=url, user_id="u1") as mem:
             await mem.create_session()
             result = await mem.add("plain text, no options")
-            self.assertEqual(result.mode, "cloud")
+            self.assertEqual(result.mode, "ingest")
             ingest_payload = self.app["last_ingest"]
             self.assertEqual(
                 set(ingest_payload.keys()),
@@ -136,7 +136,7 @@ class TestAddPersistsScoreType(AioHTTPTestCase):
             result = await mem.add(
                 "plain with pins", score=8, type=MemoryType.PREFERENCE
             )
-            self.assertEqual(result.mode, "oss")
+            self.assertEqual(result.mode, "records")
             self.assertIn("last_record", self.app)
             self.assertNotIn("last_ingest", self.app)
             self.assertEqual(self.app["last_record"]["score"], 8)
@@ -182,7 +182,7 @@ class TestNoTransportRetry(AioHTTPTestCase):
     @unittest_run_loop
     async def test_transient_500_surfaced_without_retry(self):
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(api_key="k", url=url) as client:
+        async with Memory(api_key="k", url=url) as client:
             with self.assertRaises(AnhurError):
                 await client._connection.post(
                     "/api/v1/records", {"uuid": "s1", "summary": "x"}
@@ -193,7 +193,7 @@ class TestNoTransportRetry(AioHTTPTestCase):
     @unittest_run_loop
     async def test_non_transient_500_surfaced_without_retry(self):
         url = f"http://localhost:{self.server.port}"
-        async with AnhurClient(api_key="k", url=url) as client:
+        async with Memory(api_key="k", url=url) as client:
             with self.assertRaises(AnhurError):
                 await client._connection.post("/api/v1/permanent", {})
             # Exactly one attempt — no silent retry of a real failure.

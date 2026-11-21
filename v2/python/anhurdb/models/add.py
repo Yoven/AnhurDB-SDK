@@ -36,12 +36,20 @@ class RecordSummary(BaseModel):
 class AddResult(BaseModel):
     """Result of ``add`` / ``create`` / ``create_in_session``.
 
-    ``mode`` is ``"cloud"`` when the server's extraction pipeline
-    (``POST /api/v1/ingest``) accepted the text and may have produced MORE than
-    one record, and ``"oss"`` when the SDK wrote exactly one record through
-    ``POST /api/v1/records``. It is the only way a caller can tell whether
-    ``records`` is "everything the extractor found" or "the single row I asked
-    for", so it is part of the contract, not a debug field.
+    ``mode`` names the door that ran: ``"ingest"`` when the server's
+    extraction pipeline (``POST /api/v1/ingest``) accepted the text and may
+    have produced MORE than one record, and ``"records"`` when the SDK wrote
+    exactly one record through ``POST /api/v1/records``. It is the only way a
+    caller can tell whether ``records`` is "everything the extractor found" or
+    "the single row I asked for", so it is part of the contract, not a debug
+    field.
+
+    Junior Tip [why the values changed in 4.0.0]: they used to be ``"cloud"``
+    and ``"oss"`` — names of the self-hosted fallback that retried a 404 from
+    ``/ingest`` on ``/records``. That fallback is gone (the route is mounted
+    unconditionally, ``server/router.go:135``), and a value naming a
+    deployment flavour would now lie: ``"oss"`` came back for every pinned
+    ``add()`` against the cloud. The value names the endpoint, nothing else.
 
     Junior Tip [why ``id`` and ``status`` are Optional]: they exist only on the
     ``/records`` door, where the server echoes the created record. On the

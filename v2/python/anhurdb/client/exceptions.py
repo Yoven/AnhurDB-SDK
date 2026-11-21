@@ -114,11 +114,10 @@ class AnhurSessionRecordLimitError(AnhurQueryError):
     ``*SessionRecordLimitError`` / ``ErrSessionRecordLimit``, TypeScript
     ``AnhurSessionRecordLimitError``.
 
-    Recognised on both server generations: the new structured 409 body
-    (``code == "session_record_limit"`` plus ``limit``/``count``/``session_uuid``)
-    and the old text-only 409 (``"session has reached the maximum of N records"``).
-    ``session_uuid`` and ``count`` are ``None`` when an old server omitted them;
-    ``limit`` is read back from the server's own sentence when the field is absent.
+    Recognised by HTTP 409 with ``code == "session_record_limit"`` only (the
+    server always sends ``limit``/``count``/``session_uuid`` with it, so all
+    three are required here). The text-only 409 of pre-ADR-0033 servers is no
+    longer typed — removed in 4.0.0, see ``client/session_limit.py``.
 
     Junior Tip [non-retryable is not "drop it"]: repeating the same write into
     the same session gets the same refusal until the cap changes server-side,
@@ -133,9 +132,9 @@ class AnhurSessionRecordLimitError(AnhurQueryError):
     def __init__(
         self,
         message: str,
-        session_uuid: Optional[str] = None,
-        limit: Optional[int] = None,
-        count: Optional[int] = None,
+        session_uuid: str,
+        limit: int,
+        count: int,
         server_message: str = "",
     ):
         super().__init__(message, status_code=409, kind=AnhurError.KIND_CONFLICT)
@@ -151,9 +150,10 @@ class AnhurTenantLibraryCollisionError(AnhurQueryError):
     of ANOTHER tenant (a legacy tenant named ``<t>_lib``), so the server refuses
     every tenant_shared search, by-id call, upload and delete for this caller
     (ADR-0029). HTTP 409 with ``code == "tenant_library_collision"`` on every
-    door; servers older than 4574c4d sent no code and answered the upload with
-    400 (recognised by the sentence). Parity: Go ``*TenantLibraryCollisionError`` /
-    ``ErrTenantLibraryCollision``, TypeScript ``AnhurTenantLibraryCollisionError``.
+    door, upload included. The code is the only signal: the sentence match and
+    the upload-400 branch for pre-4574c4d servers were removed in 4.0.0.
+    Parity: Go ``*TenantLibraryCollisionError`` / ``ErrTenantLibraryCollision``,
+    TypeScript ``AnhurTenantLibraryCollisionError``.
 
     ``retryable`` is always False: the same request is refused until an operator
     renames one of the two tenants. It is never the session-record-limit 409.

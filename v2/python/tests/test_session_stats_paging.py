@@ -149,15 +149,17 @@ class SessionStatsPagingTest(AioHTTPTestCase):
             "offset must strictly increase even when next_offset is stuck",
         )
 
-    async def test_legacy_bare_array_is_one_complete_page(self) -> None:
+    async def test_bare_array_raises_instead_of_reading_as_a_page(self) -> None:
+        """4.0.0 removal: the server always sends the envelope
+        (handler/record_session.go:135-142); a bare array is no longer taken
+        as one complete page — it raises, never a silent partial answer."""
         self.reply_mode = "bare_array"
         async with self._memory() as memory:
-            sessions = await memory.list_sessions()
+            with self.assertRaises(AnhurError) as caught:
+                await memory.list_sessions()
 
-        self.assertEqual([session.uuid for session in sessions], ["legacy"])
-        self.assertEqual(
-            len(self.recorded_requests), 1, "a bare array carries no has_more: it is the answer"
-        )
+        self.assertEqual(caught.exception.kind, AnhurError.KIND_SERVER)
+        self.assertEqual(len(self.recorded_requests), 1)
 
     async def test_empty_tenant_returns_empty_list(self) -> None:
         self.reply_mode = "empty_tenant"

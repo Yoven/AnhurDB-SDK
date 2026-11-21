@@ -6,7 +6,7 @@ Official async Python client for [AnhurDB](https://anhur.yoven.ai) — cognitive
 
 ## Features
 
-- **One client class**: `Memory` — dead-simple to start (`add`/`search`/`profile`) and carries the full 40+ endpoint surface. (`AnhurClient` remains as a deprecated alias for back-compat.)
+- **One client class**: `Memory` — dead-simple to start (`add`/`search`/`profile`) and carries the full 40+ endpoint surface. (`AnhurClient`, its deprecated alias, was removed in 4.0.0 — use `Memory`.)
 - Full async support (aiohttp)
 - Type-safe models (Pydantic v2)
 - Fluent Query Builder (AST-based DSL for advanced filtering)
@@ -25,12 +25,19 @@ Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) 
 
 ```bash
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.0.0/anhurdb-4.0.0-py3-none-any.whl
 ```
 
-> The pin above is the newest wheel actually **published** (`v2/python/v3.0.1`) and
-> it matches `anhurdb.__version__` in this tree. Go and TypeScript ship the same
-> number.
+> The pin above matches `anhurdb.__version__` in this tree (`4.0.0`). Go and
+> TypeScript ship the same number. Until the `v2/python/v4.0.0` release is
+> published, the newest published wheel is `v2/python/v3.0.1`.
+>
+> **4.0.0 is a breaking release (legacy removal).** `AnhurClient`,
+> `search_with_ast`, `mark_consolidated`, `link_to_consolidated`,
+> `update_consolidate_ids`, `CreateRequest(uuid=)`, `DeleteFileResult.raft_index`,
+> `MemoryStatus.PENDING` and every old-server fallback are gone, and
+> `AddResult.mode` is now `"ingest"` / `"records"`. See the migration table in
+> `CHANGELOG.md`.
 >
 > **3.0.x is a breaking release.** `create()` changed arity, twelve responses
 > became typed models instead of dicts, and `get_entity_graph()` now defaults to
@@ -67,12 +74,12 @@ async with Memory(api_key="anhur_xxx", url="https://anhurdb.yoven.ai") as mem:
     print(profile.static.facts)
 ```
 
-## Quick Start — AnhurClient (Full API)
+## Quick Start — Memory (Full API)
 
 ```python
-from anhurdb import AnhurClient, MemoryType, sessions_all
+from anhurdb import Memory, MemoryType, sessions_all
 
-async with AnhurClient(api_key="anhur_xxx") as client:
+async with Memory(api_key="anhur_xxx") as client:
     # Create a record. Since 3.0.0 the session and the content are required
     # POSITIONALS — POST /api/v1/records cannot succeed without either, so the
     # failure belongs in the signature, not in an HTTP 422.
@@ -172,8 +179,8 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 | Method | Description |
 |--------|-------------|
 | `batch_read_content(ids)` | Fetch content for many records in one call. The SDK does not cap the list; the **server** rejects more than **1000** ids with HTTP 400 `batch size exceeds maximum` (`server/handler/record_batch.go`, `maxBatchSize = 1000`, matched by gRPC `batch_service.go`) |
-| `batch_update_status(ids)` | Mark records as consolidated (was `mark_consolidated`, now a deprecated alias) |
-| `link_consolidated(ids, consolidate_id)` | Link children to a consolidated star (was `link_to_consolidated`/`update_consolidate_ids`, now deprecated aliases) |
+| `batch_update_status(ids, status)` | Set one status on many records (replaces `mark_consolidated`, removed in 4.0.0: pass `"consolidated"`) |
+| `link_consolidated(ids, consolidate_id)` | Link children to a consolidated star (replaces `link_to_consolidated`/`update_consolidate_ids`, removed in 4.0.0) |
 
 ### File Upload
 
@@ -242,7 +249,7 @@ lists the sessions of the same store that DO hold that prefix
 (`FileSessionCandidate(session_uuid, matched_count, root_checksum, root_filename)`)
 — check `root_checksum` and re-issue `delete_file` with the right session.
 `purge` tells whether the delete is final (True, shared plane) or a restorable
-tombstone. `raft_index` is deprecated and always 0 (the server never sends it).
+tombstone. There is no `raft_index` (removed in 4.0.0 — the server never sends it).
 
 ### Session Management
 
@@ -267,7 +274,7 @@ tombstone. `raft_index` is deprecated and always 0 (the server never sends it).
 `Memory` exposes the public AnhurDB surface (see `v2/PARITY_SPEC.md`):
 
 - **CRUD**: `create`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `delete`
-- **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `query` (`search_with_ast` deprecated)
+- **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `query`
 - **Manifests / taxonomy**: `manifest_global`, `manifest_session`, `list_chat`, `count_by_type`, `list_types`, `recent`
 - **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_related_ids`
 - **Graph**: `walk`, `walk_semantic`
@@ -300,7 +307,7 @@ async with Memory(api_key="anhur_xxx") as mem:
     )
 ```
 
-> **Deprecated:** `search_with_ast()` still works but emits a `DeprecationWarning`. Use `query()` instead.
+> `search_with_ast()` was removed in 4.0.0 — call `query()`; it takes the same arguments.
 
 Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`. There are no others —
 `$neq`, `$nin` and `$like` were never implemented server-side.
@@ -367,10 +374,12 @@ except AnhurQueryError as e:
 ```
 
 A write into a full session raises `AnhurSessionRecordLimitError` (a subclass
-of `AnhurQueryError`, HTTP 409, `retryable == False`) on both the new structured
-server answer and the old text-only one. `session_uuid` and `count` are `None`
-when an old server omitted them. Keep the data and retry later — never write it
-into another session to dodge the cap:
+of `AnhurQueryError`, HTTP 409, `retryable == False`) when the server answers
+409 with `"code": "session_record_limit"`. `session_uuid` (`str`), `limit` and
+`count` (`int`) are always set — the server always sends them. A 409 without
+that code (including the pre-ADR-0033 text-only sentence) is the generic
+`AnhurQueryError`. Keep the data and retry later — never write it into another
+session to dodge the cap:
 
 ```python
 from anhurdb import AnhurSessionRecordLimitError
@@ -406,8 +415,8 @@ AnhurQueryError` silently missed it.
 When your tenant library store id collides with another registered tenant's
 store (a legacy tenant named `<t>_lib`), the server refuses every tenant_shared
 search, by-id call, upload and delete: HTTP 409 with `"code":
-"tenant_library_collision"` (servers older than 4574c4d sent no code and used 400
-on upload; still recognised by the sentence). The SDK raises
+"tenant_library_collision"`, upload included. The code is the only signal: since
+4.0.0 the sentence alone, or a 400, is the generic error. The SDK raises
 `AnhurTenantLibraryCollisionError` (an `AnhurQueryError`), **non-retryable**; it
 heals only when an operator renames one of the tenants. It is never the
 session-record-limit 409. An unreadable tenant registry is HTTP 503 (upload

@@ -154,7 +154,7 @@ class TestCreateConvention:
         assert payload["score"] == 8
         assert result.id == 100
         assert result.records[0].id == 100
-        assert result.mode == "oss"
+        assert result.mode == "records"
 
     @pytest.mark.asyncio
     async def test_type_accepts_a_plain_string_as_well_as_the_enum(self) -> None:

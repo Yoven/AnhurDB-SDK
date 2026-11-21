@@ -11,10 +11,15 @@ surface so power users can set score, weight, and related_ids. The
 """
 
 from typing import Any, Dict, List, Optional
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from datetime import datetime
 
 from .enums import MemoryType, MemoryStatus
+
+# Junior Tip [re-export, 4.0.0]: the delete-by-file models moved to
+# ``delete_file.py`` when this file crossed the house 300-line cut;
+# ``from anhurdb.models.record import DeleteFileResult`` keeps working.
+from .delete_file import DeleteFileLeg, DeleteFileResult, FileSessionCandidate  # noqa: F401
 
 
 class CreateRequest(BaseModel):
@@ -22,21 +27,38 @@ class CreateRequest(BaseModel):
     Payload for creating a new memory record.
 
     Required:
-        session_id (preferred) or uuid — both identify the write session from
-        ``create_session`` / ``POST /api/v1/sessions``. The wire field sent to
-        the server may be ``session_id`` or legacy ``uuid`` (same value).
+        session_id — the write session from ``create_session`` /
+        ``POST /api/v1/sessions``.
 
     The server automatically computes embeddings and search indexes when
     ``dimension=0`` (default). Set ``dimension``, ``vector``, and ``prefix``
     only when providing a pre-computed embedding.
+
+    Junior Tip [why there is no ``uuid`` field any more — 4.0.0]: the record
+    column is called ``uuid``, and this model used to carry a ``uuid=`` "legacy
+    alias for session_id". Two fields for one value is how a caller ends up
+    setting the wrong one: the server copies ``session_id`` into the column
+    itself (``server/model/record.go:137-140``, ``handler/record_crud.go:49-52``),
+    so ``session_id`` is the only name the SDK speaks. ``CreateRequest(uuid=...)``
+    RAISES instead of being dropped by ``extra="ignore"``: a silently ignored
+    session would surface later as "session_id is required" far from the line
+    that caused it.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    # Junior Tip [session_id parity]: prefer session_id=...; uuid= remains for
-    # older call sites. Both serialize — create() posts session_id when set.
-    uuid: str = Field(default="", description="Legacy alias for session_id")
-    session_id: str = Field(default="", description="Preferred session from create_session")
+    session_id: str = Field(default="", description="Write session from create_session")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_uuid_alias(cls, data: Any) -> Any:
+        """Fail loud on the ``uuid=`` alias removed in 4.0.0 (see class doc)."""
+        if isinstance(data, dict) and "uuid" in data:
+            raise ValueError(
+                "CreateRequest(uuid=...) was removed in anhurdb 4.0.0; "
+                "pass session_id=... instead"
+            )
+        return data
     type: MemoryType = Field(default=MemoryType.EPISODIC)
 
     summary: str = Field(default="")
@@ -68,7 +90,7 @@ class CreateRequest(BaseModel):
         caller used to write ``await mem.create(req)`` they now write::
 
             await mem.create(
-                req.session_id or req.uuid,
+                req.session_id,
                 req.content,
                 **req.optional_fields(),
             )
@@ -144,103 +166,6 @@ class Record(BaseModel):
     content: Optional[Any] = None
 
 
-class DeleteFileResult(BaseModel):
-    """
-    Response of ``DELETE /api/v1/records/by-file`` — apagar TODO o rastro de um
-    arquivo ingerido (root + capítulos + satélites) de uma sessão.
-
-    ``matched_count`` é o que o prefixo ENCONTROU; ``deleted_count`` é o que o
-    cluster realmente apagou. Em ``dry_run`` só ``matched_count`` é preenchido:
-    nada foi escrito, então ``deleted_count`` fica 0 de propósito.
-
-    Junior Tip [por que a contagem faz parte do contrato]: "apaguei 0 registros"
-    tem de ser visível para o chamador. Um método que devolvesse apenas ``None``
-    transformaria um prefixo errado em sucesso silencioso — e perda silenciosa é
-    a falha número um deste projeto.
-
-    ``deleted_ids`` chega com ``omitempty`` do servidor: em dry-run, ou quando
-    nada casou, a chave não existe no JSON. Ausência aqui é informação
-    legítima, não erro de parse — por isso tem default.
-
-    ``alternative_sessions`` is filled ONLY when ``matched_count == 0``: the
-    sessions of this SAME store that do hold records with the requested prefix
-    (server ``database.FileSessionCandidate``,
-    ``server/database/file_record_sessions.go:38-48``). Empty list = the prefix is
-    not in this store at all; non-empty = the session was wrong — re-issue the
-    strict delete with a candidate's ``session_uuid`` after checking its
-    ``root_checksum``/``root_filename`` (a 64-bit prefix is weaker proof than the
-    full sha256).
-
-    ``raft_index`` is DEPRECATED and always 0: the server never serialises it
-    (``json:"-"`` at ``server/service/record_delete_file.go:42``). Kept only so
-    existing code that reads it keeps working; removed in the next major.
-    """
-
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-    session_uuid: str = Field(default="")
-    ingest_key_prefix: str = Field(default="")
-    matched_count: int = Field(default=0)
-    deleted_count: int = Field(default=0)
-    deleted_ids: List[int] = Field(default_factory=list)
-    dry_run: bool = Field(default=False)
-    # True = gone for good (shared plane); False = restorable tombstone (chat
-    # plane). Server: ``json:"purge"``, always sent — the caller must know
-    # whether the delete can be undone.
-    purge: bool = Field(default=False)
-    # Deprecated: never sent by the server (json:"-"), always 0.
-    raft_index: int = Field(default=0)
-    alternative_sessions: List["FileSessionCandidate"] = Field(default_factory=list)
-    # Present only for a tenant-library delete (one entry per library store,
-    # generation "primary" = {c}_{t}_lib, "legacy" = pre-migration rows).
-    legs: List["DeleteFileLeg"] = Field(default_factory=list)
-
-
-class FileSessionCandidate(BaseModel):
-    """One session of the queried store holding records of the file named by the
-    ingest_key prefix (see ``DeleteFileResult.alternative_sessions``).
-
-    ``root_checksum`` is the FULL sha256 the file_ingestor stores on the root
-    record and ``root_filename`` its original name; both are ``""`` when the root
-    no longer exists or predates the field (``omitempty`` on the server).
-    """
-
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-    session_uuid: str = Field(default="")
-    matched_count: int = Field(default=0)
-    root_checksum: str = Field(default="")
-    root_filename: str = Field(default="")
-
-
-class DeleteFileLeg(BaseModel):
-    """One library store's part of a delete-by-file answer.
-
-    Server truth: ``service.DeleteFileLegOutcome``
-    (``server/service/record_delete_file_library.go:34-44``).
-
-    Junior Tip [why the legs matter]: during the L2 migration a library file can
-    live in either store, and the two stores are two Raft groups with no shared
-    transaction. ``skipped`` = the store does not exist on that node;
-    ``dispatch_skipped`` = it held no match while the other leg did, so nothing
-    was proposed there. A leg with ``error`` set failed — see
-    ``AnhurLibraryDeletePartialError``.
-    """
-
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-    generation: str = Field(default="")
-    session_uuid: str = Field(default="")
-    skipped: bool = Field(default=False)
-    dispatch_skipped: bool = Field(default=False)
-    matched_count: int = Field(default=0)
-    deleted_count: int = Field(default=0)
-    error: str = Field(default="")
-
-
-DeleteFileResult.model_rebuild()
-
-
 class EntityModel(BaseModel):
     """
     A named entity in the AnhurDB knowledge graph (Layer 2).
@@ -249,19 +174,18 @@ class EntityModel(BaseModel):
     records. ``entity_type`` is NOT ``record.type`` (episodic/fact/decision) —
     the cross-layer link (``link_record_entity``) is the tag.
 
-    Wire key is ``entity_type`` (AnhurDB entityToResponse). ``type`` is accepted
-    only as a legacy alias for older upsert responses.
+    Wire key is ``entity_type`` on every entity route — search, list, graph,
+    timeline and upsert (``server/handler/entity.go:89`` entityToResponse,
+    ``:438-441`` upsert). The ``type`` read alias was removed in 4.0.0: no
+    server answer carries it, and accepting it let a record-shaped dict
+    (``type: "fact"``) masquerade as an entity.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     id: Optional[int] = None
     name: str = ""
-    entity_type: str = Field(
-        default="",
-        validation_alias=AliasChoices("entity_type", "type"),
-        serialization_alias="entity_type",
-    )
+    entity_type: str = Field(default="")
     summary: str = ""
     attributes: Optional[Dict[str, Any]] = None
     dimension: Optional[int] = None

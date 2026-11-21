@@ -40,7 +40,7 @@ class Filter:
     Usage::
 
         f = Filter({"type": {"$eq": "risk"}, "weight": {"$gt": 0.8}})
-        results = await client.search_with_ast(f, session_uuid="session-uuid")
+        results = await client.query(f, session_uuid="session-uuid")
     """
 
     def __init__(self, condition: Optional[Dict[str, Any]] = None, **kwargs: Any):

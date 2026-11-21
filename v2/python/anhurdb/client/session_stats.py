@@ -64,15 +64,15 @@ async def fetch_all_session_stats(connection: Any) -> List[Dict[str, Any]]:
     Requests ``limit=500&offset=N`` and keeps going while the envelope reports
     ``has_more: true``, concatenating the pages in server order.
 
-    Two response shapes are accepted, matching Go:
+    The server always answers with the envelope ``{"sessions", "count",
+    "limit", "offset", "has_more", "next_offset"}``
+    (``server/handler/record_session.go:135-142``).
 
-    * the envelope ``{"sessions": [...], "has_more": ..., "next_offset": ...}``
-    * a legacy BARE LIST ``[...]``, treated as one complete page.
-
-    Junior Tip [the bare list is not dead code]: older deployments answer with a
-    naked array and no envelope. The pre-2026-09-14 Python code handled that
-    (``data.get("sessions", data)``) and it must keep working, or a tenant full
-    of sessions reports as having none on those deployments.
+    Junior Tip [no bare-list branch since 4.0.0]: earlier SDKs also accepted a
+    naked ``[...]`` as "one complete page" for a server generation that no
+    longer exists. Any non-envelope answer now RAISES: accepting an
+    unrecognised shape as a complete answer is exactly the silent truncation
+    this module was written to stop.
 
     Args:
         connection: An ``HTTPConnection``-shaped object exposing
@@ -82,7 +82,8 @@ async def fetch_all_session_stats(connection: Any) -> List[Dict[str, Any]]:
         Every session in the tenant, in server order.
 
     Raises:
-        AnhurError: kind ``"server"``, when the server never stops paging."""
+        AnhurError: kind ``"server"``, when the server never stops paging or
+                    answers with something that is not the envelope."""
     all_sessions: List[Dict[str, Any]] = []
     page_offset = 0
 
@@ -95,12 +96,13 @@ async def fetch_all_session_stats(connection: Any) -> List[Dict[str, Any]]:
             },
         )
 
-        # Legacy bare list: one page, no envelope, nothing to follow.
-        if isinstance(response_body, list):
-            return all_sessions + response_body
-        # Empty body or JSON null: no sessions, and not an error.
         if not isinstance(response_body, dict):
-            return all_sessions
+            raise AnhurError(
+                "list_sessions: GET /api/v1/sessions/stats answered "
+                f"{type(response_body).__name__}, not the paged envelope "
+                '{"sessions", "has_more", "next_offset", ...}',
+                kind=AnhurError.KIND_SERVER,
+            )
 
         page_sessions = response_body.get("sessions")
         if isinstance(page_sessions, list):

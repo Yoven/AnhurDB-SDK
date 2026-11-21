@@ -80,8 +80,8 @@ async def test_delete_file_wire_contract():
     assert result.matched_count == 511
     assert result.deleted_count == 511
     assert result.deleted_ids == [1, 2, 3]
-    # raft_index is json:"-" on the server; the deprecated field stays 0.
-    assert result.raft_index == 0
+    # raft_index is json:"-" on the server; the field was removed in 4.0.0.
+    assert not hasattr(result, "raft_index")
     assert result.dry_run is False
 
 
@@ -115,7 +115,7 @@ async def test_delete_file_dry_run_sends_flag_and_omits_ids():
     assert result.matched_count == 511
     assert result.deleted_count == 0
     assert result.deleted_ids == []
-    assert result.raft_index == 0
+    assert not hasattr(result, "raft_index")
 
 
 @pytest.mark.anyio
@@ -207,7 +207,7 @@ def test_delete_file_result_parses_alternative_sessions_offline():
 
     result = DeleteFileResult.model_validate_json(ZERO_MATCH_SERVER_JSON)
     assert result.matched_count == 0
-    assert result.raft_index == 0
+    assert not hasattr(result, "raft_index")
     assert result.alternative_sessions == [
         FileSessionCandidate(
             session_uuid="chat-42",
@@ -240,3 +240,15 @@ def test_delete_file_result_parses_purge_offline(purge):
         f'"purge":{"true" if purge else "false"}}}'
     )
     assert result.purge is purge
+
+
+def test_delete_file_result_has_no_raft_index_field_4_0():
+    """4.0.0 removal: the server never serialises RaftIndex
+    (``server/service/record_delete_file.go:42`` json:"-"), so the model no
+    longer declares it, and a stray wire key is ignored, never surfaced."""
+    from anhurdb import DeleteFileResult
+
+    assert "raft_index" not in DeleteFileResult.model_fields
+    parsed = DeleteFileResult.model_validate({"matched_count": 1, "raft_index": 99})
+    assert not hasattr(parsed, "raft_index")
+    assert "raft_index" not in parsed.model_dump()

@@ -2,7 +2,7 @@
 Unit tests for the AnhurDB Python SDK client layer.
 
 Tests constructor validation, header setup, session management,
-and the Memory / AnhurClient facades — all without a running server.
+and the Memory client — all without a running server.
 """
 
 import unittest
@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from anhurdb.client.connection import HTTPConnection
-from anhurdb.client import Memory, AnhurClient
+from anhurdb.client import DEFAULT_CLOUD_URL, Memory
 from anhurdb.client.exceptions import AnhurError, AnhurAuthError, AnhurQueryError
 
 
@@ -133,19 +133,21 @@ class TestMemory(unittest.TestCase):
         self.assertIn("Memory(", r)
 
 
-class TestAnhurClient(unittest.TestCase):
-    """Tests for the AnhurClient (full API) class."""
+class TestMemoryConstruction(unittest.TestCase):
+    """Constructor defaults of the one client (``AnhurClient`` removed in 4.0.0)."""
 
     def test_requires_api_key(self):
         with self.assertRaises(ValueError):
-            AnhurClient(api_key="")
+            Memory(api_key="")
 
-    def test_default_url(self):
-        client = AnhurClient(api_key="test-key")
-        self.assertEqual(client._connection.base_url, "http://localhost:8080")
+    def test_default_url_is_the_cloud_endpoint(self):
+        # The removed AnhurClient alias defaulted to http://localhost:8080;
+        # the one remaining client never did.
+        client = Memory(api_key="test-key")
+        self.assertEqual(client._connection.base_url, DEFAULT_CLOUD_URL)
 
     def test_custom_url(self):
-        client = AnhurClient(url="http://custom:9000", api_key="key")
+        client = Memory(url="http://custom:9000", api_key="key")
         self.assertEqual(client._connection.base_url, "http://custom:9000")
 
 

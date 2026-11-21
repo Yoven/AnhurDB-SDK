@@ -31,9 +31,15 @@ class MemoryType(str, Enum):
 class MemoryStatus(str, Enum):
     """
     Processing status of a memory record.
+
+    Junior Tip [no ``PENDING`` — removed in 4.0.0]: the server never writes
+    record status ``"pending"``; ``pending`` is an ``extraction_status`` value
+    of the ingest pipeline (``server/service/ingest.go:233``), a different
+    field. A member nobody can ever receive invites filters that match nothing.
+    The read model ``Record.status`` is a plain ``str``, so an unexpected value
+    still parses verbatim.
     """
     SAVED = "saved"                                # Written, awaiting processing
-    PENDING = "pending"                            # Queued for processing
     PROCESSING = "processing"                      # Being processed
     COMPLETED = "completed"                        # Processing complete
     FAILED = "failed"                              # Processing failed

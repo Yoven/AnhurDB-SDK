@@ -80,7 +80,7 @@ class RequestExecutionMixin:
         session = self._session
         if session is None:
             raise AnhurConnectionError(
-                "Connection not established. Use 'async with AnhurClient(...)' "
+                "Connection not established. Use 'async with Memory(...)' "
                 "or call 'await client.connect()' first."
             )
         if self._before_request is not None:
@@ -116,10 +116,6 @@ class RequestExecutionMixin:
                         status_code=response.status,
                     )
                 elif response.status in (400, 422):
-                    # Servers older than 4574c4d refused a colliding upload with 400.
-                    scope_error = scope_error_from_response(response.status, body_text)
-                    if scope_error is not None:
-                        raise scope_error
                     raise AnhurQueryError(
                         f"Invalid request (HTTP {response.status}): {body_text[:500]}",
                         status_code=response.status,
@@ -177,8 +173,8 @@ class RequestExecutionMixin:
                     return json.loads(body_text)
                 except json.JSONDecodeError:
                     # Plain-text body. ``read_content`` wants it verbatim;
-                    # everyone else gets the legacy ``{"message": ...}``
-                    # envelope for backward compatibility.
+                    # everyone else gets the SDK's ``{"message": ...}``
+                    # envelope for a non-JSON success body.
                     if raw_text:
                         return body_text
                     return {"message": body_text[:1000]}
@@ -203,4 +199,4 @@ class RequestExecutionMixin:
                 kind=AnhurError.KIND_TRANSPORT,
             ) from exc
 
-    # -- MCP tunnel (legacy/alternative transport) --------------------------
+    # -- MCP tunnel (alternative transport, mode="mcp") ----------------------

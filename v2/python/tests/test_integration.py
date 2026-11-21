@@ -12,7 +12,7 @@ Requirements:
     - AnhurDB server running on localhost:8000
     - Valid API key (set below or via ANHUR_API_KEY env var)
 
-This script tests all 29 Memory methods + AnhurClient extras + QueryBuilder AST.
+This script tests all 29 Memory methods + full-API extras + QueryBuilder AST.
 Each test prints PASS/FAIL with details. Exit code 0 = all pass, 1 = failures.
 """
 
@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from anhurdb import (
     Memory,
-    AnhurClient,
     MemoryType,
     AnhurError,
     AnhurAuthError,
@@ -488,8 +487,8 @@ async def test_upload():
 # ── QueryBuilder / AST Tests ─────────────────────────────────────
 
 async def test_ast_query():
-    """Test AnhurClient.search_with_ast() with QueryBuilder and Filter."""
-    async with AnhurClient(url=SERVER_URL, api_key=API_KEY) as client:
+    """Test Memory.query() with QueryBuilder and Filter."""
+    async with Memory(url=SERVER_URL, api_key=API_KEY) as client:
         # Server requires an episodic anchor before derived types.
         # Create episodic first, then risk.
         await client.create(
@@ -507,16 +506,16 @@ async def test_ast_query():
 
         # Test with Filter
         try:
-            records = await client.search_with_ast(
+            records = await client.query(
                 Filter({"type": {"$eq": "risk"}}),
             )
             record_result(
-                "AnhurClient.search_with_ast (Filter)",
+                "Memory.query (Filter)",
                 isinstance(records, list),
                 f"found {len(records)} records",
             )
         except Exception as e:
-            record_result("AnhurClient.search_with_ast (Filter)", False, str(e))
+            record_result("Memory.query (Filter)", False, str(e))
 
         # Test with QueryBuilder
         try:
@@ -526,47 +525,47 @@ async def test_ast_query():
                 .order_by("score", "desc")
                 .limit(10)
             )
-            records = await client.search_with_ast(qb)
+            records = await client.query(qb)
             record_result(
-                "AnhurClient.search_with_ast (QueryBuilder)",
+                "Memory.query (QueryBuilder)",
                 isinstance(records, list),
                 f"found {len(records)} records",
             )
         except Exception as e:
-            record_result("AnhurClient.search_with_ast (QueryBuilder)", False, str(e))
+            record_result("Memory.query (QueryBuilder)", False, str(e))
 
         # Test with session_uuid scoping
         try:
-            records = await client.search_with_ast(
+            records = await client.query(
                 Filter({"type": {"$eq": "risk"}}),
                 session_uuid="integration-ast-test",
             )
             record_result(
-                "AnhurClient.search_with_ast (session_uuid)",
+                "Memory.query (session_uuid)",
                 isinstance(records, list),
                 f"found {len(records)} records in session",
             )
         except Exception as e:
-            record_result("AnhurClient.search_with_ast (session_uuid)", False, str(e))
+            record_result("Memory.query (session_uuid)", False, str(e))
 
         # Test $in operator
         try:
             qb = QueryBuilder().where(type__in=["risk", "fact"]).limit(5)
-            records = await client.search_with_ast(qb)
+            records = await client.query(qb)
             record_result(
-                "AnhurClient.search_with_ast ($in operator)",
+                "Memory.query ($in operator)",
                 isinstance(records, list),
                 f"found {len(records)} records",
             )
         except Exception as e:
-            record_result("AnhurClient.search_with_ast ($in)", False, str(e))
+            record_result("Memory.query ($in)", False, str(e))
 
 
-# ── AnhurClient Extra Tests ──────────────────────────────────────
+# ── Memory Full-API Tests ──────────────────────────────────────
 
 async def test_anhur_client_extras():
-    """Test AnhurClient methods not in Memory."""
-    async with AnhurClient(url=SERVER_URL, api_key=API_KEY) as client:
+    """Test the full-API Memory methods."""
+    async with Memory(url=SERVER_URL, api_key=API_KEY) as client:
         # create — episodic anchor first, then derived type
         try:
             await client.create(
@@ -582,45 +581,45 @@ async def test_anhur_client_extras():
                 score=7,
             )
             record_result(
-                "AnhurClient.create",
+                "Memory.create",
                 result.id is not None,
                 f"id={result.id}",
             )
         except Exception as e:
-            record_result("AnhurClient.create", False, str(e))
+            record_result("Memory.create", False, str(e))
 
         # search
         try:
             results = await client.search("integration test", sessions_all(), limit=5)
             record_result(
-                "AnhurClient.search",
+                "Memory.search",
                 isinstance(results, (list, dict)),
                 f"type={type(results).__name__}",
             )
         except Exception as e:
-            record_result("AnhurClient.search", False, str(e))
+            record_result("Memory.search", False, str(e))
 
         # smart_search
         try:
             results = await client.smart_search("integration", sessions_all(), limit=5)
             record_result(
-                "AnhurClient.smart_search",
+                "Memory.smart_search",
                 results is not None,
                 f"type={type(results).__name__}",
             )
         except Exception as e:
-            record_result("AnhurClient.smart_search", False, str(e))
+            record_result("Memory.smart_search", False, str(e))
 
         # manifest_global
         try:
             manifest = await client.manifest_global(limit=5)
             record_result(
-                "AnhurClient.manifest_global",
+                "Memory.manifest_global",
                 isinstance(manifest, dict),
                 f"keys={list(manifest.keys()) if isinstance(manifest, dict) else 'n/a'}",
             )
         except Exception as e:
-            record_result("AnhurClient.manifest_global", False, str(e))
+            record_result("Memory.manifest_global", False, str(e))
 
 
 # ── Security Tests ────────────────────────────────────────────────
@@ -703,7 +702,7 @@ async def main():
         ("Entity Operations", test_entity_operations),
         ("File Upload", test_upload),
         ("AST Query (QueryBuilder + Filter)", test_ast_query),
-        ("AnhurClient Extras", test_anhur_client_extras),
+        ("Memory Full-API", test_anhur_client_extras),
         ("Security", test_security),
     ]
 

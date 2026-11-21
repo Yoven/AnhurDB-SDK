@@ -1,5 +1,5 @@
 """By-id scope (ADR-0029, L2 tenant library) through the REAL transport — a
-genuine ``AnhurClient`` against a stub aiohttp server — plus the typed L2
+genuine ``Memory`` against a stub aiohttp server — plus the typed L2
 error answers and the delete-by-file legs. Parity: Go
 ``client/record_scope_test.go`` + ``client/scope_errors_test.go``, TypeScript
 ``src/test/record_scope.test.ts``.
@@ -12,7 +12,8 @@ Server shapes copied from AnhurDB fix/l2-lib-scope:
   - collision (4574c4d): server/service/search_scope_admit.go sentence + code
     "tenant_library_collision", HTTP 409 on every door including upload
     (handler/search_scope_request.go writeScopeLegError, handler/upload.go);
-    legacy bodies (no code; 400 on upload) prove the sentence fallback.
+    Pre-4574c4d bodies (no code; 400 on upload) are NOT typed since 4.0.0 —
+    the tests below prove they reach the caller as the generic errors.
     Registry unavailable on upload: HTTP 503.
   - partial delete: server/handler/record_delete_file_library.go:53-57, legs
     from server/service/record_delete_file_library.go:34-44.
@@ -37,7 +38,7 @@ from anhurdb import (  # noqa: E402  public exports
     tenant_shared_scope_for_hit,
     upload_status_scope,
 )
-from anhurdb.client import AnhurClient  # noqa: E402
+from anhurdb.client import Memory  # noqa: E402
 from anhurdb.client.exceptions import AnhurError, AnhurQueryError  # noqa: E402
 
 COLLISION_409 = json.dumps({"error": "store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared", "code": "tenant_library_collision"})
@@ -46,7 +47,7 @@ LEGACY_COLLISION_409 = json.dumps({"error": "store c1_t1_lib: tenant library sto
 LEGACY_COLLISION_400 = json.dumps({"error": "tenant_shared upload: store c1_t1_lib: tenant library store id is a registered tenant; rename one of the two tenants before using tenant_shared"})
 REGISTRY_DOWN_503 = json.dumps({"error": "tenant_shared upload: tenant library store c1_t1_lib: tenant registry unavailable: database is locked"})
 AMBIGUOUS_409 = json.dumps({"error": "record 42 is a file upload in more than one plane; pass ?scope=sessions|tenant_shared|tenant_shared_legacy|client_shared"})
-LIMIT_409 = json.dumps({"error": "session has reached the maximum of 500 records", "code": "session_record_limit"})
+LIMIT_409 = json.dumps({"error": "session has reached the maximum of 500 records", "code": "session_record_limit", "limit": 500, "count": 500, "session_uuid": "s1"})
 PARTIAL_500 = json.dumps({
     "error": "tenant library delete-by-file partially failed — retry is safe (idempotent): primary deleted=3 matched=3; legacy FAILED: " + "x" * 600,
     "partial": True,
@@ -107,7 +108,7 @@ class TestRecordScope(AioHTTPTestCase):
         return app
 
     def _client(self, prefix):
-        return AnhurClient(url=f"http://localhost:{self.server.port}/{prefix}", api_key="test-key")
+        return Memory(url=f"http://localhost:{self.server.port}/{prefix}", api_key="test-key")
 
     async def _by_id_calls(self, client, scope):
         await client.get(42, scope=scope)
@@ -206,14 +207,30 @@ class TestRecordScope(AioHTTPTestCase):
         self.assertNotIsInstance(caught.exception, AnhurTenantLibraryCollisionError)
 
     @unittest_run_loop
-    async def test_legacy_collision_without_code_still_typed(self):
+    async def test_collision_sentence_without_code_is_generic_409(self):
+        """4.0.0 removal: the sentence alone no longer types the refusal."""
         async with self._client("legacy409") as client:
-            with self.assertRaises(AnhurTenantLibraryCollisionError):
+            with self.assertRaises(AnhurQueryError) as caught:
                 await client.get(42, scope="tenant_shared")
+        self.assertNotIsInstance(caught.exception, AnhurTenantLibraryCollisionError)
+        self.assertEqual((caught.exception.status_code, caught.exception.kind), (409, "conflict"))
+
+    @unittest_run_loop
+    async def test_collision_sentence_on_upload_400_is_generic_400(self):
+        """4.0.0 removal: the pre-4574c4d upload 400 branch is gone."""
         async with self._client("legacy400") as client:
-            with self.assertRaises(AnhurTenantLibraryCollisionError) as on_upload:
+            with self.assertRaises(AnhurQueryError) as caught:
                 await client.upload_file("a.txt", b"hi", mode="tenant_shared")
-        self.assertEqual((on_upload.exception.status_code, on_upload.exception.kind), (400, "invalid_request"))
+        self.assertNotIsInstance(caught.exception, AnhurTenantLibraryCollisionError)
+        self.assertEqual((caught.exception.status_code, caught.exception.kind), (400, "invalid_request"))
+
+    @unittest_run_loop
+    async def test_collision_sentence_on_json_400_is_generic_400(self):
+        async with self._client("legacy400") as client:
+            with self.assertRaises(AnhurQueryError) as caught:
+                await client.get(42, scope="tenant_shared")
+        self.assertNotIsInstance(caught.exception, AnhurTenantLibraryCollisionError)
+        self.assertEqual(caught.exception.status_code, 400)
 
     @unittest_run_loop
     async def test_upload_registry_unavailable_is_plain_unavailable(self):

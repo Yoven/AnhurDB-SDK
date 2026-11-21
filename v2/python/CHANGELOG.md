@@ -1,6 +1,71 @@
 # Python SDK Changelog
 
-## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
+## 4.0.0 — legacy removal (2026-11-21)
+
+Breaking. Go, Python and TypeScript remove the same set together (house parity
+rule). AnhurDB main is the only server and every fallback below targeted a
+server generation that no longer exists; each removal is checked against the
+server source (`AnhurDB/server`, paths below).
+
+### Removed
+
+| Symbol | Why | Server evidence |
+|---|---|---|
+| `AnhurClient` (class) and `_LEGACY_LOCAL_URL` | Deprecated alias of `Memory` with a `http://localhost:8080` default; `Memory` carries the full surface | — (SDK-only alias) |
+| `Memory.search_with_ast()` | Forwarding alias of `query()` | `POST /api/v1/query` (`server/router.go`) |
+| `Memory.mark_consolidated()` | Alias of `batch_update_status(ids, "consolidated")` | `PATCH /api/v1/records/mark-consolidated` |
+| `Memory.link_to_consolidated()`, `Memory.update_consolidate_ids()` | Aliases of `link_consolidated()` | `PATCH /api/v1/records/consolidate-ids` |
+| `CreateRequest.uuid` ("legacy alias for session_id") | Two names for one value; now **raises** `ValidationError` if passed | `server/model/record.go:137-140`, `server/handler/record_crud.go:49-52` copy `session_id` → `uuid` |
+| `uuid` key in every `/records` payload (`add()` records door, `create_in_session()`) | Replaced by `session_id` | same as above |
+| `DeleteFileResult.raft_index` | Never serialised, always 0 | `server/service/record_delete_file.go:42` (`json:"-"`) |
+| `MemoryStatus.PENDING` ("pending" record status) | Server never writes record status `pending`; `pending` is an `extraction_status` value (different field) | `server/service/ingest.go:233` |
+| `add()` ingest-404 → `/records` "OSS fallback" and its sticky `_ingest_available` state (`_try_ingest`) | `/ingest` is always mounted; a 404 now raises `AnhurQueryError` (404) and nothing is written via `/records` | `server/router.go:135` |
+| Session-record-limit text-prefix match + "read N from the sentence" regex (`SESSION_RECORD_LIMIT_TEXT_PREFIX`) | Code-only: `409` + `code == "session_record_limit"` | `server/handler/service_bridge.go:81-82,109-125`; producer `server/service/record_session_cap.go:178` |
+| Tenant-library-collision sentence match (`TENANT_LIBRARY_COLLISION_TEXT`) and the upload-400 branch | Code-only: `409` + `code == "tenant_library_collision"` | `server/handler/search_scope_request.go:35-43,109-118`; upload `server/handler/upload.go:133-135` |
+| Bare-array fallbacks: `list_sessions()` (`/sessions/stats`), `search_entities()` / `get_record_entities()`, `recent()`, `list_chat()` | Server always sends the envelope; a non-envelope answer now raises `AnhurError` (kind `server`) instead of being read as data | `server/handler/record_session.go:135-142` (stats), `:184` (chats), `:455` (recent); `server/handler/entity.go:254-257,561-565` |
+| `EntityModel.entity_type` read alias `type` | Server emits only `entity_type` | `server/handler/entity.go:89`, `:438-441` |
+| Fabricated ingest receipt row (`{"id": <id or 0>, "type": "episodic"}` when `records` was absent) | Server always sends `records` (`[]` when empty); a receipt never invents a row | `server/handler/ingest.go:35-38,76-87` |
+| `Memory._flatten_search_results` (private, unused) | Dead code found during the split | — |
+
+### Changed
+
+- **`AddResult.mode` values:** `"cloud"` → `"ingest"`, `"oss"` → `"records"`. The
+  value names the door that ran; `"oss"` used to come back for every pinned
+  `add()` against the cloud.
+- **`AnhurSessionRecordLimitError`:** `session_uuid: str`, `limit: int`,
+  `count: int` — required, never `None`. A body with the code but a missing or
+  mistyped field is the generic 409 (never an invented 0). Message layout
+  `Conflict (HTTP 409): <server sentence> (session record limit: session=…, limit=N, count=M)`,
+  byte-identical to TypeScript.
+- **`list_chat()`** returns `[]` for `{"records": null}` (it returned `None`).
+- **Internal split (house 300-line cut):** `anhurdb/client/__init__.py` (1375
+  lines) → `__init__.py` (construction/lifecycle) + `write_add.py`,
+  `record_create.py`, `record_links.py`, `record_listing.py`, `sessions.py`,
+  `impersonation.py`, `container_tag.py`, `write_receipt.py`. Public names and
+  signatures unchanged apart from the removals; `from anhurdb import Memory`
+  is unchanged.
+- **Kept on purpose (current contract, not legacy):** `tenant_shared_legacy`
+  scope and the `"legacy"` delete leg; the ADR-0031 `SERVER_TOO_OLD` /
+  "server ignored mode" guard; the ambiguous-upload 409 sentence match (server
+  sends no code); `records: null` → `[]`; `storage` disk → REST fallback;
+  `profile()` 404 → empty profile (also in TypeScript; not in the 4.0.0 set).
+
+### Migration
+
+| Before | After |
+|---|---|
+| `AnhurClient(url=..., api_key=...)` | `Memory(url=..., api_key=...)` — note the default URL is the cloud endpoint, pass `url="http://localhost:8080"` for a local server |
+| `await client.search_with_ast(f, session_uuid=s)` | `await mem.query(f, session_uuid=s)` |
+| `await client.mark_consolidated(ids)` | `await mem.batch_update_status(ids, "consolidated")` |
+| `await client.link_to_consolidated(ids, star)` / `update_consolidate_ids(ids, star)` | `await mem.link_consolidated(ids, star)` |
+| `CreateRequest(uuid=s, ...)` | `CreateRequest(session_id=s, ...)` |
+| `result.mode == "cloud"` / `== "oss"` | `result.mode == "ingest"` / `== "records"` |
+| `result.raft_index` | (removed; it was always 0) |
+| `MemoryStatus.PENDING` | (removed; filter on `extraction_status` if you meant the ingest pipeline) |
+| `except AnhurQueryError` around an `/ingest` 404 expecting a silent `/records` write | handle the 404 — fix the URL / proxy |
+| `exc.count is None` checks on `AnhurSessionRecordLimitError` | always an `int` |
+
+## Shipped in 4.0.0 — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 
@@ -12,14 +77,14 @@ Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
   zero-match diagnostic; it was silently ignored on parse.
 - **Deprecated:** `DeleteFileResult.raft_index`. The server never serialises it
   (`json:"-"`), so it was always 0. Kept so existing code works; removed in the
-  next major. Same decision in all three SDKs.
+  next major. Same decision in all three SDKs. **Done: removed in 4.0.0.**
 - **Behaviour change:** `tenant_id` must follow the server's identifier rule
   (`[A-Za-z0-9_-]`, at most 64; `""` = not set). `HTTPConnection`/`Memory`
   construction now raises `AnhurQueryError` (invalid_request) — previously only
   control characters were refused, with `ValueError`; `except ValueError` around
   a bad `tenant_id` no longer catches it.
 
-## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
+## Shipped in 4.0.0 — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
 
 Additive (keyword-only arguments; existing calls unchanged). Go, Python and
 TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
@@ -44,7 +109,8 @@ TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
 - **New typed refusal:** `AnhurTenantLibraryCollisionError`: HTTP 409
   `"code": "tenant_library_collision"` on every door, upload included (server
   4574c4d). Classified by the code first; the sentence is a fallback only for a
-  body without a code (older servers, incl. their 400 on upload).
+  body without a code (older servers, incl. their 400 on upload). **Superseded in
+  4.0.0: code-only on 409; the sentence and the 400 branch were removed.**
   Non-retryable; the session-record-limit 409 is checked first and stays
   distinct. An unreadable tenant registry (503, upload too) stays the plain
   retryable `unavailable` error.
@@ -56,7 +122,7 @@ TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
   `supersede` to `client/record_by_id.py`, `delete_file` to
   `client/record_delete_file.py`. Tests: `tests/test_record_scope.py`.
 
-## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
+## Shipped in 4.0.0 — typed session-record-limit refusal (2026-11-20, ADR-0033)
 
 Additive; no version number assigned yet (not published). Go, Python and
 TypeScript ship it together.
@@ -68,7 +134,8 @@ TypeScript ship it together.
   servers send only `{"error": "session has reached the maximum of N records"}`.
   Missing fields are null (never a fake zero); `limit` is read back from the
   server's own sentence when the field is absent. Any other 409 keeps the
-  generic error.
+  generic error. **Superseded in 4.0.0: code-only; `limit`/`count` are `int`,
+  `session_uuid` is `str`; the old-server text path was removed.**
 - **Non-retryable**, and that does not mean "drop it": keep the write and
   retry later; never write it into another session to dodge the cap.
 - **No gRPC path:** the SDK has no gRPC transport; the gRPC form of the

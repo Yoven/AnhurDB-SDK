@@ -14,6 +14,7 @@ the two vocabularies apart is why the wire key is ``entity_type`` and not
 from typing import Any, Dict, List, Optional
 
 from .connection import HTTPConnection
+from .exceptions import AnhurError
 from ..models.entity import (
     EntitiesPage,
     EntityGraphResult,
@@ -264,17 +265,28 @@ class EntityMixin:
 def _entities_from(data: Any) -> List[EntityModel]:
     """Decode the two UNPAGED entity envelopes into typed entities.
 
-    Junior Tip [why a bare list is still accepted]: the routes answer
-    ``{count, entities[]}`` today, but this SDK has always tolerated a bare
-    array because an older server generation sent one. Keeping the tolerance
-    costs one ``isinstance`` and removes a whole class of "works against prod,
-    explodes against the OSS build" report. What it must NOT do is silently
-    return ``[]`` for a shape it does not recognise — an unknown shape raises
-    through pydantic instead.
+    Both routes always answer ``{"entities": [...], "count": N}`` (search:
+    ``server/handler/entity.go:254-257``; by record: ``:561-565``, plus
+    ``record_id``).
+
+    Junior Tip [no bare-list branch since 4.0.0]: earlier SDKs also accepted a
+    naked array for a server generation that no longer exists. An answer that
+    is not the envelope now RAISES instead of being read as "no entities" —
+    an empty list is a legitimate answer, so it must never double as the
+    signal for "I did not understand the response".
     """
-    rows = data.get("entities", []) if isinstance(data, dict) else data
+    if not isinstance(data, dict):
+        raise AnhurError(
+            f"entity response is {type(data).__name__}, not the "
+            '{"entities": [...]} envelope',
+            kind=AnhurError.KIND_SERVER,
+        )
+    rows = data.get("entities") or []
     if not isinstance(rows, list):
-        return []
+        raise AnhurError(
+            f'entity response "entities" is {type(rows).__name__}, not a list',
+            kind=AnhurError.KIND_SERVER,
+        )
     return [EntityModel.model_validate(row) for row in rows]
 
 

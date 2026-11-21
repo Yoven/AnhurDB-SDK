@@ -21,7 +21,7 @@ import asyncio
 import os
 import sys
 
-from anhurdb import Memory, AnhurClient, MemoryType
+from anhurdb import Memory, MemoryType
 
 
 # Read the master key from the env — never hardcode it in a tracked test file.
@@ -54,7 +54,7 @@ async def test_score_type_persist():
         )
         check("add returned a record", bool(result.records), str(result))
         record_id = result.records[0].id
-        check("mode is oss/direct (records path)", result.mode == "oss",
+        check("mode is records (direct /records door)", result.mode == "records",
               f"mode={result.mode}")
 
         row = await _find_record(mem._client, record_id)
@@ -133,7 +133,7 @@ async def test_no_retry_transient_500():
     site = web.TCPSite(runner, "127.0.0.1", 8771)
     await site.start()
     try:
-        async with AnhurClient(api_key="k", url="http://127.0.0.1:8771") as client:
+        async with Memory(api_key="k", url="http://127.0.0.1:8771") as client:
             from anhurdb import AnhurError
 
             # A 5xx surfaces immediately — exactly ONE request, no replay.
