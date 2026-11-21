@@ -4,6 +4,8 @@
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 
+- **New:** `DeleteFileResult.purge?: boolean` — server's always-sent `purge`
+  flag (true = gone for good on the shared plane, false = restorable tombstone).
 - **New:** `DeleteFileResult.alternative_sessions?: FileSessionCandidate[]` and
   exported type `FileSessionCandidate` — the server's zero-match diagnostic.
 - **Deprecated:** `DeleteFileResult.raft_index` (`@deprecated`). The server never

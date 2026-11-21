@@ -4,6 +4,9 @@
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 
+- **New:** `DeleteFileResult.purge: bool` — server's always-sent `purge` flag
+  (True = gone for good on the shared plane, False = restorable tombstone); it
+  was silently ignored on parse.
 - **New:** `DeleteFileResult.alternative_sessions: List[FileSessionCandidate]`
   and model `FileSessionCandidate` (exported from `anhurdb`) — the server's
   zero-match diagnostic; it was silently ignored on parse.

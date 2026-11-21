@@ -56,6 +56,16 @@ describe("DeleteFileResult.alternative_sessions", () => {
     ]);
   });
 
+  for (const purge of [true, false]) {
+    it(`decodes purge=${purge}`, async () => {
+      const result = await deleteFileAgainst(
+        '{"session_uuid":"s_shared","ingest_key_prefix":"ef9976f1ef5d5176",' +
+          `"matched_count":2,"deleted_count":2,"deleted_ids":[7,8],"dry_run":false,"purge":${purge}}`,
+      );
+      assert.equal(result?.purge, purge);
+    });
+  }
+
   it("stays absent when the server omits it", async () => {
     const result = await deleteFileAgainst(
       '{"session_uuid":"chat-42","ingest_key_prefix":"ef9976f1ef5d5176",' +

@@ -4,6 +4,9 @@
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 
+- **New:** `DeleteFileResult.Purge bool` — server's always-sent `purge` flag
+  (true = gone for good on the shared plane, false = restorable tombstone); it
+  was silently dropped on decode.
 - **New:** `DeleteFileResult.AlternativeSessions []FileSessionCandidate` and type
   `client.FileSessionCandidate{SessionUUID, MatchedCount, RootChecksum, RootFilename}`
   — the server's zero-match diagnostic (sessions of the same store that hold the

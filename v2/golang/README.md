@@ -271,7 +271,8 @@ retrying the same call is safe (idempotent).
 When nothing matched (`MatchedCount == 0`), `DeleteFileResult.AlternativeSessions`
 lists the sessions of the same store that DO hold that prefix
 (`FileSessionCandidate{SessionUUID, MatchedCount, RootChecksum, RootFilename}`) —
-check `RootChecksum` and re-issue `DeleteFile` with the right session. `RaftIndex`
+check `RootChecksum` and re-issue `DeleteFile` with the right session. `Purge` tells
+whether the delete is final (true, shared plane) or a restorable tombstone. `RaftIndex`
 is deprecated and always 0 (the server never sends it).
 
 ### AST Query (Query Builder)

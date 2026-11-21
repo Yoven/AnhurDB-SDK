@@ -31,6 +31,12 @@ export interface DeleteFileResult {
   deleted_ids?: number[];
   dry_run: boolean;
   /**
+   * `true` = gone for good (shared plane); `false` = restorable tombstone (chat
+   * plane). Server: `json:"purge"`, always sent (`server/service/record_delete_file.go`).
+   * Optional only so a pre-`purge` server still type-checks; treat absent as unknown.
+   */
+  purge?: boolean;
+  /**
    * @deprecated Never sent: the server keeps the consensus log index internal
    * (`json:"-"` at `server/service/record_delete_file.go:42`), so this is always
    * `undefined`. Kept only so existing code that reads it still compiles;

@@ -321,7 +321,8 @@ When nothing matched (`matched_count === 0`), `result.alternative_sessions`
 lists the sessions of the same store that DO hold that prefix
 (`FileSessionCandidate { session_uuid, matched_count, root_checksum?, root_filename? }`)
 — check `root_checksum` and re-issue `deleteFile` with the right session.
-`raft_index` is deprecated and always absent (the server never sends it).
+`purge` tells whether the delete is final (true, shared plane) or a restorable
+tombstone. `raft_index` is deprecated and always absent (the server never sends it).
 
 ### Query Builder (AST)
 

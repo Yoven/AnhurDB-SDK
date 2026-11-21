@@ -184,6 +184,10 @@ class DeleteFileResult(BaseModel):
     deleted_count: int = Field(default=0)
     deleted_ids: List[int] = Field(default_factory=list)
     dry_run: bool = Field(default=False)
+    # True = gone for good (shared plane); False = restorable tombstone (chat
+    # plane). Server: ``json:"purge"``, always sent — the caller must know
+    # whether the delete can be undone.
+    purge: bool = Field(default=False)
     # Deprecated: never sent by the server (json:"-"), always 0.
     raft_index: int = Field(default=0)
     alternative_sessions: List["FileSessionCandidate"] = Field(default_factory=list)

@@ -51,6 +51,22 @@ func TestDeleteFileResultDecodesAlternativeSessions(t *testing.T) {
 	}
 }
 
+// TestDeleteFileResultDecodesPurge proves both values of the always-sent purge
+// flag survive decoding (real shape: service.DeleteFileResult).
+func TestDeleteFileResultDecodesPurge(t *testing.T) {
+	for _, expectedPurge := range []bool{true, false} {
+		purgeJSON := `{"session_uuid":"s_shared","ingest_key_prefix":"ef9976f1ef5d5176","matched_count":2,` +
+			`"deleted_count":2,"deleted_ids":[7,8],"dry_run":false,"purge":` + map[bool]string{true: "true", false: "false"}[expectedPurge] + `}`
+		var deleteResult DeleteFileResult
+		if decodeError := json.Unmarshal([]byte(purgeJSON), &deleteResult); decodeError != nil {
+			t.Fatalf("decode: %v", decodeError)
+		}
+		if deleteResult.Purge != expectedPurge {
+			t.Errorf("expected purge %v, got %v", expectedPurge, deleteResult.Purge)
+		}
+	}
+}
+
 // TestDeleteFileResultWithoutAlternativesStaysNil proves absence (any match > 0,
 // or a store that never had the file) decodes to nil, not to an empty sentinel.
 func TestDeleteFileResultWithoutAlternativesStaysNil(t *testing.T) {

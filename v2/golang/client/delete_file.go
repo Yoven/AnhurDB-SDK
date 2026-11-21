@@ -36,6 +36,14 @@ type DeleteFileResult struct {
 	DeletedCount    int     `json:"deleted_count"`
 	DeletedIDs      []int64 `json:"deleted_ids,omitempty"`
 	DryRun          bool    `json:"dry_run"`
+	// Purge reports HOW the records went: true = gone for good (shared plane),
+	// false = restorable tombstone (chat plane). Server truth: `json:"purge"`,
+	// always sent (server/service/record_delete_file.go).
+	//
+	// Junior Tip [why the caller needs it]: "deleted 511" means two very
+	// different things — undoable or not. A UI that cannot tell them apart either
+	// promises an undo that does not exist or hides one that does.
+	Purge bool `json:"purge"`
 	// Deprecated: RaftIndex is never sent. The server keeps the consensus log
 	// index internal (json:"-" in service.DeleteFileResult,
 	// server/service/record_delete_file.go:42, owner decision 2026-08-11), so this

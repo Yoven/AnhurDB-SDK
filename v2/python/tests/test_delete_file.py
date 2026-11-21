@@ -228,3 +228,15 @@ def test_delete_file_result_without_alternatives_is_empty_list():
         '"matched_count":511,"deleted_count":511,"dry_run":false,"purge":false}'
     )
     assert result.alternative_sessions == []
+
+
+@pytest.mark.parametrize("purge", [True, False])
+def test_delete_file_result_parses_purge_offline(purge):
+    from anhurdb import DeleteFileResult
+
+    result = DeleteFileResult.model_validate_json(
+        '{"session_uuid":"s_shared","ingest_key_prefix":"ef9976f1ef5d5176",'
+        '"matched_count":2,"deleted_count":2,"deleted_ids":[7,8],"dry_run":false,'
+        f'"purge":{"true" if purge else "false"}}}'
+    )
+    assert result.purge is purge
