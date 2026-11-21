@@ -60,7 +60,7 @@ describe("Memory.deleteFile (wire contract)", () => {
         deleted_count: 511,
         deleted_ids: [1, 2, 3],
         dry_run: false,
-        raft_index: 123,
+        purge: false,
       },
       200,
       (mem) => mem.deleteFile("chat-42", "ef9976f1ef5d5176"),
@@ -81,7 +81,8 @@ describe("Memory.deleteFile (wire contract)", () => {
     assert.equal(result?.matched_count, 511);
     assert.equal(result?.deleted_count, 511);
     assert.deepEqual(result?.deleted_ids, [1, 2, 3]);
-    assert.equal(result?.raft_index, 123);
+    // raft_index is json:"-" on the server; the deprecated field stays absent.
+    assert.equal(result?.raft_index, undefined);
     assert.equal(result?.dry_run, false);
   });
 

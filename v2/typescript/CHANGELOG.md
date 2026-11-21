@@ -1,5 +1,21 @@
 # TypeScript SDK Changelog
 
+## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
+
+Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
+
+- **New:** `DeleteFileResult.purge?: boolean` — server's always-sent `purge`
+  flag (true = gone for good on the shared plane, false = restorable tombstone).
+- **New:** `DeleteFileResult.alternative_sessions?: FileSessionCandidate[]` and
+  exported type `FileSessionCandidate` — the server's zero-match diagnostic.
+- **Deprecated:** `DeleteFileResult.raft_index` (`@deprecated`). The server never
+  serialises it (`json:"-"`), so it was always `undefined`. Kept so existing code
+  compiles; removed in the next major. Same decision in all three SDKs.
+- **Behaviour change:** `tenantId` must follow the server's identifier rule
+  (`[A-Za-z0-9_-]`, at most 64; `""` = not set). The constructor now throws
+  `AnhurQueryError` (invalid_request) — previously a plain `Error`, and only for
+  control characters.
+
 ## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
 
 Additive (optional trailing `options`; existing calls unchanged). Go, Python and

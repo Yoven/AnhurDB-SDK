@@ -38,7 +38,7 @@ func newDeleteFileServer(t *testing.T, responseBody string, captured *capturedDe
 // session, ingest_key_prefix e dry_run=false na query.
 func TestDeleteFileWireContract(t *testing.T) {
 	captured := &capturedDeleteRequest{}
-	server := newDeleteFileServer(t, `{"session_uuid":"chat-42","ingest_key_prefix":"ef9976f1ef5d5176","matched_count":511,"deleted_count":511,"deleted_ids":[1,2,3],"dry_run":false,"raft_index":123}`, captured)
+	server := newDeleteFileServer(t, `{"session_uuid":"chat-42","ingest_key_prefix":"ef9976f1ef5d5176","matched_count":511,"deleted_count":511,"deleted_ids":[1,2,3],"dry_run":false,"purge":false}`, captured)
 	defer server.Close()
 
 	mem := NewMemory("k", WithURL(server.URL))
@@ -71,8 +71,9 @@ func TestDeleteFileWireContract(t *testing.T) {
 	if len(deleteResult.DeletedIDs) != 3 {
 		t.Errorf("expected 3 deleted ids, got %d", len(deleteResult.DeletedIDs))
 	}
-	if deleteResult.RaftIndex != 123 {
-		t.Errorf("expected raft_index 123, got %d", deleteResult.RaftIndex)
+	// raft_index is json:"-" on the server: the deprecated field stays zero.
+	if deleteResult.RaftIndex != 0 {
+		t.Errorf("raft_index is never sent by the server, got %d", deleteResult.RaftIndex)
 	}
 	if deleteResult.DryRun {
 		t.Error("dry_run must decode as false")
@@ -80,7 +81,7 @@ func TestDeleteFileWireContract(t *testing.T) {
 }
 
 // TestDeleteFileDryRunSendsFlag prova que a rede de segurança chega ao servidor
-// e que o envelope sem deleted_ids/raft_index (omitempty) decodifica limpo.
+// e que o envelope sem deleted_ids (omitempty) decodifica limpo.
 func TestDeleteFileDryRunSendsFlag(t *testing.T) {
 	captured := &capturedDeleteRequest{}
 	server := newDeleteFileServer(t, `{"session_uuid":"chat-42","ingest_key_prefix":"ef9976f1ef5d5176","matched_count":511,"deleted_count":0,"dry_run":true}`, captured)

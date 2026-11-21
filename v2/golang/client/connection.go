@@ -5,7 +5,8 @@ Security hardening:
   - X-API-Key header for auth (matches server middleware).
   - Response body capped at 100 MB (prevents memory exhaustion DoS).
   - Redirect following disabled (prevents credential leakage — CVE-2026-34518 class).
-  - Header injection protection: tenant_id validated against CRLF.
+  - Tenant ID validated with the server's identifier rule (tenant_header.go);
+    an invalid one fails every call before any request is sent.
   - Error messages never include the full API key.
   - Default 30s timeout prevents indefinite hangs (OWASP API4).
 */
@@ -93,11 +94,24 @@ func NewConnection(baseURL, apiKey string, timeout time.Duration) *HTTPConnectio
 func (c *HTTPConnection) setAuthHeaders(req *http.Request) {
 	req.Header.Set("X-API-Key", c.APIKey)
 	req.Header.Set("User-Agent", UserAgent)
+	// TenantID was validated by newRequest before this runs (see tenant_header.go).
 	if c.TenantID != "" {
-		if err := validateHeaderValue(c.TenantID, "TenantID"); err == nil {
-			req.Header.Set("X-Tenant-ID", c.TenantID)
-		}
+		req.Header.Set("X-Tenant-ID", c.TenantID)
 	}
+}
+
+// newRequest builds a request AFTER refusing an invalid TenantID.
+//
+// Junior Tip [why every verb goes through here]: TenantID is an exported field,
+// so it can change after NewConnection/NewMemory. Checking at request time is the
+// only place that sees the value actually sent. NewMemory cannot return an error
+// without breaking its signature, so the refusal surfaces on the first call — still
+// before any byte leaves the process.
+func (c *HTTPConnection) newRequest(ctx context.Context, method, fullURL string, body io.Reader) (*http.Request, error) {
+	if tenantError := validateTenantIDHeader(c.TenantID); tenantError != nil {
+		return nil, tenantError
+	}
+	return http.NewRequestWithContext(ctx, method, fullURL, body)
 }
 
 // setHeaders applies auth and JSON content-type headers to every request.
@@ -116,9 +130,9 @@ func (c *HTTPConnection) Get(ctx context.Context, path string, params url.Values
 		fullURL += "?" + params.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating GET request: %w", err)
+		return nil, wrapRequestError("creating GET request", err)
 	}
 	c.setHeaders(req)
 
@@ -162,9 +176,9 @@ func (c *HTTPConnection) PostMultipart(
 		return nil, fmt.Errorf("closing multipart writer: %w", closeErr)
 	}
 
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, &bodyBuf)
+	req, reqErr := c.newRequest(ctx, http.MethodPost, c.BaseURL+path, &bodyBuf)
 	if reqErr != nil {
-		return nil, fmt.Errorf("creating multipart POST: %w", reqErr)
+		return nil, wrapRequestError("creating multipart POST", reqErr)
 	}
 	c.setAuthHeaders(req)
 	req.Header.Set("Content-Type", formWriter.FormDataContentType())
@@ -193,9 +207,9 @@ func (c *HTTPConnection) post(ctx context.Context, path string, body interface{}
 		reader = bytes.NewReader(jsonBytes)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, reader)
+	req, err := c.newRequest(ctx, http.MethodPost, c.BaseURL+path, reader)
 	if err != nil {
-		return nil, fmt.Errorf("creating POST request: %w", err)
+		return nil, wrapRequestError("creating POST request", err)
 	}
 	c.setHeaders(req)
 
@@ -218,9 +232,9 @@ func (c *HTTPConnection) Patch(ctx context.Context, path string, body interface{
 		reader = bytes.NewReader(jsonBytes)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+path, reader)
+	req, err := c.newRequest(ctx, http.MethodPatch, c.BaseURL+path, reader)
 	if err != nil {
-		return nil, fmt.Errorf("creating PATCH request: %w", err)
+		return nil, wrapRequestError("creating PATCH request", err)
 	}
 	// PATCH is a write.
 	c.setHeaders(req)
@@ -257,9 +271,9 @@ func (c *HTTPConnection) DeleteWithParams(ctx context.Context, path string, para
 		fullURL += "?" + params.Encode()
 	}
 
-	req, requestErr := http.NewRequestWithContext(ctx, http.MethodDelete, fullURL, nil)
+	req, requestErr := c.newRequest(ctx, http.MethodDelete, fullURL, nil)
 	if requestErr != nil {
-		return nil, fmt.Errorf("creating DELETE request: %w", requestErr)
+		return nil, wrapRequestError("creating DELETE request", requestErr)
 	}
 	// DELETE is a write.
 	c.setHeaders(req)

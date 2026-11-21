@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from anhurdb.client.connection import HTTPConnection
 from anhurdb.client import Memory, AnhurClient
-from anhurdb.client.exceptions import AnhurError, AnhurAuthError
+from anhurdb.client.exceptions import AnhurError, AnhurAuthError, AnhurQueryError
 
 
 class TestHTTPConnection(unittest.TestCase):
@@ -50,8 +50,8 @@ class TestHTTPConnection(unittest.TestCase):
         self.assertEqual(conn.mode, "mcp")
 
     def test_rejects_crlf_in_tenant_id(self):
-        """Header injection protection: CRLF in tenant_id must raise."""
-        with self.assertRaises(ValueError):
+        """Header injection protection: CRLF in tenant_id must raise (typed)."""
+        with self.assertRaises(AnhurQueryError):
             HTTPConnection("http://localhost:8080", "key", tenant_id="bad\r\nInjected: true")
 
     def test_rejects_crlf_in_api_key(self):
@@ -60,7 +60,7 @@ class TestHTTPConnection(unittest.TestCase):
             HTTPConnection("http://localhost:8080", "bad\nkey")
 
     def test_rejects_null_byte_in_tenant_id(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AnhurQueryError):
             HTTPConnection("http://localhost:8080", "key", tenant_id="bad\x00id")
 
 

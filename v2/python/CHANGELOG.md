@@ -1,5 +1,24 @@
 # Python SDK Changelog
 
+## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
+
+Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
+
+- **New:** `DeleteFileResult.purge: bool` — server's always-sent `purge` flag
+  (True = gone for good on the shared plane, False = restorable tombstone); it
+  was silently ignored on parse.
+- **New:** `DeleteFileResult.alternative_sessions: List[FileSessionCandidate]`
+  and model `FileSessionCandidate` (exported from `anhurdb`) — the server's
+  zero-match diagnostic; it was silently ignored on parse.
+- **Deprecated:** `DeleteFileResult.raft_index`. The server never serialises it
+  (`json:"-"`), so it was always 0. Kept so existing code works; removed in the
+  next major. Same decision in all three SDKs.
+- **Behaviour change:** `tenant_id` must follow the server's identifier rule
+  (`[A-Za-z0-9_-]`, at most 64; `""` = not set). `HTTPConnection`/`Memory`
+  construction now raises `AnhurQueryError` (invalid_request) — previously only
+  control characters were refused, with `ValueError`; `except ValueError` around
+  a bad `tenant_id` no longer catches it.
+
 ## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
 
 Additive (keyword-only arguments; existing calls unchanged). Go, Python and

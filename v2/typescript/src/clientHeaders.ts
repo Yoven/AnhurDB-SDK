@@ -21,6 +21,7 @@
  * it — the check has to live where the header is built.
  */
 
+import { AnhurQueryError } from "./errors.js";
 import { USER_AGENT } from "./version.js";
 
 /**
@@ -48,6 +49,45 @@ export function validateHeaderValue(value: string, name: string): void {
 }
 
 /**
+ * The server's identifier rule (AnhurDB `database.validateIdentifierCharset` +
+ * `database.MaxIdentifierLength`): letters, digits, `-` and `_`, at most 64.
+ */
+const TENANT_ID_CHARSET = /^[A-Za-z0-9_-]*$/;
+const MAX_TENANT_ID_LENGTH = 64;
+
+/**
+ * Refuse a tenant id the server would silently rewrite. Empty = not set.
+ *
+ * Charset is checked before length so the "(got N)" count is always an ASCII
+ * count — the message is a pinned cross-SDK string (Go and Python raise it
+ * byte-for-byte).
+ *
+ * Junior Tip [reject, never repair]: the server's master-key path SANITIZES
+ * `X-Tenant-ID` (strips every other character) and falls back to the `default`
+ * tenant when nothing is left, so `"acme/prod"` would silently act on tenant
+ * `acmeprod` — another store, no error anywhere. Refusing at construction is
+ * the only point where the mistake is cheap.
+ *
+ * @throws {AnhurQueryError} `invalid_request` (400-classified, not retryable).
+ */
+export function validateTenantId(tenantId: string): void {
+  if (!tenantId) return;
+  if (!TENANT_ID_CHARSET.test(tenantId)) {
+    throw new AnhurQueryError(
+      "INVALID_PARAM: tenant_id contains an invalid character — " +
+        "allowed: letters, digits, '-' and '_'",
+      400,
+    );
+  }
+  if (tenantId.length > MAX_TENANT_ID_LENGTH) {
+    throw new AnhurQueryError(
+      `INVALID_PARAM: tenant_id exceeds ${MAX_TENANT_ID_LENGTH} characters (got ${tenantId.length})`,
+      400,
+    );
+  }
+}
+
+/**
  * Build the header map shared by every request this client makes.
  *
  * `Content-Type` is deliberately NOT set here: FormData uploads need the
@@ -59,12 +99,13 @@ export function validateHeaderValue(value: string, name: string): void {
  * `package.json`. One source of truth, imported — never a copy.
  *
  * @param apiKey   - Sent as `X-API-Key`; validated against header injection.
- * @param tenantId - Optional `X-Tenant-ID`; validated the same way.
+ * @param tenantId - Optional `X-Tenant-ID`; validated by `validateTenantId`
+ *                   (the server's identifier rule, which also excludes CRLF).
  * @returns A fresh map, so the caller can mutate it without affecting anyone else.
  */
 export function buildRequestHeaders(apiKey: string, tenantId?: string): Record<string, string> {
   validateHeaderValue(apiKey, "apiKey");
-  if (tenantId) validateHeaderValue(tenantId, "tenantId");
+  if (tenantId) validateTenantId(tenantId);
 
   const headers: Record<string, string> = {
     "X-API-Key": apiKey,

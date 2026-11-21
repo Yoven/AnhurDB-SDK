@@ -26,9 +26,9 @@ import (
 // transformaria um prefixo errado em sucesso silencioso — e perda silenciosa é
 // a falha número um deste projeto.
 //
-// DeletedIDs e RaftIndex chegam com `omitempty` do servidor: em dry-run, ou
-// quando nada casou, as chaves simplesmente não existem no JSON. Ausência aqui
-// é informação legítima, não erro de decodificação.
+// DeletedIDs chega com `omitempty` do servidor: em dry-run, ou quando nada
+// casou, a chave simplesmente não existe no JSON. Ausência aqui é informação
+// legítima, não erro de decodificação.
 type DeleteFileResult struct {
 	SessionUUID     string  `json:"session_uuid"`
 	IngestKeyPrefix string  `json:"ingest_key_prefix"`
@@ -36,11 +36,48 @@ type DeleteFileResult struct {
 	DeletedCount    int     `json:"deleted_count"`
 	DeletedIDs      []int64 `json:"deleted_ids,omitempty"`
 	DryRun          bool    `json:"dry_run"`
-	RaftIndex       int64   `json:"raft_index,omitempty"`
+	// Purge reports HOW the records went: true = gone for good (shared plane),
+	// false = restorable tombstone (chat plane). Server truth: `json:"purge"`,
+	// always sent (server/service/record_delete_file.go).
+	//
+	// Junior Tip [why the caller needs it]: "deleted 511" means two very
+	// different things — undoable or not. A UI that cannot tell them apart either
+	// promises an undo that does not exist or hides one that does.
+	Purge bool `json:"purge"`
+	// Deprecated: RaftIndex is never sent. The server keeps the consensus log
+	// index internal (json:"-" in service.DeleteFileResult,
+	// server/service/record_delete_file.go:42, owner decision 2026-08-11), so this
+	// field is ALWAYS 0. Kept only so existing code that reads it still compiles;
+	// it will be removed in the next major version. Do not branch on it.
+	RaftIndex int64 `json:"raft_index,omitempty"`
+	// AlternativeSessions is filled ONLY when MatchedCount == 0: the sessions of
+	// this SAME store that do hold records with the requested ingest_key prefix.
+	// Server truth: database.FileSessionCandidate
+	// (server/database/file_record_sessions.go:38-48), `omitempty`.
+	//
+	// Junior Tip [zero matches has two causes — this field tells them apart]: an
+	// empty list means the prefix is not in this store at all (wrong checksum); a
+	// non-empty list means the SESSION was wrong and names the right one. The
+	// delete stays strict — re-issue DeleteFile with a candidate's SessionUUID;
+	// never pick one automatically without checking RootChecksum/RootFilename,
+	// because a 64-bit prefix is weaker proof than the full sha256.
+	AlternativeSessions []FileSessionCandidate `json:"alternative_sessions,omitempty"`
 	// Legs is present only for a tenant-library delete: one outcome per library
 	// store (generation "primary" = {c}_{t}_lib, "legacy" = pre-migration rows in
 	// {c}_{t}). Absent for every other plane.
 	Legs []DeleteFileLeg `json:"legs,omitempty"`
+}
+
+// FileSessionCandidate is one session of the queried store that holds records of
+// the file named by the ingest_key prefix (see DeleteFileResult.AlternativeSessions).
+// RootChecksum is the FULL sha256 the file_ingestor stores on the root record and
+// RootFilename its original name; both are empty when the root no longer exists
+// or predates the field.
+type FileSessionCandidate struct {
+	SessionUUID  string `json:"session_uuid"`
+	MatchedCount int    `json:"matched_count"`
+	RootChecksum string `json:"root_checksum,omitempty"`
+	RootFilename string `json:"root_filename,omitempty"`
 }
 
 // DeleteFileLeg is one library store's part of a delete-by-file answer.

@@ -6,8 +6,8 @@ import (
 	"github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
 )
 
-// TestHeaderInjectionTenantID validates that CRLF injection in
-// TenantID is caught at request time (setHeaders validates it).
+// TestHeaderInjectionTenantID: a clean tenant constructs normally. CRLF and every
+// other invalid tenant are refused before any request (tenant_header_test.go).
 func TestHeaderInjectionTenantID(t *testing.T) {
 	mem := client.NewMemory("valid-key", client.WithTenantID("clean-id"))
 

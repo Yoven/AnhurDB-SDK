@@ -85,7 +85,7 @@ mem := anhurdb.NewMemory("key",
 |--------|-------------|
 | `WithURL(url)` | Server URL (default: `https://anhurdb.yoven.ai`) |
 | `WithUserID(id)` | Explicit container tag (default: derived from API key hash) |
-| `WithTenantID(id)` | Multi-tenant `X-Tenant-ID` header |
+| `WithTenantID(id)` | Multi-tenant `X-Tenant-ID` header. Must be `[A-Za-z0-9_-]`, ≤ 64 chars; otherwise every call returns an invalid_request `*APIError` and nothing is sent |
 | `WithTimeout(d)` | HTTP client timeout (default: 30s) |
 
 ## API Reference
@@ -267,6 +267,13 @@ row outside the named plane answers `ErrNotFound`, exactly like a missing id;
 `DeleteFileResult.Legs`) or `RecordScopeClientShared`. If one library store fails
 the call returns `*client.LibraryDeletePartialError` with every leg's outcome;
 retrying the same call is safe (idempotent).
+
+When nothing matched (`MatchedCount == 0`), `DeleteFileResult.AlternativeSessions`
+lists the sessions of the same store that DO hold that prefix
+(`FileSessionCandidate{SessionUUID, MatchedCount, RootChecksum, RootFilename}`) —
+check `RootChecksum` and re-issue `DeleteFile` with the right session. `Purge` tells
+whether the delete is final (true, shared plane) or a restorable tombstone. `RaftIndex`
+is deprecated and always 0 (the server never sends it).
 
 ### AST Query (Query Builder)
 

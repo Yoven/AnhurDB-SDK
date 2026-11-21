@@ -158,9 +158,22 @@ class DeleteFileResult(BaseModel):
     transformaria um prefixo errado em sucesso silencioso — e perda silenciosa é
     a falha número um deste projeto.
 
-    ``deleted_ids`` e ``raft_index`` chegam com ``omitempty`` do servidor: em
-    dry-run, ou quando nada casou, as chaves não existem no JSON. Ausência aqui
-    é informação legítima, não erro de parse — por isso ambos têm default.
+    ``deleted_ids`` chega com ``omitempty`` do servidor: em dry-run, ou quando
+    nada casou, a chave não existe no JSON. Ausência aqui é informação
+    legítima, não erro de parse — por isso tem default.
+
+    ``alternative_sessions`` is filled ONLY when ``matched_count == 0``: the
+    sessions of this SAME store that do hold records with the requested prefix
+    (server ``database.FileSessionCandidate``,
+    ``server/database/file_record_sessions.go:38-48``). Empty list = the prefix is
+    not in this store at all; non-empty = the session was wrong — re-issue the
+    strict delete with a candidate's ``session_uuid`` after checking its
+    ``root_checksum``/``root_filename`` (a 64-bit prefix is weaker proof than the
+    full sha256).
+
+    ``raft_index`` is DEPRECATED and always 0: the server never serialises it
+    (``json:"-"`` at ``server/service/record_delete_file.go:42``). Kept only so
+    existing code that reads it keeps working; removed in the next major.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -171,10 +184,33 @@ class DeleteFileResult(BaseModel):
     deleted_count: int = Field(default=0)
     deleted_ids: List[int] = Field(default_factory=list)
     dry_run: bool = Field(default=False)
+    # True = gone for good (shared plane); False = restorable tombstone (chat
+    # plane). Server: ``json:"purge"``, always sent — the caller must know
+    # whether the delete can be undone.
+    purge: bool = Field(default=False)
+    # Deprecated: never sent by the server (json:"-"), always 0.
     raft_index: int = Field(default=0)
+    alternative_sessions: List["FileSessionCandidate"] = Field(default_factory=list)
     # Present only for a tenant-library delete (one entry per library store,
     # generation "primary" = {c}_{t}_lib, "legacy" = pre-migration rows).
     legs: List["DeleteFileLeg"] = Field(default_factory=list)
+
+
+class FileSessionCandidate(BaseModel):
+    """One session of the queried store holding records of the file named by the
+    ingest_key prefix (see ``DeleteFileResult.alternative_sessions``).
+
+    ``root_checksum`` is the FULL sha256 the file_ingestor stores on the root
+    record and ``root_filename`` its original name; both are ``""`` when the root
+    no longer exists or predates the field (``omitempty`` on the server).
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    session_uuid: str = Field(default="")
+    matched_count: int = Field(default=0)
+    root_checksum: str = Field(default="")
+    root_filename: str = Field(default="")
 
 
 class DeleteFileLeg(BaseModel):

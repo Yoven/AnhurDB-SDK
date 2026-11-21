@@ -371,7 +371,12 @@ export interface BatchUpdateResult {
 // ── Delete file (whole ingested document) ────────────────────
 // Moved to `deleteFileTypes.ts` (house 300-line cut, 2026-11-20, when the L2
 // library added `legs` and `scope`); re-exported here so no import path changed.
-export type { DeleteFileLeg, DeleteFileOptions, DeleteFileResult } from "./deleteFileTypes.js";
+export type {
+  DeleteFileLeg,
+  DeleteFileOptions,
+  DeleteFileResult,
+  FileSessionCandidate,
+} from "./deleteFileTypes.js";
 
 // ── Internal / wire-level types ──────────────────────────────
 
