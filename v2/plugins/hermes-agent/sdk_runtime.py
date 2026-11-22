@@ -43,7 +43,7 @@ _SESSION_WILDCARD = "*"
 # tests/test_install_hint.py falha se as duas divergirem. Ao publicar um SDK
 # novo, troque a versao AQUI e la.
 SDK_WHEEL_URL = (
-    "https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl"
+    "https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.1.0/anhurdb-4.1.0-py3-none-any.whl"
 )
 
 
@@ -159,30 +159,18 @@ class AnhurRuntime:
         # user_id IS the container tag: it scopes profile aggregation and is
         # stamped into each record's metadata. It is NOT a session and is never
         # used as one — every write below passes an explicit session_id.
+        # Junior Tip [timeout pelo construtor, desde o SDK 3.0.0]: ``Memory(timeout=)``
+        # vira o ``aiohttp.ClientTimeout(total=...)`` da conexão — o prazo do
+        # SOCKET. Antes isto escrevia ``client._connection._timeout`` (atributo
+        # privado, best-effort); o kwarg é contrato público e falha alto se
+        # sumir. O prazo do lado do chamador (``_run``, timeout + 5s) continua
+        # sendo o que protege o turno se o socket travar mesmo assim.
         client = Memory(
             api_key=self._config.api_key,
             url=self._config.url,
             user_id=self._config.container,
+            timeout=self._config.http_timeout_seconds,
         )
-        # Junior Tip [o SDK ainda não expõe timeout no construtor de Memory]:
-        # ``HTTPConnection`` aceita ``timeout``, mas ``Memory.__init__`` não o
-        # repassa (SDK v2.0.0), então o único jeito de honrar
-        # ANHUR_HTTP_TIMEOUT no socket é ajustar a conexão ANTES do
-        # ``connect()`` — é ali que a ``ClientSession`` nasce com esse valor.
-        # É acesso a atributo privado, logo é BEST-EFFORT e falha para o
-        # default do SDK sem derrubar nada: o prazo do lado do chamador
-        # (``_run``) continua protegendo o turno de qualquer forma. No dia em
-        # que o SDK aceitar ``timeout=``, troque isto por um kwarg.
-        try:
-            client._connection._timeout = _client_timeout(
-                self._config.http_timeout_seconds
-            )
-        except Exception as timeout_error:  # noqa: BLE001
-            logger.warning(
-                "anhurdb-memory: could not apply ANHUR_HTTP_TIMEOUT to the SDK "
-                "connection (%s) — falling back to the SDK default",
-                timeout_error,
-            )
         await client.connect()
         self._client = client
         return client
@@ -349,13 +337,6 @@ class AnhurRuntime:
         if hasattr(profile, "model_dump"):
             return profile.model_dump()
         return profile
-
-
-def _client_timeout(total_seconds: float) -> Any:
-    """Build the aiohttp timeout object the SDK connection expects."""
-    import aiohttp  # noqa: PLC0415 (lazy on purpose)
-
-    return aiohttp.ClientTimeout(total=total_seconds)
 
 
 def _strip_secret(message: str, secret: str) -> str:
