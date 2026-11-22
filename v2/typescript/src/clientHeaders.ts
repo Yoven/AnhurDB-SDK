@@ -50,10 +50,11 @@ export function validateHeaderValue(value: string, name: string): void {
 
 /**
  * The server's identifier rule (AnhurDB `database.validateIdentifierCharset` +
- * `database.MaxIdentifierLength`): letters, digits, `-` and `_`, at most 64.
+ * `database.MaxIdentifierLength`): letters, digits, `-` and `_`, at most 133 (a composite store name).
  */
 const TENANT_ID_CHARSET = /^[A-Za-z0-9_-]*$/;
-const MAX_TENANT_ID_LENGTH = 64;
+// Composite store "<clientID>_<tenantID>[_lib]": 64 + 1 + 64 + 4 (incident 2026-11-22).
+const MAX_TENANT_ID_LENGTH = 133;
 
 /**
  * Refuse a tenant id the server would silently rewrite. Empty = not set.

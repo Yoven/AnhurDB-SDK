@@ -46,9 +46,10 @@ _HEADER_SAFE = re.compile(r"^[\x20-\x7E]+$")
 
 
 # The server's identifier rule (AnhurDB database.validateIdentifierCharset and
-# database.MaxIdentifierLength): letters, digits, '-' and '_', at most 64.
+# database.MaxIdentifierLength): letters, digits, '-' and '_', at most 133
+# (a composite store "<clientID>_<tenantID>[_lib]", each part at most 64).
 _TENANT_ID_CHARSET = re.compile(r"^[A-Za-z0-9_-]*$")
-MAX_TENANT_ID_LENGTH = 64
+MAX_TENANT_ID_LENGTH = 133  # composite store: 64 + "_" + 64 + "_lib" (incident 2026-11-22)
 
 
 def validate_tenant_id(tenant_id: str) -> None:

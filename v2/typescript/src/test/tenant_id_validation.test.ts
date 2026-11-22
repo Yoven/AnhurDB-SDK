@@ -2,7 +2,7 @@
  * X-Tenant-ID is refused at construction with the SDK's validation error.
  *
  * Rule = the server's identifier rule (AnhurDB `database.validateIdentifierCharset`
- * + `MaxIdentifierLength`): letters, digits, `-` and `_`, at most 64. Messages are
+ * + `MaxIdentifierLength`): letters, digits, `-` and `_`, at most 133. Messages are
  * pinned byte-for-byte with Go (`client/tenant_header_test.go`) and Python
  * (`tests/test_tenant_id_validation.py`).
  */
@@ -27,7 +27,7 @@ function assertRefused(run: () => unknown, message: string): void {
 }
 
 describe("tenantId validation", () => {
-  for (const tenantId of ["1a99ce02-e9b6-442a-8c10-d67b9f3446b8_prod", "a".repeat(64)]) {
+  for (const tenantId of ["1a99ce02-e9b6-442a-8c10-d67b9f3446b8_prod", "a".repeat(133), "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_kaveo-veterinaria-vacinacao-4d7d5ed7_lib"]) {
     it(`accepts ${tenantId.slice(0, 20)}…`, () => {
       assert.equal(buildRequestHeaders("key", tenantId)["X-Tenant-ID"], tenantId);
     });
@@ -45,8 +45,8 @@ describe("tenantId validation", () => {
 
   it("refuses an over-long tenant", () => {
     assertRefused(
-      () => buildRequestHeaders("key", "a".repeat(65)),
-      "INVALID_PARAM: tenant_id exceeds 64 characters (got 65)",
+      () => buildRequestHeaders("key", "a".repeat(134)),
+      "INVALID_PARAM: tenant_id exceeds 133 characters (got 134)",
     );
   });
 

@@ -1,7 +1,7 @@
 """X-Tenant-ID is refused at construction with the SDK's validation error.
 
 Rule = the server's identifier rule (AnhurDB database.validateIdentifierCharset
-+ MaxIdentifierLength): letters, digits, '-' and '_', at most 64. Messages are
++ MaxIdentifierLength): letters, digits, '-' and '_', at most 133. Messages are
 pinned byte-for-byte with Go (client/tenant_header_test.go) and TypeScript
 (src/test/tenant_id_validation.test.ts).
 """
@@ -20,7 +20,7 @@ CHARSET_MESSAGE = (
 
 @pytest.mark.parametrize(
     "tenant_id",
-    ["", "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_prod", "a" * 64],
+    ["", "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_prod", "a" * 133, "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_kaveo-veterinaria-vacinacao-4d7d5ed7_lib"],
 )
 def test_valid_tenant_ids_construct(tenant_id: str) -> None:
     connection = HTTPConnection("http://localhost:8080", "key", tenant_id=tenant_id)
@@ -44,8 +44,8 @@ def test_invalid_charset_is_refused(tenant_id: str) -> None:
 
 def test_over_long_tenant_is_refused() -> None:
     with pytest.raises(AnhurQueryError) as raised:
-        HTTPConnection("http://localhost:8080", "key", tenant_id="a" * 65)
-    assert str(raised.value) == "INVALID_PARAM: tenant_id exceeds 64 characters (got 65)"
+        HTTPConnection("http://localhost:8080", "key", tenant_id="a" * 134)
+    assert str(raised.value) == "INVALID_PARAM: tenant_id exceeds 133 characters (got 134)"
 
 
 def test_memory_refuses_invalid_tenant_at_construction() -> None:

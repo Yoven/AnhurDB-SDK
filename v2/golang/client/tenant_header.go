@@ -9,16 +9,23 @@ package client
 
 import "fmt"
 
-// maxTenantIDLength mirrors database.MaxIdentifierLength on the server
-// (server/database/tenant_validation.go). The master-key path refuses a longer
+// maxTenantIDLength mirrors database.MaxStoreTenantIDLength on the server
+// (server/database/tenant_validation.go): the header names a COMPOSITE store,
+// "<clientID>_<tenantID>" plus an optional "_lib", each part at most 64, so the
+// whole name may reach 64+1+64+4 = 133. The master-key path refuses a longer
 // X-Tenant-ID with HTTP 400 (server/middleware/auth_master_tenant.go).
-const maxTenantIDLength = 64
+//
+// Junior Tip [incident 2026-11-22]: this was 64 for the WHOLE name. Agents
+// address stores like "<36-char client>_kaveo-veterinaria-vacinacao-4d7d5ed7_lib"
+// (78 chars), so every agent call for 50 tenants failed here before leaving the
+// process and their uploaded files stayed at status=processing for hours.
+const maxTenantIDLength = 133
 
 // validateTenantIDHeader reports whether tenantID may be sent as X-Tenant-ID.
 // Empty means "not configured" and is accepted.
 //
 // The rule is the server's identifier rule (database.validateIdentifierCharset):
-// letters, digits, '-' and '_' only, at most 64 characters. The charset is
+// letters, digits, '-' and '_' only, at most 133 characters (a composite store name). The charset is
 // checked BEFORE the length so the "(got N)" count is always an ASCII count —
 // identical in Go, Python and TypeScript.
 //

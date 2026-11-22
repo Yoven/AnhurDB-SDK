@@ -24,13 +24,14 @@ func TestValidateTenantIDHeaderRule(t *testing.T) {
 	}{
 		{"empty means not configured", "", ""},
 		{"uuid composite", "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_prod", ""},
-		{"exactly 64", strings.Repeat("a", 64), ""},
+		{"exactly 133", strings.Repeat("a", 133), ""},
+		{"incident library store (78)", "1a99ce02-e9b6-442a-8c10-d67b9f3446b8_kaveo-veterinaria-vacinacao-4d7d5ed7_lib", ""},
 		{"slash would be stripped server-side", "acme/prod", charsetMessage},
 		{"space", "acme prod", charsetMessage},
 		{"crlf injection", "bad\r\nInjected: true", charsetMessage},
 		{"null byte", "bad\x00id", charsetMessage},
 		{"non ascii", "açme", charsetMessage},
-		{"65 chars", strings.Repeat("a", 65), "INVALID_PARAM: tenant_id exceeds 64 characters (got 65)"},
+		{"134 chars", strings.Repeat("a", 134), "INVALID_PARAM: tenant_id exceeds 133 characters (got 134)"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(subTest *testing.T) {

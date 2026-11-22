@@ -255,7 +255,7 @@ sendo lista vazia — é a resposta do servidor para zero linhas.
 
 ## Recusa local: tenant id inválido (2026-11-20, fix/sdk-audit-gaps)
 
-`X-Tenant-ID` fora da regra do servidor (`[A-Za-z0-9_-]`, até 64; vazio = não
+`X-Tenant-ID` fora da regra do servidor (`[A-Za-z0-9_-]`, até 133 — nome composto `<clientID>_<tenantID>[_lib]`, cada parte até 64; vazio = não
 configurado) é recusado ANTES de qualquer request, com o erro de validação de cada
 SDK — invalid_request / **não** retryable:
 
