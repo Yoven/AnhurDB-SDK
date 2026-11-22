@@ -140,9 +140,13 @@ class HybridSearchMixin:
         the SUBSET inside that boundary. ``["*"]`` means "everything in this
         boundary" — it is not a way to cross into a shared plane.
 
-        Agent UX — text is not semantic: ``query`` is sent as body ``text``
-        (FTS5 exact-word matching), not an embedding. For conceptual RAG
-        without a vector, prefer ``smart_search`` (or MCP ``recall``).
+        Agent UX — this is the conceptual-RAG entry point: ``query`` is sent
+        as body ``text`` and the SERVER runs every leg — lexical (BM25/FTS)
+        plus a server-side query embedding (HNSW), fused by RRF and
+        cognitively reranked; the caller never sends a vector.
+        ``smart_search`` is the opposite: lexical ONLY, no embedding — use it
+        for identifiers and literal terms. ``mode`` picks the retrieval budget
+        (``"fast"`` skips the embedding).
 
         Each hit's ``.provenance`` / ``.scope`` / ``.signals`` are populated
         straight from the server response (fixed 2026-08-10 — previously

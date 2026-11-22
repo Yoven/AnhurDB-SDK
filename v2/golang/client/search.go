@@ -43,9 +43,12 @@ const searchScopeSharedAll = "shared_all"
 // inside that boundary. ["*"] means "everything in this boundary" — it is not a
 // way to cross into a shared plane.
 //
-// Agent UX — text is not semantic: query is sent as body "text" (FTS5
-// exact-word matching), not an embedding. For conceptual RAG without a
-// vector, prefer SmartSearch (or MCP recall).
+// Agent UX — this is the conceptual-RAG entry point: query is sent as body
+// "text" and the SERVER runs it through every leg — lexical (BM25/FTS) plus a
+// server-side query embedding (HNSW), fused by RRF and cognitively reranked;
+// the caller never sends a vector. SmartSearch is the opposite: lexical ONLY,
+// no embedding — use it for identifiers and literal terms. WithSearchMode
+// picks the retrieval budget (fast skips the embedding).
 func (m *Memory) Search(ctx context.Context, query string, sessions []string, opts ...SearchOption) ([]SearchResult, error) {
 	outcome, searchErr := m.runSearch(ctx, query, sessions, opts...)
 	if searchErr != nil {
