@@ -19,7 +19,7 @@ import (
 // início da sessão.
 func formatMemory(cfg config, profile *client.ProfileResult, backlog queueBacklog, archive archiveHealth) string {
 	var builder strings.Builder
-	builder.WriteString(`<anhur-memory backend="AnhurDB" container="` + cfg.container + `">` + "\n")
+	builder.WriteString(`<anhur-memory backend="AnhurDB" container="` + neutralizeBlockMarkup(cfg.container) + `">` + "\n")
 	if profile != nil {
 		builder.WriteString("You (Claude) have persistent long-term memory in AnhurDB. This is what you remember — trust it, build on it, and keep it accurate (use supersede when a fact changes).\n")
 	} else {
@@ -82,7 +82,7 @@ func formatMemory(cfg config, profile *client.ProfileResult, backlog queueBacklo
 		}
 		builder.WriteString("\n## " + title + "\n")
 		for _, item := range items {
-			builder.WriteString("- " + item + "\n")
+			builder.WriteString("- " + neutralizeBlockMarkup(item) + "\n") // stored text cannot close the block (see neutralizeBlockMarkup)
 		}
 	}
 
