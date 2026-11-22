@@ -15,7 +15,10 @@ var (
 	// ErrInvalidQuery is returned when the server rejects the request as malformed (400/422).
 	ErrInvalidQuery = errors.New("invalid query request")
 
-	// ErrConnectionFail is returned when the SDK cannot reach the AnhurDB server.
+	// ErrConnectionFail is matched (errors.Is) by a *TransportError of kind
+	// KindTransport: the request never produced an HTTP response because the
+	// server could not be reached. A timeout (KindTimeout) does NOT match — the
+	// server may have received and processed that request.
 	ErrConnectionFail = errors.New("failed to connect to AnhurDB server")
 
 	// ErrServerError is returned for 5xx responses from the server.
@@ -229,7 +232,22 @@ func (e *TransportError) Error() string {
 	return fmt.Sprintf("%s: could not reach AnhurDB", e.Op)
 }
 
-func (e *TransportError) Unwrap() error   { return e.err }
+// Unwrap exposes the underlying cause and, for KindTransport, the
+// ErrConnectionFail sentinel.
+//
+// Junior Tip [why a slice]: errors.Is(err, client.ErrConnectionFail) was the
+// documented check, but no code path ever returned that sentinel, so the
+// branch never fired. Returning both errors keeps errors.Is(err,
+// context.DeadlineExceeded) / net.Error checks on the cause working while
+// making the documented sentinel true. Timeouts are excluded on purpose: "may
+// have been processed" is not "could not connect".
+func (e *TransportError) Unwrap() []error {
+	if e.kind == KindTransport {
+		return []error{ErrConnectionFail, e.err}
+	}
+	return []error{e.err}
+}
+
 func (e *TransportError) Kind() ErrorKind { return e.kind }
 func (e *TransportError) Retryable() bool { return e.kind.Retryable() }
 
