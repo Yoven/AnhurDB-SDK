@@ -97,13 +97,32 @@ console.log(profile.stats.sessions); // number
 const other = await mem.profile("some-other-agent");
 ```
 
+### Search planes (`scope`) and the session filter (ADR-0014)
+
+`sessions` is **required** on every search: `sessionsAll()` (`["*"]`) is every
+session in the plane, or pass up to 1000 explicit session uuids. A missing or
+empty array, or `"*"` mixed with uuids, throws `AnhurQueryError` locally
+(`statusCode: 400`, `kind: "invalid_request"`, `retryable: false`, message
+`INVALID_PARAM: 'sessions' ...`) before any request. Before 4.1.0 it was a bare
+`AnhurError` classified `transport`/retryable.
+
+```typescript
+// scope: "sessions" (default) | "tenant_shared" | "client_shared" | "shared_all"
+let hits = await mem.search("refund policy", sessionsAll(), { scope: "tenant_shared" });
+hits = await mem.searchTenantShared("refund policy", sessionsAll()); // tenant Shared Data library
+hits = await mem.searchClientShared("refund policy", sessionsAll()); // client-wide library
+hits = await mem.searchShared("refund policy", sessionsAll());       // both shared planes (shared_all)
+hits = await mem.search("refund policy", [sessionId]);               // one chat
+```
+
 ### Search & Discovery
 
 ```typescript
 // Tenant type filter only — not a Shared Data plane switch
 const facts = await mem.searchByType("fact", sessionsAll(), 50);
 
-// Prefer for conceptual text (weight-boosted FTS; search() sends query as FTS text)
+// Lexical only (weight-boosted full-text, no embedding) — keywords/identifiers.
+// For conceptual queries use search(). Returns SmartSearchResponse, not SearchResult[].
 const smart = await mem.smartSearch("engineering experience", sessionsAll(), 10);
 
 // Plane-aware recall (SDK alias of search; default scope=sessions)
@@ -197,7 +216,9 @@ const linked = await mem.getRecordEntities(42);
 ### Batch Operations
 
 ```typescript
-// Fetch content for multiple records (max 100, eliminates N+1)
+// Fetch content for multiple records (max 100 ids, eliminates N+1).
+// The SDK does not cap the array; the SERVER answers 400 "too many IDs (max 100)"
+// above 100 and 400 for an empty array. Chunk larger lists yourself.
 const contents = await mem.batchReadContent([1, 2, 3, 4, 5]);
 
 // Bulk status update
@@ -280,14 +301,22 @@ const created = await mem.create(sessionId, "Ship the parity release", {
 ### Record CRUD
 
 ```typescript
+// One record by id
+const record = await mem.get(42);
+
 // Update fields
 await mem.update(42, { summary: "Updated", status: "archived" });
 // metadata is a merge patch: only the named keys change, null deletes a key.
 await mem.update(42, { metadata: { reviewed: true, draft_of: null } });
-await mem.setScore(42, 8); // score NAO passa pelo update — ver nota abaixo
+await mem.setScore(42, 8); // score is NOT accepted by update — see the note at the end
 
-// Archive (soft delete)
+// Archive (soft delete): hidden from reads, not erased
 await mem.delete(42);
+
+// Delete every record of one uploaded file (by its <checksum16> ingest-key prefix).
+// dryRun reports matched_count without deleting.
+const removed = await mem.deleteFile(sessionId, "3f2a9c0d1e4b5a67", { dryRun: true });
+console.log(removed.matched_count, removed.deleted_count, removed.purge);
 ```
 
 `metadata` on `update` is an RFC 7396 JSON merge patch (AnhurDB ADR-0035): keys
@@ -400,16 +429,17 @@ request was sent.
 
 | Category | Methods |
 |----------|---------|
-| **Core** | `add`, `search`, `searchWithRetrieval`, `profile` |
+| **Core** | `add`, `create`, `createInSession`, `search`, `searchWithRetrieval`, `profile` |
 | **Search** | `searchSessions`, `searchTenantShared`, `searchClientShared`, `searchShared`, `searchSession`, `searchByType`, `smartSearch`, `recall`, `recent`, `query` |
 | **Identity** | `sessionId`, `getSessionId`, `containerTag`, `getContainerTag` |
-| **Graph** | `walk`, `walkSemantic`, `getContext`, `readContent` |
-| **Entity** | `searchEntities`, `upsertEntity`, `entityGraph`, `entityTimeline`, `upsertEntityEdge`, `linkRecordEntity`, `getRecordEntities` |
-| **Batch** | `batchReadContent`, `batchUpdateStatus` |
-| **Upload** | `uploadFile`, `uploadStatus` |
+| **Graph** | `walk`, `walkSemantic`, `getContext`, `getGrounding` |
+| **Entity** | `searchEntities`, `listEntities`, `upsertEntity`, `entityGraph`, `entityTimeline`, `upsertEntityEdge`, `linkRecordEntity`, `getRecordEntities` |
+| **Batch** | `batchReadContent`, `batchUpdateStatus`, `linkConsolidated`, `appendMainIds`, `appendMainLinks`, `appendRelatedIds` |
+| **Upload** | `uploadFile`, `uploadStatus`, `waitForUpload` |
 | **Temporal** | `supersede` |
 | **Session** | `createSession`, `openSession`, `newSession`, `listSessions`, `getSessionHistory`, `getSessionClusters` |
-| **CRUD** | `update`, `delete` |
+| **CRUD** | `get`, `readContent`, `update`, `setScore`, `delete`, `deleteFile` |
+| **Manifests / taxonomy** | `manifestGlobal`, `manifestSession`, `listChat`, `countByType` |
 
 ## Types
 
@@ -438,7 +468,8 @@ travels in the body).
 ```ts
 import { ClientAPI } from "anhurdb";
 
-const api = new ClientAPI({ clientKey, url: "http://localhost:8000" });
+// url defaults to https://anhurdb.yoven.ai, like Memory; pass url for self-hosted.
+const api = new ClientAPI({ clientKey });
 const child = await api.createChild(accountRef); // created=true once, then false with the same id
 await api.createChildTenant(child.child_client_id, {
   tenantId: "contabilidade",

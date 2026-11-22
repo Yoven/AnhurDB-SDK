@@ -28,40 +28,31 @@ Packages ship on **[GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releas
 ```bash
 # Python — wheel from the Python SDK release assets
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.1.0/anhurdb-4.1.0-py3-none-any.whl
 
 # TypeScript — tarball from the TypeScript SDK release assets
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v3.0.1/anhurdb-3.0.1.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v4.1.0/anhurdb-4.1.0.tgz
 
 # Go — module tag v2/golang/vX.Y.Z on this repo
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v3@v3.0.1
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v4@v4.1.0
 ```
 
 > Pin versions to the tag you want on the [releases page](https://github.com/Yoven/AnhurDB-SDK/releases).
+> The three SDKs ship the SAME number; this tree is **4.1.0** (Go `client.Version`,
+> Python `anhurdb.__version__`, TypeScript `SDK_VERSION`). `4.0.0` (2026-11-21) is
+> the previous release of all three.
 >
-> The three pins above are the **latest published tag of each SDK** as of 2026-09-15
-> (`v2/python/v3.0.1`, `v2/typescript/v3.0.1`, `v2/golang/v3.0.1`) — verified against
-> `git ls-remote --tags`, the release assets, and `proxy.golang.org` for the Go module;
-> not copied from another doc. The three arms now ship the SAME number. `2.1.0` shipped on
-> 2026-09-14 and `3.0.0` superseded it the same day, so pin `3.0.1`, never `2.1.0`.
+> **The Go module path is `/v4` since 4.0.0** (it was `/v3` in 3.x). The path carries
+> TWO `v2`-looking segments: `github.com/Yoven/AnhurDB-SDK/v2/golang/v4`. The first `v2`
+> is this repository's directory layout and never changes; the trailing suffix is the Go
+> major version. Bumping only the version — `.../golang/v3@v4.1.0` — does not resolve,
+> because Go refuses a v4+ version on a module path without the matching major suffix.
 >
-> **The Go module path moved to `/v3` in 3.0.0.** Note the path carries TWO `v2`-looking
-> segments: `github.com/Yoven/AnhurDB-SDK/v2/golang/v3`. The first `v2` is this repository's
-> directory layout and never changes; the trailing suffix is the Go major version. Bumping
-> only the version — `.../golang/v2@v3.0.1` — does not resolve, because Go refuses a v3+
-> version on a module path without the matching major suffix.
->
-> **3.0.x is a breaking release in all three languages.** `create()` takes the session
-> first, several responses became typed, and the entity graph now uses the server's own
-> default depth of 1. Read each SDK's `CHANGELOG.md` before upgrading.
->
-> These pins are the floor for the features documented below: `delete_file`/`deleteFile`/
-> `DeleteFile`, `expand_related` and `search_with_retrieval`/`searchWithRetrieval`/
-> `SearchWithRetrieval` first appear in `v2/python/v2.0.18`, `v2/typescript/v2.0.15` and
-> `v2/golang/v2.0.16`. Installing below those tags fails at the caller's desk with an
-> `AttributeError`/`TypeError`, not with a diagnosable 404 — the URLs of the old releases
-> still resolve.
+> **4.0.0 was breaking in all three languages (legacy removal):** every old-server
+> fallback and deprecated alias is gone, and `AddResult.mode` is `"ingest"` / `"records"`.
+> 3.0.x was breaking too (`create()` takes the session first, typed responses, entity
+> graph default depth 1). Read each SDK's `CHANGELOG.md` before upgrading.
 
 ---
 
@@ -188,7 +179,7 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 
 | Method | What it does | Endpoint |
 |--------|-------------|----------|
-| `batch_read_content(ids)` | Fetch content for up to 100 records in one call | POST /api/v1/records/batch-content |
+| `batch_read_content(ids)` | Fetch content for up to 100 records in one call (server: 400 `too many IDs (max 100)` above that; the SDKs do not cap) | POST /api/v1/records/batch-content |
 | `batch_update_status(ids, status)` | Bulk status update (consolidated, archived, etc.) | PATCH /api/v1/records/mark-consolidated |
 
 ### Entity Knowledge Graph (Layer 2)
@@ -216,8 +207,10 @@ Invalid values → HTTP 400. `POST /api/v1/search/global` remains a deprecated a
 | `upload_status(record_id)` | Poll file ingestion status | GET /api/v1/upload/{id}/status |
 
 The upload response key is **`record_id`** (the server does not send `id`). Poll with
-that value: `upload["record_id"]` (Python), `upload.record_id` (TypeScript),
-`upload.UploadID()` (Go — the helper that falls back correctly).
+that value: `upload.record_id` (Python — `UploadResult` is a typed model, not a dict),
+`upload.record_id` (TypeScript), `upload.RecordID` or `upload.UploadID()` (Go — the same
+value, no fallback; zero means the response carried no `record_id`). Pass `upload.scope`
+(Go `client.WithRecordScope(upload.Scope)`) so the poll looks in the plane the file landed in.
 
 ### Temporal Versioning
 
@@ -236,7 +229,7 @@ that value: `upload["record_id"]` (Python), `upload.record_id` (TypeScript),
 | `get_session_history(uuid)` | Paginated full-text session history | GET /api/v1/sessions/{uuid}/history |
 | `get_session_clusters(uuid)` | Thematic clusters within a session | GET /api/v1/sessions/{uuid}/clusters |
 
-### Client key API (ADR-0034, unreleased)
+### Client key API (ADR-0034, since 4.1.0)
 
 A separate handle, built from a **client key** (kind=client), never a tenant
 key: Go `client.NewClientAPI(key)`, Python `ClientAPI(key)`, TypeScript
@@ -254,7 +247,22 @@ Python; Go is PascalCase, TypeScript camelCase.
 | `revoke_impersonation(key_id)` | Revoke a token of the caller or of one of its children | POST /api/v1/client/impersonate/revoke |
 
 Refusals carry the server code (`body.error`): Go `*ClientAPIError.Code`,
-Python/TypeScript `AnhurClientAPIError.code`.
+Python/TypeScript `AnhurClientAPIError.code`. The server may LOWER a requested scope
+without an error: always read the echoed `scope` / `l1_only` on the minted token. The
+SDKs fail closed (`l1_only_not_honoured` / `scope_not_honoured`, carrying the minted
+`key_id` so you can revoke it) when the echo is weaker than requested.
+
+### Errors (same contract in the three SDKs)
+
+| Situation | Go | Python | TypeScript |
+|---|---|---|---|
+| 401/403, with the server's `code` + predicates (`is_l1_only`, `is_child_suspended`, `is_insufficient_scope`, `is_impersonation_required`, `is_invalid_key`) | `*client.AuthRefusedError` (`errors.Is(err, client.ErrUnauthorized)` stays true) | `AnhurAuthRefusedError(AnhurAuthError)` | `AnhurAuthRefusedError extends AnhurAuthError` |
+| 409 `session_record_limit` (full session; non-retryable — keep the data, retry later, never switch session) | `*client.SessionRecordLimitError` | `AnhurSessionRecordLimitError` | `AnhurSessionRecordLimitError` |
+| 409 `tenant_library_collision` | `*client.TenantLibraryCollisionError` | `AnhurTenantLibraryCollisionError` | `AnhurTenantLibraryCollisionError` |
+| Client key API refusal | `*client.ClientAPIError` | `AnhurClientAPIError` | `AnhurClientAPIError` |
+
+Every error carries `kind` and `retryable`; no SDK retries on its own. Details:
+[`v2/SDK_ERROR_CONTRACT.md`](v2/SDK_ERROR_CONTRACT.md) and each SDK's README.
 
 ---
 
@@ -273,6 +281,9 @@ async with Memory(api_key="anhur_xxx") as mem:
     results = await mem.search("what language does this user prefer?", sessions_all())
     profile = await mem.profile()
 
+    # Search planes: scope = sessions (default) | tenant_shared | client_shared | shared_all
+    docs = await mem.search("refund policy", sessions_all(), scope="tenant_shared")
+
     # Search & discovery
     facts = await mem.search_by_type("fact", sessions_all(), limit=50)
     smart = await mem.smart_search("engineering experience", sessions_all(), limit=10)
@@ -287,14 +298,14 @@ async with Memory(api_key="anhur_xxx") as mem:
     # Entity knowledge graph
     entities = await mem.search_entities(query="Google")
     entity = await mem.upsert_entity("Google", entity_type="organization")
-    graph = await mem.entity_graph(entity["id"], depth=2)
-    timeline = await mem.entity_timeline(entity["id"])
+    graph = await mem.entity_graph(entity.id, depth=2)   # EntityModel, not a dict
+    timeline = await mem.entity_timeline(entity.id)
     await mem.upsert_entity_edge(1, 2, "works_at", confidence=0.95)
-    await mem.link_record_entity(42, entity["id"], role="mentions")
+    await mem.link_record_entity(42, entity.id, role="mentions")
     linked = await mem.get_record_entities(42)
 
     # Batch operations
-    contents = await mem.batch_read_content([1, 2, 3])
+    contents = await mem.batch_read_content([1, 2, 3])   # max 100 ids per call
     await mem.batch_update_status([10, 11], status="archived")
 
     # File upload
@@ -302,7 +313,7 @@ async with Memory(api_key="anhur_xxx") as mem:
         "report.pdf", pdf_bytes,
         session_id=session_id, linked_episodic_id=episodic_id,
     )
-    status = await mem.upload_status(upload["record_id"])
+    status = await mem.upload_status(upload.record_id, scope=upload.scope)
 
     # Temporal versioning
     await mem.supersede(old_id=42, new_id=99)
@@ -316,8 +327,11 @@ async with Memory(api_key="anhur_xxx") as mem:
 
     # Mutate
     await mem.update(42, summary="Updated summary")
-    await mem.set_score(42, 8)  # score NAO passa pelo update — ver nota abaixo
+    # metadata is an RFC 7396 merge patch: named keys change, None deletes a key
+    await mem.update(42, metadata={"reviewed": True, "draft_of": None})
+    await mem.set_score(42, 8)  # score is NOT accepted by update — see the note at the end
     await mem.delete(42)
+    await mem.delete_file(session_id, "3f2a9c0d1e4b5a67")  # every record of one uploaded file
 
     # AST query (QueryBuilder)
     from anhurdb.query import QueryBuilder
@@ -342,6 +356,9 @@ const result = await mem.add("I'm a senior engineer.", {
 const results = await mem.search("what language?", sessionsAll());
 const profile = await mem.profile();
 
+// Search planes: scope = sessions (default) | tenant_shared | client_shared | shared_all
+const docs = await mem.search("refund policy", sessionsAll(), { scope: "tenant_shared" });
+
 // Extended search
 const facts = await mem.searchByType("fact", sessionsAll(), 50);
 const smart = await mem.smartSearch("engineering", sessionsAll(), 10);
@@ -363,14 +380,14 @@ await mem.linkRecordEntity(42, entity.id, "mentions");
 const linked = await mem.getRecordEntities(42);
 
 // Batch operations
-const contents = await mem.batchReadContent([1, 2, 3]);
+const contents = await mem.batchReadContent([1, 2, 3]); // max 100 ids per call
 await mem.batchUpdateStatus([10, 11], "archived");
 
 // File upload
 const upload = await mem.uploadFile("report.pdf", fileBytes, {
   sessionId, linkedEpisodicId: episodicId,
 });
-const status = await mem.uploadStatus(upload.record_id!);
+const status = await mem.uploadStatus(upload.record_id!, { scope: upload.scope });
 
 // Temporal versioning
 await mem.supersede(42, 99);
@@ -392,7 +409,11 @@ const { records } = await new QueryBuilder()
 
 // Mutate
 await mem.update(42, { summary: "Updated" });
+// metadata is an RFC 7396 merge patch: named keys change, null deletes a key
+await mem.update(42, { metadata: { reviewed: true, draft_of: null } });
+await mem.setScore(42, 8);
 await mem.delete(42);
+await mem.deleteFile(sessionId, "3f2a9c0d1e4b5a67"); // every record of one uploaded file
 ```
 
 ### Go
@@ -403,12 +424,14 @@ package main
 import (
     "context"
     "fmt"
-    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v3"
-    "github.com/Yoven/AnhurDB-SDK/v2/golang/v3/client"
+    anhurdb "github.com/Yoven/AnhurDB-SDK/v2/golang/v4"
+    "github.com/Yoven/AnhurDB-SDK/v2/golang/v4/client"
 )
 
 func main() {
     ctx := context.Background()
+    var rawBytes []byte    // file content to upload
+    var episodicID int64   // episodic record the upload is linked to
 
     // Connect
     mem := anhurdb.NewMemory("anhur_xxx",
@@ -429,7 +452,9 @@ func main() {
     // Extended search
     facts, _ := mem.SearchByType(ctx, "fact", client.SessionsAll(), 50)
     smart, _ := mem.SmartSearch(ctx, "engineering", client.SessionsAll(), 10)
-    latest, _ := mem.RecentMemories(ctx, 5) // not a search endpoint — no sessions
+    latest, _ := mem.Recent(ctx, 5) // not a search endpoint — no sessions
+    // Search planes: sessions (default) | tenant_shared | client_shared | shared_all
+    docs, _ := mem.Search(ctx, "refund policy", client.SessionsAll(), client.WithScope("tenant_shared"))
 
     // Graph traversal
     graph, _ := mem.Walk(ctx, 42, 3)
@@ -448,12 +473,12 @@ func main() {
     linked, _ := mem.GetRecordEntities(ctx, 42)
 
     // Batch operations
-    contents, _ := mem.BatchReadContent(ctx, []int64{1, 2, 3})
+    contents, _ := mem.BatchReadContent(ctx, []int64{1, 2, 3}) // max 100 ids per call
     _ = mem.BatchUpdateStatus(ctx, []int64{10, 11}, "archived")
 
     // File upload
     upload, _ := mem.UploadFile(ctx, "report.pdf", rawBytes, sessionID, episodicID)
-    status, _ := mem.UploadStatus(ctx, upload.UploadID())
+    status, _ := mem.UploadStatus(ctx, upload.RecordID, client.WithRecordScope(upload.Scope))
 
     // Temporal versioning
     _ = mem.Supersede(ctx, 42, 99)
@@ -475,7 +500,15 @@ func main() {
 
     // Mutate
     _ = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
+    // metadata is an RFC 7396 merge patch: named keys change, nil deletes a key
+    _ = mem.Update(ctx, 42, map[string]interface{}{
+        "metadata": map[string]interface{}{"reviewed": true, "draft_of": nil},
+    })
+    _ = mem.SetScore(ctx, 42, 8)
     _ = mem.Delete(ctx, 42)
+    removed, _ := mem.DeleteFile(ctx, sessionID, "3f2a9c0d1e4b5a67") // every record of one uploaded file
+    fmt.Println(result, hits, profile, docs, facts, smart, latest, graph, semantic, topo, content,
+        entities, entityGraph, timeline, linked, contents, status, sessions, history, clusters, records, removed)
 }
 ```
 
@@ -586,19 +619,19 @@ AnhurDB-SDK/
 |   |   |   +-- memory.ts    Memory class (30+ methods)
 |   |   |   +-- query.ts     QueryBuilder (AST-based DSL)
 |   |   |   +-- client.ts    HTTP client (native fetch)
-|   |   |   +-- types.ts     All interfaces + error classes
+|   |   |   +-- types.ts     Public interfaces (errors live in errors.ts)
 |   |   |   +-- index.ts     Public exports
 |   |   +-- package.json     ESM + CJS dual output
 |   |
 |   +-- golang/              Go SDK (zero external deps)
 |       +-- client/
-|       |   +-- client.go    Memory struct (30+ methods)
-|       |   +-- parity.go    Memory.Query + NewQuery() AST builder
+|       |   +-- client.go    Memory struct + NewMemory (methods split by domain: add.go, search*.go, record_*.go, …)
+|       |   +-- query_*.go   Memory.Query + NewQuery() AST builder
+|       |   +-- client_key*.go ClientAPI (ADR-0034)
 |       |   +-- connection.go REST HTTP client (stdlib only)
-|       |   +-- types.go     Response types, Entity, Upload, QueryRequest
-|       |   +-- errors.go    Typed error constants
+|       |   +-- errors.go    Typed errors and ErrorKind
 |       +-- models/          Record and session types
-|       +-- go.mod           github.com/Yoven/AnhurDB-SDK/v2/golang/v3
+|       +-- go.mod           github.com/Yoven/AnhurDB-SDK/v2/golang/v4
 |
 +-- docs/
 |   +-- general/ARCHITECTURE.md

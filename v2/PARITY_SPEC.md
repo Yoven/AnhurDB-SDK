@@ -37,7 +37,7 @@ removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose
 | search_tenant_shared | `SearchTenantShared` / `search_tenant_shared` / `searchTenantShared` | `POST /api/v1/search` (`scope=tenant_shared`) |
 | search_client_shared | `SearchClientShared` / `search_client_shared` / `searchClientShared` | `POST /api/v1/search` (`scope=client_shared`) |
 | search_shared | `SearchShared` / `search_shared` / `searchShared` | `POST /api/v1/search` (`scope=shared_all`) |
-| semantic_search (one chat) | `SearchSession` / `search_session` / `searchSession` | `POST /api/v1/search` (`scope=sessions` + `uuid`) |
+| semantic_search (one chat) | `SearchSession` / `search_session` / `searchSession` | `POST /api/v1/search` (`scope=sessions` + `sessions: [<uuid>]`; the singular `uuid` field is gone, ADR-0014) |
 | search_by_type | `SearchByType` / `search_by_type` / `searchByType` | `GET /api/v1/search/type` |
 | smart_search | `SmartSearch` / `smart_search` / `smartSearch` | `GET /api/v1/search/smart` (`scope` query, default `sessions`) |
 | recent_memories | `Recent` / `recent` / `recent` | `GET /api/v1/recent` |
@@ -53,7 +53,7 @@ removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose
 | walk_graph | `Walk` / `walk` / `walk` | `POST /api/v1/walk` |
 | walk_semantic | `WalkSemantic` / `walk_semantic` / `walkSemantic` | `POST /api/v1/walk/semantic` — **advanced / not day-to-day RAG**; need `seed_id` + goal, not free-text search |
 | get_grounding | `GetGrounding` / `get_grounding` / `getGrounding` | `GET /api/v1/records/{id}/grounding` |
-| batch_read_content | `BatchReadContent` / `batch_read_content` / `batchReadContent` | `POST /api/v1/records/batch-content` |
+| batch_read_content | `BatchReadContent` / `batch_read_content` / `batchReadContent` | `POST /api/v1/records/batch-content` — max **100** ids per call (server `service.MaxBatchContentIDs`, 400 `too many IDs (max 100)`; empty list = 400). No SDK caps it locally. The 1000 `maxBatchSize` is for the batch WRITES only |
 | batch_update_status | `BatchUpdateStatus` / `batch_update_status` / `batchUpdateStatus` | `PATCH /api/v1/records/mark-consolidated` |
 | link_consolidated | `LinkConsolidated` / `link_consolidated` / `linkConsolidated` | `PATCH /api/v1/records/consolidate-ids` |
 | append_main_ids | `AppendMainIDs` / `append_main_ids` / `appendMainIds` | `PATCH /api/v1/records/append-main-ids` |
@@ -76,7 +76,7 @@ removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose
 | get_record_entities | `GetRecordEntities` / `get_record_entities` / `getRecordEntities` | `GET /api/v1/records/{id}/entities` |
 | get_profile | `Profile` / `profile` / `profile` | `GET /api/v1/profile` — every HTTP error is raised, a 404 included (the "OSS: empty profile on 404" fallback was removed in 4.0.0; the route is always mounted, `server/router.go:136`). An unknown tag is still an all-zero profile with HTTP 200 |
 
-## Client key API (ADR-0034, unreleased — 2026-11-21)
+## Client key API (ADR-0034, released in 4.1.0 — 2026-11-22)
 
 A second handle, separate from `Memory`, for a **client key** (kind=client):
 Go `NewClientAPI(key, opts...)` / Python `ClientAPI(key, url=, timeout=)`
@@ -245,12 +245,12 @@ enforced at the same layer in all three, not just server-side.
 
 | Guard | Python `QueryBuilder` | TypeScript `QueryBuilder` | Go `QueryRequest` |
 |---|---|---|---|
-| Filter/sort column whitelist (17 columns, mirrors the server) | yes, raises `ValueError` | yes, throws `Error` | yes, since v2.0.13 — `Validate()` errors locally, `query: field "<f>" is not allowed in filters` |
-| Operator whitelist (`$eq $gt $gte $lt $lte $in`) | yes, raises `ValueError` | yes, throws `Error` | n/a — `QueryOp` is a closed struct, no unknown operator is expressible |
-| `limit` range 1–1000 | yes, raises `ValueError` | yes, throws `Error` | yes, since v2.0.13 — `Validate()` errors locally instead of relying on the server's silent fallback |
-| `offset >= 0` | yes, raises `ValueError` | yes, throws `Error` | yes, since v2.0.13 — `Validate()` errors locally instead of relying on the server's silent fallback |
+| Filter/sort column whitelist (17 columns, mirrors the server) | yes, raises `AnhurQueryError` (invalid_request; `ValueError` before 2.1.0) | yes, throws `AnhurQueryError` (invalid_request) | yes, since v2.0.13 — `Validate()` errors locally, `query: field "<f>" is not allowed in filters` |
+| Operator whitelist (`$eq $gt $gte $lt $lte $in`) | yes, raises `AnhurQueryError` | yes, throws `AnhurQueryError` | n/a — `QueryOp` is a closed struct, no unknown operator is expressible |
+| `limit` range 1–1000 | yes, raises `AnhurQueryError` | yes, throws `AnhurQueryError` | yes, since v2.0.13 — `Validate()` errors locally instead of relying on the server's silent fallback |
+| `offset >= 0` | yes, raises `AnhurQueryError` | yes, throws `AnhurQueryError` | yes, since v2.0.13 — `Validate()` errors locally instead of relying on the server's silent fallback |
 | Cannot emit an empty operator object | yes (fluent path) | yes (fluent path) | yes, since v2.0.13 — `QueryOp.isEmpty()` inside `Validate()` |
-| Empty `$in` guarded before the request | no | no | yes, since v2.0.13 — `QueryOp.hasEmptyInList()` gives it a **dedicated** message (`$in requires a non-empty list of values`), distinct from the generic "no operator" case; Python and TypeScript still reach the server for this one |
+| Empty `$in` guarded before the request | yes (`AnhurQueryError`, amended 2026-11-22: the table said "no") | yes (`AnhurQueryError`, same amendment) | yes, since v2.0.13 — `QueryOp.hasEmptyInList()` gives it a **dedicated** message (`$in requires a non-empty list of values`), distinct from the generic "no operator" case |
 
 **Residual gap — `$eq: null` is still not expressible from Go.** `QueryOp.Eq`
 is `interface{}` tagged `omitempty` (`v2/golang/client/types.go`); a Go `nil`

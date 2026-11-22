@@ -118,32 +118,39 @@ de segurança que já existe em `connection.py:516` continua valendo.
 Mesmos nomes de campo, mesma enum, mesma regra de `retryable`. A nomenclatura
 segue a convenção de cada linguagem, a semântica não muda.
 
-**Python**
+(Emenda 2026-11-22: os blocos abaixo eram a proposta de 2026-08-13 — um
+`AnhurError` struct em Go e um campo `status` em TS que nunca existiram. Agora
+mostram a forma real do código.)
+
+**Python** (`anhurdb/client/exceptions.py`)
 ```python
 class AnhurError(Exception):
     message: str
-    status_code: Optional[int]
-    retryable: bool
-    kind: str
+    status_code: Optional[int]   # None = não chegou ao servidor
+    kind: str                    # derivado do status quando não é passado
+    retryable: bool              # derivado do kind
 ```
 
-**Go**
+**Go** (`client/errors.go`) — não há um struct único; cada erro expõe os mesmos três métodos
 ```go
-type AnhurError struct {
-    Message   string
-    Status    int    // 0 = não chegou ao servidor
-    Retryable bool
-    Kind      string
+type ErrorKind string            // KindAuth, KindInvalidRequest, …, KindServer
+type APIError struct {           // resposta HTTP não-2xx (ou recusa local, StatusCode 400)
+    StatusCode int
+    Body       string
 }
-func (e *AnhurError) Error() string { return e.Message }
+func (e *APIError) Kind() ErrorKind
+func (e *APIError) Retryable() bool
+type TransportError struct{ Op string } // sem resposta HTTP; StatusCode() == 0
+// Kind() é KindTransport ou KindTimeout; desde 4.1.0 KindTransport casa com
+// errors.Is(err, ErrConnectionFail) e a causa continua alcançável.
 ```
 
-**TypeScript**
+**TypeScript** (`src/errors.ts`)
 ```ts
 class AnhurError extends Error {
-  readonly status?: number
-  readonly retryable: boolean
+  readonly statusCode?: number      // undefined = não chegou ao servidor
   readonly kind: AnhurErrorKind
+  readonly retryable: boolean
 }
 ```
 
@@ -277,6 +284,28 @@ upload mode (want chat|tenant_shared|client_shared)`, idêntica nos três. Delet
 como a recusa de escopo do mesmo método. As duas recusas L2 409 (colisão, upload
 ambíguo) citam no máximo 500 caracteres da frase do servidor na mensagem — Go passou a
 cortar também; o campo `ServerMessage`/`server_message` continua com a frase inteira.
+
+## Recusa local: argumento `sessions` inválido (4.1.0, 2026-11-22)
+
+`sessions` ausente, vazio, com entrada vazia, `"*"` misturado com uuids, ou
+acima de 1000 uuids (ADR-0014) é recusado ANTES da requisição, mensagem
+`INVALID_PARAM: 'sessions' ...` idêntica nos três:
+
+| Go | Python | TypeScript | kind / retryable |
+|---|---|---|---|
+| `*APIError` clientSide 400 (inalterado) | `AnhurQueryError(400)` (era `AnhurError` sem status) | `AnhurQueryError(400)` (era `AnhurError` sem status) | invalid_request / false |
+
+Antes de 4.1.0 Python e TypeScript classificavam esta recusa como
+`transport` / **retryable** — mandavam repetir uma chamada que nunca passa. As
+subclasses mantêm `except AnhurError` / `instanceof AnhurError` funcionando.
+
+## Sem resposta HTTP em Go: `ErrConnectionFail` (4.1.0, 2026-11-22)
+
+`client.ErrConnectionFail` era declarado e documentado no README, mas nenhum
+caminho o devolvia: `errors.Is(err, client.ErrConnectionFail)` nunca era
+verdadeiro. Desde 4.1.0 `*TransportError` de kind `transport` desembrulha para
+o sentinela e para a causa (`Unwrap() []error`); kind `timeout` não casa (o
+servidor pode ter processado). Python/TS já levantavam `AnhurConnectionError`.
 
 ## Recusa tipada: 401/403 com o motivo do servidor (2026-11-21)
 

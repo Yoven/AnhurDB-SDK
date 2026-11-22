@@ -15,9 +15,8 @@ go get github.com/Yoven/AnhurDB-SDK/v2/golang/v4@v4.0.0
 ```
 
 > This tree is **4.0.0** (`client.Version`); TypeScript and Python ship the same
-> number. Check [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases)
-> for the `v2/golang/v4.0.0` tag before pinning it — until it is published, the
-> newest published tag is `v2/golang/v3.0.1` on the old `/v3` path.
+> number. The `v2/golang/v4.0.0` tag was published on 2026-11-21 and resolves on
+> `proxy.golang.org`; `v2/golang/v3.0.1` is the last tag on the old `/v3` path.
 >
 > **The module path moved to `/v4` in 4.0.0** (it moved to `/v3` in 3.0.0). It
 > contains TWO `v2`-looking segments: `github.com/Yoven/AnhurDB-SDK/v2/golang/v4`.
@@ -93,6 +92,7 @@ mem := anhurdb.NewMemory("key",
 | `WithUserID(id)` | Explicit container tag (default: derived from API key hash) |
 | `WithTenantID(id)` | Multi-tenant `X-Tenant-ID` header. Must be `[A-Za-z0-9_-]`, ≤ 64 chars; otherwise every call returns an invalid_request `*APIError` and nothing is sent |
 | `WithTimeout(d)` | HTTP client timeout (default: 30s) |
+| `client.WithHTTPClient(c)` | Bring your own `*http.Client` (transport, proxy, TLS). Not re-exported on the facade |
 
 ## API Reference
 
@@ -105,6 +105,38 @@ result, err := mem.Add(ctx, "text",
 hits, err := mem.Search(ctx, "query", anhurdb.SessionsAll())          // Hybrid plane search (lexical + server-side embedding) — the conceptual entry point
 hits, err := mem.Search(ctx, "query", []string{sessionID}, anhurdb.WithLimit(20)) // One chat, with options
 profile, err := mem.Profile(ctx)                       // User profile (?tag=)
+```
+
+### Typed create (POST /records, no extraction)
+
+`Add` without pins goes to `/ingest` (episodic + platform extraction). When you
+already know the typed atom, `Create` writes exactly one record and runs no
+extraction LLM. The session is the FIRST argument and is required.
+
+```go
+created, err := mem.Create(ctx, sessionID, "Ship the parity release",
+    anhurdb.WithCreateType("decision"),
+    anhurdb.WithCreateScore(9),
+    client.WithCreateStatus("saved"),
+    client.WithCreateValidFrom("2026-09-14T00:00:00Z"),
+    client.WithCreateMetadata(map[string]interface{}{"origin": "release-notes"}),
+)
+```
+
+### Search planes (`scope`) and the session filter (ADR-0014)
+
+`sessions` is a **required** argument on every search: `anhurdb.SessionsAll()`
+(`[]string{"*"}`) is every session in the plane, or pass up to 1000 explicit
+session uuids. A nil/empty slice, or `"*"` mixed with uuids, is refused locally
+with an `INVALID_PARAM` `*APIError` before any request.
+
+```go
+// sessions (default) | tenant_shared | client_shared | shared_all
+hits, err := mem.Search(ctx, "refund policy", anhurdb.SessionsAll(), client.WithScope("tenant_shared"))
+hits, err = mem.SearchTenantShared(ctx, "refund policy", anhurdb.SessionsAll()) // tenant Shared Data library
+hits, err = mem.SearchClientShared(ctx, "refund policy", anhurdb.SessionsAll()) // client-wide library
+hits, err = mem.SearchShared(ctx, "refund policy", anhurdb.SessionsAll())       // both shared planes (shared_all)
+hits, err = mem.Search(ctx, "refund policy", []string{sessionID})               // one chat
 ```
 
 ### Search controls (ADR-0031)
@@ -185,9 +217,10 @@ entities, err := mem.GetRecordEntities(ctx, 42)
 ### Batch Operations
 
 ```go
-// Fetch content for multiple records.
-// Nothing caps the slice client-side — the server decides. Batch it yourself if
-// you are sending thousands; an empty slice is a 400 from the server.
+// Fetch content for multiple records (max 100 ids per call).
+// The SDK does not cap the slice; the SERVER answers 400 "too many IDs (max 100)"
+// above 100 and 400 for an empty slice. Chunk larger lists yourself.
+record, err := mem.Get(ctx, 42)                    // one record by id
 contents, err := mem.BatchReadContent(ctx, []int64{1, 2, 3})
 
 // Bulk status update
@@ -242,7 +275,13 @@ err = mem.Update(ctx, 42, map[string]interface{}{"summary": "Updated"})
 err = mem.Update(ctx, 42, map[string]interface{}{
 	"metadata": map[string]interface{}{"reviewed": true, "draft_of": nil},
 })
-err = mem.Delete(ctx, 42)
+err = mem.SetScore(ctx, 42, 8) // score is NOT accepted by Update — see the note at the end
+err = mem.Delete(ctx, 42)       // soft delete: archived, hidden from reads, not erased
+
+// Delete every record of one uploaded file (by its <checksum16> ingest-key prefix).
+// WithDeleteFileDryRun(true) reports MatchedCount without deleting.
+result, err := mem.DeleteFile(ctx, sessionID, "3f2a9c0d1e4b5a67")
+fmt.Println(result.MatchedCount, result.DeletedCount, result.Purge)
 ```
 
 `metadata` on `Update` is an RFC 7396 JSON merge patch (AnhurDB ADR-0035): keys
@@ -321,7 +360,8 @@ It talks only to `/api/v1/client/*` and **never sends `X-Tenant-ID`** (the
 tenant travels in the body; `WithTenantID` is ignored here).
 
 ```go
-api := client.NewClientAPI(clientKey, client.WithURL("http://localhost:8000"))
+// URL defaults to https://anhurdb.yoven.ai, like NewMemory; WithURL for self-hosted.
+api := client.NewClientAPI(clientKey)
 
 child, err := api.CreateChild(ctx, accountRef)        // 201 created / 200 same id (idempotent per ref)
 _, err = api.CreateChildTenant(ctx, child.ChildClientID, client.CreateTenantRequest{
@@ -381,11 +421,16 @@ if err != nil {
     switch {
     case errors.Is(err, client.ErrUnauthorized):
         log.Fatal("Bad API key")
-    case errors.Is(err, client.ErrConnectionFail):
+    case errors.Is(err, client.ErrConnectionFail): // *TransportError, kind transport (since 4.1.0)
         log.Fatal("Server unreachable")
     case errors.Is(err, client.ErrEmptyInput):
         log.Fatal("Empty text")
     default:
+        var transportErr *client.TransportError
+        if errors.As(err, &transportErr) { // no HTTP response: transport or timeout
+            log.Printf("%s (kind=%s, retryable=%v)", transportErr, transportErr.Kind(), transportErr.Retryable())
+            return
+        }
         var apiErr *client.APIError
         if errors.As(err, &apiErr) {
             log.Printf("HTTP %d: %s", apiErr.StatusCode, apiErr.Body)
@@ -393,6 +438,13 @@ if err != nil {
     }
 }
 ```
+
+A request that never produced an HTTP response is a `*client.TransportError`
+(`StatusCode() == 0`). Kind `transport` (server unreachable) also matches
+`errors.Is(err, client.ErrConnectionFail)`; kind `timeout` (deadline/cancel —
+the server may still have processed it) does not, while
+`errors.Is(err, context.DeadlineExceeded)` keeps working. Before 4.1.0 the
+`ErrConnectionFail` branch never fired.
 
 ### Refused credential (HTTP 401/403): the server's reason
 
@@ -460,7 +512,8 @@ The SDK includes a retriever adapter for Go agentic frameworks:
 ```go
 import "github.com/Yoven/AnhurDB-SDK/v2/golang/v4/integrations/dspy"
 
-retriever := dspy.NewRetriever(mem, 10)
+// sessions is required (ADR-0014): SessionsAll() opts into the whole scope.
+retriever := dspy.NewRetriever(mem, 10, client.SessionsAll())
 docs, err := retriever.GetRelevantDocuments(ctx, "user's role?")
 ```
 

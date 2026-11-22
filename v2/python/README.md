@@ -11,7 +11,7 @@ Official async Python client for [AnhurDB](https://anhur.yoven.ai) — cognitive
 - Type-safe models (Pydantic v2)
 - Fluent Query Builder (AST-based DSL for advanced filtering)
 - Entity knowledge graph (search, upsert, relationships, timeline)
-- Batch operations (the server caps a batch at 1000 ids)
+- Batch operations (`batch_read_content`: the server caps one call at 100 ids)
 - File upload with async ingestion (PDF, images, DOCX, etc.)
 - Temporal versioning (supersede old facts)
 - REST direct transport (the supported path — see [Transport Modes](#transport-modes))
@@ -29,8 +29,8 @@ pip install \
 ```
 
 > The pin above matches `anhurdb.__version__` in this tree (`4.0.0`). Go and
-> TypeScript ship the same number. Until the `v2/python/v4.0.0` release is
-> published, the newest published wheel is `v2/python/v3.0.1`.
+> TypeScript ship the same number. The `v2/python/v4.0.0` release (wheel +
+> sdist) was published on 2026-11-21.
 >
 > **4.0.0 is a breaking release (legacy removal).** `AnhurClient`,
 > `search_with_ast`, `mark_consolidated`, `link_to_consolidated`,
@@ -136,15 +136,35 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 
 | Method | Description | Returns |
 |--------|-------------|---------|
-| `add(text, *, mode="ingest", session_id="", score=None, type=None, metadata=None)` | Store a memory. Keyword-only after `text`. Pinning `score` / `type` / `metadata` switches from `/ingest` to `/records` | `dict` with session_id, records, mode |
-| `search(query, sessions, *, limit=10, type_filter=None, scope="sessions", mode=None, semantic_timeout_ms=None, debug_signals=False)` | Hybrid plane search (query → FTS `text`; prefer `smart_search` for conceptual RAG). `sessions` is **required** and positional: `sessions_all()` or up to 1000 uuids. Absent/empty/`["*", "uuid"]` → HTTP 400. See [Search controls](#search-controls-adr-0031) for the three retrieval knobs | `list[SearchResult]` |
+| `add(text, *, mode="ingest", session_id="", score=None, type=None, metadata=None)` | Store a memory. Keyword-only after `text`. Pinning `score` / `type` / `metadata` switches from `/ingest` to `/records` | `AddResult` model (`session_id`, `records`, `mode` = `"ingest"` \| `"records"`, `id`, `status`) |
+| `search(query, sessions, *, limit=10, type_filter=None, scope="sessions", mode=None, semantic_timeout_ms=None, debug_signals=False)` | Hybrid plane search (lexical + server-side embedding) — the entry point for conceptual RAG; `smart_search` is lexical only. `sessions` is **required** and positional: `sessions_all()` or up to 1000 uuids. Absent/empty/`["*", "uuid"]` → HTTP 400. See [Search controls](#search-controls-adr-0031) for the three retrieval knobs | `list[SearchResult]` |
 | `profile(container_tag=None)` | Get the memory profile for a container tag. The tag is an IN-TENANT filter, never a tenant selector; an unknown tag is an EMPTY profile with HTTP 200, not a 404. An empty string is refused locally (guaranteed HTTP 400) | `ProfileResult` |
+
+### Search planes (`scope`) and the session filter (ADR-0014)
+
+`sessions` is **required** on every search: `sessions_all()` (`["*"]`) is every
+session in the plane, or pass up to 1000 explicit session uuids. `None`, an
+empty list, or `"*"` mixed with uuids raises `AnhurQueryError` locally
+(`status_code == 400`, `kind == "invalid_request"`, `retryable == False`,
+message `INVALID_PARAM: 'sessions' ...`) before any request. Before 4.1.0 it was
+a bare `AnhurError` classified `transport`/retryable.
+
+```python
+from anhurdb import sessions_all
+
+# scope: "sessions" (default) | "tenant_shared" | "client_shared" | "shared_all"
+hits = await mem.search("refund policy", sessions_all(), scope="tenant_shared")
+hits = await mem.search_tenant_shared("refund policy", sessions_all())  # tenant Shared Data library
+hits = await mem.search_client_shared("refund policy", sessions_all())  # client-wide library
+hits = await mem.search_shared("refund policy", sessions_all())         # both shared planes (shared_all)
+hits = await mem.search("refund policy", [session_id])                  # one chat
+```
 
 ### Search & Discovery
 
 | Method | Description |
 |--------|-------------|
-| `search_by_type(type, sessions, limit=20)` | Type filter in tenant store only — not a Shared Data plane switch |
+| `search_by_type(memory_type, sessions, limit=20, query=None)` | Type filter in tenant store only — not a Shared Data plane switch |
 | `smart_search(query, sessions, *, limit=10, memory_type=None, scope="sessions")` | **Lexical only** — full-text relevance × cognitive weight, no embedding. Use it for keywords and identifiers; for conceptual queries use `search()`. `memory_type` is sent as `?type=`. Returns `SmartSearchResponse`, NOT `list[SearchResult]` — `results` is `None` (not `[]`) when nothing matched, and `relevance` is a LEXICAL score that must never be compared with `SearchResult.similarity` |
 | `recall(query, sessions, limit=10)` | Same engine as `search`, MCP naming |
 | `recent(limit=20)` | Most recent records |
@@ -177,7 +197,7 @@ caller (a chat turn can wait 5 s; a 200 MB upload cannot), not to the machine.
 
 | Method | Description |
 |--------|-------------|
-| `batch_read_content(ids)` | Fetch content for many records in one call. The SDK does not cap the list; the **server** rejects more than **1000** ids with HTTP 400 `batch size exceeds maximum` (`server/handler/record_batch.go`, `maxBatchSize = 1000`, matched by gRPC `batch_service.go`) |
+| `batch_read_content(ids)` | Fetch content for up to **100** records in one call (returns `dict` id → content). The SDK does not cap the list; the **server** rejects more than 100 ids with HTTP 400 `too many IDs (max 100)` and an empty list with `ids list cannot be empty` (AnhurDB `service.MaxBatchContentIDs = 100`, same on REST and gRPC). The 1000-id `maxBatchSize` applies to the batch WRITES only |
 | `batch_update_status(ids, status)` | Set one status on many records (replaces `mark_consolidated`, removed in 4.0.0: pass `"consolidated"`) |
 | `link_consolidated(ids, consolidate_id)` | Link children to a consolidated star (replaces `link_to_consolidated`/`update_consolidate_ids`, removed in 4.0.0) |
 
@@ -207,6 +227,20 @@ every plane you can upload to and raises `AnhurUploadStatusAmbiguousError`
 | `update(record_id, **fields)` | Partial update — **raises on `score`** (see below). `metadata` is an RFC 7396 merge patch (AnhurDB ADR-0035): a JSON `str` or a `dict`; `None` deletes a key, keys you do not name stay, nested objects merge, lists are replaced; a non-object patch is refused with 400 |
 | `set_score(record_id, score)` | Set importance 1-10 durably (`POST /records/set-score`) |
 | `delete(record_id)` | **Soft delete** — archives the record (`archived=1`, `status='deleted'`); it disappears from reads but is not erased |
+| `get(record_id)` | One record by id (`dict`) |
+| `delete_file(session_uuid, ingest_key_prefix, *, dry_run=False, scope=None)` | Delete every record of one uploaded file (by its `<checksum16>` prefix) → `DeleteFileResult` |
+
+```python
+record = await mem.get(42)
+await mem.update(42, summary="Updated")
+# metadata is a merge patch: only the named keys change, None deletes a key.
+await mem.update(42, metadata={"reviewed": True, "draft_of": None})
+await mem.set_score(42, 8)   # score is NOT accepted by update — see the note at the end
+await mem.delete(42)
+
+result = await mem.delete_file(session_id, "3f2a9c0d1e4b5a67", dry_run=True)
+print(result.matched_count, result.deleted_count, result.purge)
+```
 
 ### By-id scope (records from a shared plane, ADR-0029)
 
@@ -272,13 +306,13 @@ tombstone. There is no `raft_index` (removed in 4.0.0 — the server never sends
 
 `Memory` exposes the public AnhurDB surface (see `v2/PARITY_SPEC.md`):
 
-- **CRUD**: `create`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `delete`
-- **Search**: `search`, `search_session`, `search_by_type`, `smart_search`, `recall`, `query`
+- **CRUD**: `create`, `create_in_session`, `get`, `read_content`, `get_context`, `get_grounding`, `update`, `set_score`, `delete`, `delete_file`
+- **Search**: `search`, `search_with_retrieval`, `search_sessions`, `search_tenant_shared`, `search_client_shared`, `search_shared`, `search_session`, `search_by_type`, `smart_search`, `recall`, `query`
 - **Manifests / taxonomy**: `manifest_global`, `manifest_session`, `list_chat`, `count_by_type`, `list_types`, `recent`
-- **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_related_ids`
+- **Batch**: `batch_read_content`, `batch_update_status`, `link_consolidated`, `append_main_ids`, `append_main_links`, `append_related_ids`
 - **Graph**: `walk`, `walk_semantic`
-- **Entity**: `search_entities`, `upsert_entity`, `entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
-- **Upload**: `upload_file`, `upload_status`
+- **Entity**: `search_entities`, `list_entities`, `upsert_entity`, `entity_graph`, `entity_timeline`, `upsert_entity_edge`, `link_record_entity`, `get_record_entities`
+- **Upload**: `upload_file`, `upload_status`, `wait_for_upload`
 - **Temporal**: `supersede`
 - **Session**: `create_session`, `open_session`, `new_session`, `list_sessions`, `get_session_history`, `get_session_clusters`
 - **Profile**: `profile`
@@ -314,8 +348,8 @@ Supported operators: `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`. There are no ot
 `QueryBuilder` validates the column name and the operator suffix locally against the
 server whitelist (`id`, `uuid`, `type`, `dimension`, `weight`, `score`, `status`,
 `consolidated`, `archived`, `created_at`, `updated_at`, `prefix`, `metadata`,
-`summary`, `superseded_by`, `valid_from`, `valid_until`), so a typo raises `ValueError`
-before a request is sent.
+`summary`, `superseded_by`, `valid_from`, `valid_until`), so a typo raises `AnhurQueryError`
+(`kind == "invalid_request"`, `status_code is None`) before a request is sent.
 
 ### Server-side validation tightened on 2026-07-28
 
@@ -363,7 +397,8 @@ travels in the body).
 ```python
 from anhurdb import AgentProfile, ClientAPI, KeyScope
 
-async with ClientAPI(client_key, url="http://localhost:8000") as api:
+# url defaults to https://anhurdb.yoven.ai, like Memory; pass url= for self-hosted.
+async with ClientAPI(client_key) as api:
     child = await api.create_child(account_ref)          # created=True once, then False with the same id
     await api.create_child_tenant(child.child_client_id, "contabilidade",
                                   profile=AgentProfile(config={"search_top_k": "8"}, max_rpm=1200))
