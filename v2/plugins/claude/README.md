@@ -19,8 +19,8 @@ Give Claude Code a **persistent, sovereign long-term memory** backed by [AnhurDB
   `X-API-Key` header. This honors AnhurDB's auth model: a master key for services, **one API key
   per tenant** — nothing else.
 
-Underneath, this is **one static Go binary and three hooks** — `recall` on `SessionStart`, `persist`
-on `Stop` and `SessionEnd`. That is the entire mechanism; the plugin is how it gets installed,
+Underneath, this is **one static Go binary and five hooks** — `recall` on `SessionStart`,
+`turn-recall` on `UserPromptSubmit`, `persist` on `Stop` and `SessionEnd`, `precompact` on `PreCompact`. That is the entire mechanism; the plugin is how it gets installed,
 updated, and shipped, and [installing it](#option-a--the-plugin-recommended) is all you should need to
 do.
 
@@ -205,7 +205,7 @@ Every component lives at the **plugin root**; only `plugin.json` goes inside `.c
 | Path | What it is | Why it exists |
 | --- | --- | --- |
 | `.claude-plugin/plugin.json` | Manifest: name, version, monitor path | `version` is what invalidates an installed cache — bump it or nothing ships |
-| `hooks/hooks.json` | `SessionStart` → `recall`, `Stop` + `SessionEnd` → `persist` | the memory loop itself |
+| `hooks/hooks.json` | `SessionStart` → `recall`, `UserPromptSubmit` → `turn-recall`, `Stop` + `SessionEnd` → `persist`, `PreCompact` → `precompact` | the memory loop itself |
 | `bin/` | the engine: a wrapper + one prebuilt binary per OS/arch | a marketplace install needs no Go toolchain |
 | `.mcp.json` | the AnhurDB MCP server (`ANHUR_MCP_URL`) | explicit tool access for *you*, not for the model (see below) |
 | `monitors/monitors.json` | one background monitor: `anhur-memory-health` | makes a memory that stopped saving **visible during the session** |
@@ -435,10 +435,29 @@ and it is worth running after any change to the plugin, the marketplace, or the 
 SessionStart ─▶ recall  ─▶ flush any turns queued from a previous offline moment
                         └▶ read your profile, inject the <anhur-memory> block
    …turns…
+UserPromptSubmit (each) ─▶ turn-recall ─▶ search AnhurDB with the prompt (3 s budget)
+                                       └▶ inject <anhur-memory-turn>: only records not yet shown
 Stop (each)  ─▶ persist ─▶ drain any queued turns, then save the new turn
                         └▶ (on failure: queue to disk)
+PreCompact   ─▶ precompact ─▶ forget what turn-recall showed, then persist
+SessionStart(compact) ─▶ recall ─▶ re-inject the <anhur-memory> block after compaction
 SessionEnd   ─▶ persist ─▶ final flush of any remaining turns
 ```
+
+**Per-turn recall** (`turn-recall`, on `UserPromptSubmit`). The session-start block is a profile; it
+cannot know what you are about to ask. So every prompt of at least 15 characters and 3 words is sent
+as a search (top-6), and up to 4 records that this session has **not** seen yet are injected as a
+`<anhur-memory-turn>` block (≤ 2,000 characters, each line dated so the model can tell an old fact
+from its replacement). What was shown is remembered per session in
+`~/.anhur-claude-memory/turn-recall/<session>.json` (0600, pruned after 30 days). It **fails open**:
+a slow (> 3 s) or unreachable AnhurDB, a bad input, or a short prompt (`ok`, `continue`, a bare
+`/command`) injects nothing and never blocks the prompt. Cost: the hook holds each qualifying prompt
+for the search round trip — measured 2.2–3.0 s against the hosted API on 2026-11-22.
+
+**Compaction** (`precompact`, on `PreCompact`). Claude Code gives `PreCompact` no way to add context
+— its stdout becomes *instructions for the summariser*, so this hook prints nothing. It resets the
+per-turn dedupe (the records it hid may be gone from the compacted context) and persists the
+turn-so-far. The memory block comes back through `SessionStart` with the `compact` matcher.
 
 Each saved turn becomes a memory in AnhurDB. From there AnhurDB's **Smart Units** distill it into
 typed memories, keep them current, and retire contradicted facts so recall stays accurate over time.

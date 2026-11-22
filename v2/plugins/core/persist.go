@@ -31,6 +31,13 @@ type hookInput struct {
 func cmdPersist(ctx context.Context, cfg config, mem *client.Memory) {
 	var input hookInput
 	_ = json.NewDecoder(os.Stdin).Decode(&input)
+	persistHookInput(ctx, cfg, mem, input)
+}
+
+// persistHookInput is the body of cmdPersist once stdin is decoded. PreCompact
+// (precompact.go) reuses it with the payload IT already read — stdin can only be
+// consumed once, so the decode and the work had to come apart.
+func persistHookInput(ctx context.Context, cfg config, mem *client.Memory, input hookInput) {
 
 	// Junior Tip [drain the backlog on EVERY persist, 2026-07-08]: flushQueue used to
 	// run ONLY on cmdRecall (SessionStart). In a long-running session that queued a

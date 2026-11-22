@@ -12,6 +12,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". $HOME/.anhur-claude-memory/env >/dev/null 2>&1; ${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory turn-recall",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -30,6 +41,17 @@
             "type": "command",
             "command": ". $HOME/.anhur-claude-memory/env 2>/dev/null; ${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory persist",
             "timeout": 45
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". $HOME/.anhur-claude-memory/env >/dev/null 2>&1; ${CLAUDE_PLUGIN_ROOT}/bin/anhur-claude-memory precompact",
+            "timeout": 30
           }
         ]
       }

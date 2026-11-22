@@ -13,6 +13,9 @@
 //	                   # since the last run; on failure, queue to disk.
 //	<binary> status    # memory-health: offline, keyless report of the local queue and a
 //	                   # verdict line, naming any session AnhurDB refuses as full (status.go).
+//	<binary> turn-recall  # UserPromptSubmit: search with the prompt, inject only records not
+//	                      # yet shown this session, fail open on any error (turn_recall.go).
+//	<binary> precompact   # PreCompact: reset the per-turn dedupe, then persist (precompact.go).
 //
 // Design principle (mirrors AnhurDB's #1 rule — no silent loss): a turn we cannot persist is
 // queued to disk and recovered by the next persist or the next session start — whichever comes
@@ -68,7 +71,7 @@ func Run(args []string, plugin Config) {
 	_ = os.MkdirAll(cfg.cursorDir(), 0o755)
 
 	if len(args) < 2 {
-		logLine(cfg, "usage: "+plugin.BinaryName+" <recall|persist|status>")
+		logLine(cfg, "usage: "+plugin.BinaryName+" <recall|persist|turn-recall|precompact|status>")
 		return
 	}
 	// status is offline and keyless BY DESIGN — see status.go. It must run before the
@@ -104,7 +107,7 @@ func Run(args []string, plugin Config) {
 		// A transcrição vai para o disco mesmo sem chave: recuperável depois.
 		// Mesma resolução de sessão/caminho que cmdPersist usa, para o arquivo
 		// cair com o mesmo nome que teria caído se a chave estivesse presente.
-		if len(args) > 1 && args[1] == "persist" && cfg.archive {
+		if len(args) > 1 && (args[1] == "persist" || args[1] == "precompact") && cfg.archive {
 			var stdinInput hookInput
 			_ = json.NewDecoder(os.Stdin).Decode(&stdinInput)
 			transcriptPath := resolveTranscript(stdinInput)
@@ -133,6 +136,10 @@ func Run(args []string, plugin Config) {
 		cmdRecall(ctx, cfg, mem)
 	case "persist":
 		cmdPersist(ctx, cfg, mem)
+	case "turn-recall":
+		cmdTurnRecall(ctx, cfg, mem, os.Stdin, os.Stdout, defaultTurnRecallLimits())
+	case "precompact":
+		cmdPreCompact(ctx, cfg, mem, os.Stdin)
 	default:
 		logLine(cfg, "unknown subcommand: "+args[1])
 	}
