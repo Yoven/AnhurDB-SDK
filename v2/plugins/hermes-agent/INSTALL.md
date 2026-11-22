@@ -49,7 +49,7 @@ so install it explicitly, into the interpreter that runs `hermes`:
 
 ```bash
 ~/.hermes/hermes-agent/venv/bin/python -m pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.1.0/anhurdb-4.1.0-py3-none-any.whl
 ```
 
 That is the published wheel of the SDK version this plugin is tested against.

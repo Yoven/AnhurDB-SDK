@@ -46,7 +46,7 @@ SOURCE_DIR = Path(__file__).resolve().parent
 # Mesma string de sdk_runtime.SDK_WHEEL_URL (este script nao importa o plugin).
 # tests/test_install_hint.py garante que as duas nao divergem.
 SDK_WHEEL_URL = (
-    "https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl"
+    "https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.1.0/anhurdb-4.1.0-py3-none-any.whl"
 )
 
 # Environment marker that stops the re-exec from looping forever.

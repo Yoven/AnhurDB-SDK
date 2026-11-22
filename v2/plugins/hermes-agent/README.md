@@ -33,7 +33,7 @@ virtualenv, so the SDK must be importable **there**:
 
 ```bash
 ~/.hermes/hermes-agent/venv/bin/pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v3.0.1/anhurdb-3.0.1-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.1.0/anhurdb-4.1.0-py3-none-any.whl
 ```
 
 The SDK is not on PyPI, so `pip install anhurdb` does not work; use the release
