@@ -20,7 +20,7 @@ in the transport would repeat a non-idempotent mint the caller cannot see.
 
 import asyncio
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Self
 
 import aiohttp
 
@@ -53,7 +53,11 @@ class ClientKeyTransport:
             await self._session.close()
             self._session = None
 
-    async def __aenter__(self) -> "ClientKeyTransport":
+    async def __aenter__(self) -> Self:
+        # Junior Tip [why Self, not "ClientKeyTransport"]: `async with
+        # ClientAPI(...) as api` binds what __aenter__ returns. Annotated with
+        # the base class, a type checker sees a ClientKeyTransport and rejects
+        # api.create_child(...); Self keeps the subclass type.
         await self.connect()
         return self
 
