@@ -25,12 +25,12 @@ Wheels ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) 
 
 ```bash
 pip install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.0.0/anhurdb-4.0.0-py3-none-any.whl
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/python/v4.1.0/anhurdb-4.1.0-py3-none-any.whl
 ```
 
-> The pin above matches `anhurdb.__version__` in this tree (`4.0.0`). Go and
-> TypeScript ship the same number. The `v2/python/v4.0.0` release (wheel +
-> sdist) was published on 2026-11-21.
+> The pin above matches `anhurdb.__version__` in this tree (`4.1.0`). Go and
+> TypeScript ship the same number. `v2/python/v4.0.0` (2026-11-21) is the
+> previous release.
 >
 > **4.0.0 is a breaking release (legacy removal).** `AnhurClient`,
 > `search_with_ast`, `mark_consolidated`, `link_to_consolidated`,

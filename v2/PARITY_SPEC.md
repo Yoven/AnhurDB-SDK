@@ -1,6 +1,6 @@
 # AnhurDB SDK v2 — Parity Specification
 
-**Status:** Implemented (2026-07); **4.0.0 (2026-11-21) in all three SDKs** — legacy
+**Status:** Implemented (2026-07); **4.1.0 (2026-11-22) in all three SDKs** (client-key API, typed 401/403, metadata merge patch); 4.0.0 (2026-11-21) was the legacy
 removal, see "4.0.0 — legacy removal" below. Python, TypeScript, and Go expose the same
 `Memory` API. This document is the public contract; deviations are bugs.
 

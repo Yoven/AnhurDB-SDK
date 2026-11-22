@@ -11,18 +11,18 @@ Official Go client for [AnhurDB](https://anhur.yoven.ai) — cognitive memory fo
 Module tags ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases) (`v2/golang/vX.Y.Z`).
 
 ```bash
-go get github.com/Yoven/AnhurDB-SDK/v2/golang/v4@v4.0.0
+go get github.com/Yoven/AnhurDB-SDK/v2/golang/v4@v4.1.0
 ```
 
-> This tree is **4.0.0** (`client.Version`); TypeScript and Python ship the same
-> number. The `v2/golang/v4.0.0` tag was published on 2026-11-21 and resolves on
-> `proxy.golang.org`; `v2/golang/v3.0.1` is the last tag on the old `/v3` path.
+> This tree is **4.1.0** (`client.Version`); TypeScript and Python ship the same
+> number. `v2/golang/v4.0.0` (2026-11-21) is the previous tag on the same `/v4`
+> path; `v2/golang/v3.0.1` is the last tag on the old `/v3` path.
 >
 > **The module path moved to `/v4` in 4.0.0** (it moved to `/v3` in 3.0.0). It
 > contains TWO `v2`-looking segments: `github.com/Yoven/AnhurDB-SDK/v2/golang/v4`.
 > The first `v2` is this repository's directory layout — it never changes. The
 > trailing one is the Go major-version suffix. Bumping only the version,
-> `.../golang/v3@v4.0.0`, resolves to nothing: Go refuses a v4+ version on a
+> `.../golang/v3@v4.1.0`, resolves to nothing: Go refuses a v4+ version on a
 > module path with no matching major suffix, and the error names the path, not
 > the version, so it reads like the module is missing. Migrate imports with
 > `sed -i 's#golang/v3#golang/v4#g'`.

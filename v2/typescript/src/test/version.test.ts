@@ -26,8 +26,8 @@ describe("SDK version", () => {
     assert.equal(SDK_VERSION, readPackageManifest().version);
   });
 
-  it("is the 4.0.0 the three SDKs converged on", () => {
-    assert.equal(SDK_VERSION, "4.0.0");
+  it("is the 4.1.0 the three SDKs converged on", () => {
+    assert.equal(SDK_VERSION, "4.1.0");
   });
 
   it("is full semver, not a truncated major.minor", () => {

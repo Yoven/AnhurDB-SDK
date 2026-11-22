@@ -41,7 +41,7 @@ package client
 // aliases UpdateConsolidateIDs / RecentMemories / SearchWithSignals and
 // models.StatusPending. AddResult.Mode now reads "ingest" or "records". Being a
 // major on a Go module, it also moves the import path to .../v2/golang/v4.
-const Version = "4.0.0"
+const Version = "4.1.0"
 
 // UserAgentPrefix names the SDK in the User-Agent header. Kept separate from
 // Version so the two concerns (who I am / which release I am) never get

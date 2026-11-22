@@ -23,7 +23,7 @@
  * Kept in lockstep with the Go and Python SDKs — the three ship the same
  * number in the same change (`feedback_sdk_sync_invariant`).
  */
-export const SDK_VERSION = "4.0.0";
+export const SDK_VERSION = "4.1.0";
 
 /**
  * Value sent as `User-Agent` on every HTTP request.

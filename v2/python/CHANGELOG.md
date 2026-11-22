@@ -1,6 +1,36 @@
 # Python SDK Changelog
 
-## Unreleased
+## 4.1.0 — 2026-11-22
+
+### Fixed — invalid `sessions` argument is a contract error, not a transport blip
+
+- A missing/empty/contradictory `sessions` argument (ADR-0014) raised a bare
+  `AnhurError` with no status, which classified as kind `transport`,
+  `retryable=True`. It now raises `AnhurQueryError` with `status_code=400`,
+  kind `invalid_request`, `retryable=False` — the same as Go's validation
+  `*APIError`. Message unchanged; `except AnhurError` still catches it.
+
+### Fixed — `async with ClientAPI(...) as api` type-checks
+
+- `ClientKeyTransport.__aenter__` was annotated `-> "ClientKeyTransport"`, so
+  mypy typed `api` as the base class and refused `api.create_child(...)`. It now
+  returns `Self`. Enforced by `tests/test_client_api_typing.py` (runs mypy).
+
+### Docs
+
+- `search()` docstring: it is the hybrid conceptual-RAG entry point
+  (server-side embedding); `smart_search` is lexical only.
+- 4.0.0 entry below: the "Kept on purpose" list wrongly said `profile()` 404 →
+  empty profile; corrected (dated amendment, see there).
+
+### Docs — READMEs synced with the code (2026-11-22)
+
+- `batch_read_content` / `BatchReadContent` / `batchReadContent`: the server cap
+  is **100** ids per call (`too many IDs (max 100)`), not 1000 — the 1000
+  `maxBatchSize` is for batch writes only. No SDK caps it locally.
+- Every README now covers the same operations (search planes, typed create,
+  get, merge-patch update, delete-by-file, typed errors, client-key API) and its
+  samples compile against this tree.
 
 ### Changed — 401/403 keep the server's reason (identical in Go, Python and TypeScript)
 
@@ -131,7 +161,10 @@ server source (`AnhurDB/server`, paths below).
   scope and the `"legacy"` delete leg; the ADR-0031 `SERVER_TOO_OLD` /
   "server ignored mode" guard; the ambiguous-upload 409 sentence match (server
   sends no code); `records: null` → `[]`; `storage` disk → REST fallback;
-  `profile()` 404 → empty profile (also in TypeScript; not in the 4.0.0 set).
+  ~~`profile()` 404 → empty profile~~ — *corrected 2026-11-22:* this item was
+  wrong. 4.0.0 removed that fallback (see "Aligned" above and
+  `anhurdb/client/profile.py`): every HTTP error from `profile()`, a 404
+  included, is raised, in all three SDKs.
 
 ### Migration
 

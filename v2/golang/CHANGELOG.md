@@ -1,6 +1,31 @@
 # Go SDK Changelog
 
-## Unreleased
+## 4.1.0 — 2026-11-22
+
+### Fixed — `errors.Is(err, ErrConnectionFail)` now fires
+
+- `ErrConnectionFail` was declared and documented but never returned, so the
+  README's `errors.Is(err, client.ErrConnectionFail)` branch never matched. A
+  `*TransportError` of kind `transport` now unwraps to it (`Unwrap() []error`:
+  sentinel + cause). Kind `timeout` does not match (the server may have
+  processed the request); `errors.Is(err, context.DeadlineExceeded)` and
+  `errors.As(err, &netErr)` on the cause keep working.
+- Only `errors.Unwrap(transportErr)` (single-error unwrap) changes: it now
+  returns nil, as for any multi-error; use `errors.Is` / `errors.As`.
+
+### Docs — `Search` doc comment
+
+- `Search` is the hybrid conceptual-RAG entry point (server-side embedding);
+  `SmartSearch` is lexical only. The doc comment said the opposite.
+
+### Docs — READMEs synced with the code (2026-11-22)
+
+- `batch_read_content` / `BatchReadContent` / `batchReadContent`: the server cap
+  is **100** ids per call (`too many IDs (max 100)`), not 1000 — the 1000
+  `maxBatchSize` is for batch writes only. No SDK caps it locally.
+- Every README now covers the same operations (search planes, typed create,
+  get, merge-patch update, delete-by-file, typed errors, client-key API) and its
+  samples compile against this tree.
 
 ### Changed — 401/403 on data routes keep the server's reason (identical in Go, Python and TypeScript)
 
@@ -153,7 +178,7 @@ Python and TypeScript (all three at 4.0.0). Server evidence is AnhurDB `main`
 | `models.StatusPending` | (none — never written by the server) |
 | `deleteResult.RaftIndex` | (none — never sent by the server) |
 
-## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
+## Shipped in 4.0.0 — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 
@@ -174,7 +199,7 @@ Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
   any request is sent. Also enforced for a value set directly on
   `HTTPConnection.TenantID`.
 
-## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
+## Shipped in 4.0.0 — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
 
 Additive (variadic options; existing call sites compile unchanged). Go, Python
 and TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
@@ -211,7 +236,7 @@ and TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
   upload to `client/upload.go`, out of `client.go`/`parity.go`. Tests:
   `client/record_scope_test.go`, `client/scope_errors_test.go`.
 
-## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
+## Shipped in 4.0.0 — typed session-record-limit refusal (2026-11-20, ADR-0033)
 
 Additive; no version number assigned yet (not published). Go, Python and
 TypeScript ship it together.

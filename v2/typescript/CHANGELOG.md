@@ -1,6 +1,23 @@
 # TypeScript SDK Changelog
 
-## Unreleased
+## 4.1.0 — 2026-11-22
+
+### Fixed — invalid `sessions` argument is a contract error, not a transport blip
+
+- A missing/empty/contradictory `sessions` argument (ADR-0014) threw a bare
+  `AnhurError` with no status, which classified as kind `transport`,
+  `retryable: true`. It now throws `AnhurQueryError` with `statusCode: 400`,
+  kind `invalid_request`, `retryable: false` — the same as Go's validation
+  `*APIError`. Message unchanged; `instanceof AnhurError` still matches.
+
+### Docs — READMEs synced with the code (2026-11-22)
+
+- `batch_read_content` / `BatchReadContent` / `batchReadContent`: the server cap
+  is **100** ids per call (`too many IDs (max 100)`), not 1000 — the 1000
+  `maxBatchSize` is for batch writes only. No SDK caps it locally.
+- Every README now covers the same operations (search planes, typed create,
+  get, merge-patch update, delete-by-file, typed errors, client-key API) and its
+  samples compile against this tree.
 
 ### Changed — 401/403 keep the server's reason (identical in Go, Python and TypeScript)
 
@@ -147,7 +164,7 @@ the same things in the same release.
 - Stop reading `DeleteFileResult.raft_index`; replace `SearchSessionPayload`
   with `SearchPayload` (`scope: "sessions"`, `sessions: [uuid]`).
 
-## Unreleased — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
+## Shipped in 4.0.0 — delete-by-file `alternative_sessions`, deprecated `raft_index`, tenant id validation (2026-11-20)
 
 Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
 
@@ -164,7 +181,7 @@ Go, Python and TypeScript ship it together (branch `fix/sdk-audit-gaps`).
   `AnhurQueryError` (invalid_request) — previously a plain `Error`, and only for
   control characters.
 
-## Unreleased — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
+## Shipped in 4.0.0 — by-id scope for the L2 tenant library (2026-11-20, ADR-0029)
 
 Additive (optional trailing `options`; existing calls unchanged). Go, Python and
 TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
@@ -199,7 +216,7 @@ TypeScript ship it together. Server: AnhurDB `fix/l2-lib-scope`.
   types to `src/deleteFileTypes.ts` (re-exported from `types.ts`). Tests:
   `src/test/record_scope.test.ts`.
 
-## Unreleased — typed session-record-limit refusal (2026-11-20, ADR-0033)
+## Shipped in 4.0.0 — typed session-record-limit refusal (2026-11-20, ADR-0033)
 
 Additive; no version number assigned yet (not published). Go, Python and
 TypeScript ship it together.

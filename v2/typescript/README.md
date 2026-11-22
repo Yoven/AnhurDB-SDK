@@ -28,10 +28,10 @@ Tarballs ship on [GitHub Releases](https://github.com/Yoven/AnhurDB-SDK/releases
 
 ```bash
 npm install \
-  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v4.0.0/anhurdb-4.0.0.tgz
+  https://github.com/Yoven/AnhurDB-SDK/releases/download/v2/typescript/v4.1.0/anhurdb-4.1.0.tgz
 ```
 
-> The pin above names the `v2/typescript/v4.0.0` tarball, which matches
+> The pin above names the `v2/typescript/v4.1.0` tarball, which matches
 > `SDK_VERSION` in this tree. Go and Python ship the same number.
 >
 > **4.0.0 is breaking (legacy removal).** `updateConsolidateIds` → `linkConsolidated`;
