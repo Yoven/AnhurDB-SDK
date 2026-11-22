@@ -21,7 +21,7 @@ from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from anhurdb.client import Memory
-from anhurdb.client.exceptions import AnhurError
+from anhurdb.client.exceptions import AnhurError, AnhurQueryError
 from anhurdb.client.session_filter import (
     MAX_SESSION_FILTER_UUIDS,
     SESSION_WILDCARD,
@@ -111,6 +111,12 @@ class TestNormalizeSessionsContract(unittest.TestCase):
                 with self.assertRaises(AnhurError) as raised:
                     normalize_sessions(raw_sessions)
                 self.assertEqual(str(raised.exception), expected_message)
+                # A local refusal is a contract error, never a transport blip:
+                # same class/kind as QueryBuilder and Go's invalid_request.
+                self.assertIsInstance(raised.exception, AnhurQueryError)
+                self.assertEqual(raised.exception.kind, "invalid_request")
+                self.assertFalse(raised.exception.retryable)
+                self.assertEqual(raised.exception.status_code, 400)
 
 
 class TestSessionFilterOnTheWire(AioHTTPTestCase):

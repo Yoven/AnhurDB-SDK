@@ -14,7 +14,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { Memory } from "../memory.js";
-import { AnhurError } from "../types.js";
+import { AnhurError, AnhurQueryError } from "../types.js";
 import {
   MAX_SESSION_FILTER_UUIDS,
   SESSION_WILDCARD,
@@ -137,6 +137,11 @@ describe("normalizeSessions() — rejected filters", () => {
         (thrown: unknown) => {
           assert.ok(thrown instanceof AnhurError);
           assert.equal((thrown as AnhurError).message, testCase.message);
+          // A local refusal is a contract error, never a transport blip.
+          assert.ok(thrown instanceof AnhurQueryError);
+          assert.equal((thrown as AnhurError).kind, "invalid_request");
+          assert.equal((thrown as AnhurError).retryable, false);
+          assert.equal((thrown as AnhurError).statusCode, 400);
           return true;
         },
       );

@@ -8,7 +8,23 @@
  * @packageDocumentation
  */
 
-import { AnhurError } from "./types.js";
+import { AnhurQueryError } from "./errors.js";
+
+/**
+ * Builds the local refusal for a bad `sessions` argument.
+ *
+ * Junior Tip [why AnhurQueryError with status 400]: a bare
+ * `new AnhurError(message)` has no status, and a missing status classifies as
+ * kind `transport` with `retryable: true` — telling the caller to retry a call
+ * that can never succeed. 400 is the status the server gives the same request,
+ * and it is what Go's validation *APIError and the other local argument
+ * refusals here (deleteFile, client API) already carry, so kind is
+ * `invalid_request` and `retryable` false. It still extends `AnhurError`, so
+ * `instanceof AnhurError` keeps matching.
+ */
+function invalidSessions(message: string): AnhurQueryError {
+  return new AnhurQueryError(message, 400);
+}
 
 /**
  * Selects every session inside the current scope boundary.
@@ -73,19 +89,20 @@ export function sessionsAll(): string[] {
  * compiler: plain-JavaScript callers and JSON-driven agents reach this function
  * with whatever they happen to hold.
  *
- * @throws {AnhurError} with an `INVALID_PARAM: ...` message on every rejection.
+ * @throws {AnhurQueryError} status 400, kind `invalid_request`, not retryable, with an
+ *   `INVALID_PARAM: ...` message on every rejection.
  */
 export function normalizeSessions(rawSessions: readonly string[]): string[] {
   if (rawSessions === undefined || rawSessions === null) {
-    throw new AnhurError(
+    throw invalidSessions(
       `INVALID_PARAM: 'sessions' is required; use ["*"] for every session in scope`,
     );
   }
   if (!Array.isArray(rawSessions)) {
-    throw new AnhurError("INVALID_PARAM: 'sessions' must be a list of strings");
+    throw invalidSessions("INVALID_PARAM: 'sessions' must be a list of strings");
   }
   if (rawSessions.length === 0) {
-    throw new AnhurError(
+    throw invalidSessions(
       `INVALID_PARAM: 'sessions' cannot be empty; use ["*"] for every session in scope`,
     );
   }
@@ -94,13 +111,13 @@ export function normalizeSessions(rawSessions: readonly string[]): string[] {
   let wildcardSeen = false;
   for (const rawSession of rawSessions) {
     if (typeof rawSession !== "string") {
-      throw new AnhurError(
+      throw invalidSessions(
         "INVALID_PARAM: 'sessions' must be a list of strings",
       );
     }
     const session = rawSession.trim();
     if (session === "") {
-      throw new AnhurError("INVALID_PARAM: 'sessions' contains an empty entry");
+      throw invalidSessions("INVALID_PARAM: 'sessions' contains an empty entry");
     }
     if (session === SESSION_WILDCARD) {
       wildcardSeen = true;
@@ -111,7 +128,7 @@ export function normalizeSessions(rawSessions: readonly string[]): string[] {
 
   if (wildcardSeen) {
     if (cleaned.length > 0) {
-      throw new AnhurError(
+      throw invalidSessions(
         `INVALID_PARAM: 'sessions' mixes "${SESSION_WILDCARD}" with ` +
           `${cleaned.length} explicit session(s); the wildcard must stand alone`,
       );
@@ -130,7 +147,7 @@ export function normalizeSessions(rawSessions: readonly string[]): string[] {
   }
 
   if (deduplicated.length > MAX_SESSION_FILTER_UUIDS) {
-    throw new AnhurError(
+    throw invalidSessions(
       `INVALID_PARAM: at most ${MAX_SESSION_FILTER_UUIDS} sessions per request ` +
         `(got ${deduplicated.length}); use ["*"] for all`,
     );

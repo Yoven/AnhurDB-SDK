@@ -8,7 +8,22 @@ single support answer covers every client.
 from collections.abc import Sequence as AbstractSequence
 from typing import Any, List
 
-from .exceptions import AnhurError
+from .exceptions import AnhurError, AnhurQueryError
+
+
+def _invalid_sessions(message: str) -> AnhurQueryError:
+    """Build the local refusal for a bad ``sessions`` argument.
+
+    Junior Tip [why AnhurQueryError with status 400]: a bare
+    ``AnhurError(message)`` has no status, and a missing status classifies as
+    kind ``transport`` with ``retryable=True`` — telling the caller to retry a
+    call that can never succeed. 400 is the status the server gives the same
+    request, and it is what Go's validation *APIError and the other local
+    argument refusals here (delete_file, client API) already carry, so kind is
+    ``invalid_request`` and ``retryable`` is False. It stays an ``AnhurError``
+    subclass, so existing ``except AnhurError`` keeps working.
+    """
+    return AnhurQueryError(message, status_code=400)
 
 # Junior Tip [why a wildcard instead of an optional argument]: the defect this
 # model replaces was a session filter that was silently NOT applied — the caller
@@ -60,10 +75,11 @@ def normalize_sessions(raw_sessions: Any) -> List[str]:
     they cannot audit.
 
     Raises:
-        AnhurError: with an ``INVALID_PARAM: ...`` message on every rejection.
+        AnhurQueryError: status 400, kind ``invalid_request``, not retryable, with an
+            ``INVALID_PARAM: ...`` message on every rejection.
     """
     if raw_sessions is None:
-        raise AnhurError(
+        raise _invalid_sessions(
             "INVALID_PARAM: 'sessions' is required; "
             'use ["*"] for every session in scope'
         )
@@ -75,10 +91,10 @@ def normalize_sessions(raw_sessions: Any) -> List[str]:
     if isinstance(raw_sessions, (str, bytes)) or not isinstance(
         raw_sessions, AbstractSequence
     ):
-        raise AnhurError("INVALID_PARAM: 'sessions' must be a list of strings")
+        raise _invalid_sessions("INVALID_PARAM: 'sessions' must be a list of strings")
 
     if len(raw_sessions) == 0:
-        raise AnhurError(
+        raise _invalid_sessions(
             "INVALID_PARAM: 'sessions' cannot be empty; "
             'use ["*"] for every session in scope'
         )
@@ -87,10 +103,10 @@ def normalize_sessions(raw_sessions: Any) -> List[str]:
     wildcard_seen = False
     for raw_session in raw_sessions:
         if not isinstance(raw_session, str):
-            raise AnhurError("INVALID_PARAM: 'sessions' must be a list of strings")
+            raise _invalid_sessions("INVALID_PARAM: 'sessions' must be a list of strings")
         session = raw_session.strip()
         if session == "":
-            raise AnhurError("INVALID_PARAM: 'sessions' contains an empty entry")
+            raise _invalid_sessions("INVALID_PARAM: 'sessions' contains an empty entry")
         if session == SESSION_WILDCARD:
             wildcard_seen = True
             continue
@@ -98,7 +114,7 @@ def normalize_sessions(raw_sessions: Any) -> List[str]:
 
     if wildcard_seen:
         if cleaned:
-            raise AnhurError(
+            raise _invalid_sessions(
                 f'INVALID_PARAM: \'sessions\' mixes "{SESSION_WILDCARD}" with '
                 f"{len(cleaned)} explicit session(s); the wildcard must stand alone"
             )
@@ -115,7 +131,7 @@ def normalize_sessions(raw_sessions: Any) -> List[str]:
         deduplicated.append(session)
 
     if len(deduplicated) > MAX_SESSION_FILTER_UUIDS:
-        raise AnhurError(
+        raise _invalid_sessions(
             f"INVALID_PARAM: at most {MAX_SESSION_FILTER_UUIDS} sessions per "
             f'request (got {len(deduplicated)}); use ["*"] for all'
         )
