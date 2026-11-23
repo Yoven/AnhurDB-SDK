@@ -212,6 +212,13 @@ that value: `upload.record_id` (Python — `UploadResult` is a typed model, not 
 value, no fallback; zero means the response carried no `record_id`). Pass `upload.scope`
 (Go `client.WithRecordScope(upload.Scope)`) so the poll looks in the plane the file landed in.
 
+**Upload the ORIGINAL document — never pre-split it.** AnhurDB splits each document
+itself into chapters and excerpts and builds the graph between them, so a whole PDF
+(up to 100 MB) yields one tree with citations to the real section. Pieces cut by the
+client (`nr12_(parte_7_de_34).txt`, `manual_part_3_of_8.pdf`, `guia_p03.pdf`) would
+become unrelated documents with no tree and no graph between them; since 2026-11-23
+the server refuses such names with **HTTP 422** (gRPC `InvalidArgument`).
+
 ### Temporal Versioning
 
 | Method | What it does | Endpoint |
