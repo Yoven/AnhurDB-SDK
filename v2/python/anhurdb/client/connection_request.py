@@ -153,7 +153,8 @@ class RequestExecutionMixin:
                     # Redirects are disabled for security. Log the attempt.
                     raise AnhurError(
                         f"Server returned redirect (HTTP {response.status}). "
-                        f"Redirects are disabled to prevent credential leakage."
+                        f"Redirects are disabled to prevent credential leakage.",
+                        status_code=response.status,
                     )
                 elif response.status >= 500:
                     # A partial tenant-library delete carries every leg; it is
@@ -164,6 +165,13 @@ class RequestExecutionMixin:
                     raise AnhurError(
                         f"Server error (HTTP {response.status}): "
                         f"{body_text[:500]}",
+                        status_code=response.status,
+                    )
+                elif response.status >= 400:
+                    # Junior Tip [2026-11-27]: an unhandled 4xx (405, 408, 410, 413…)
+                    # used to parse as a success body. Same rule as Go/TypeScript.
+                    raise AnhurQueryError(
+                        f"Request refused (HTTP {response.status}): {body_text[:500]}",
                         status_code=response.status,
                     )
 

@@ -14,6 +14,7 @@ a ``connection.py`` that had reached 593 lines against a ~300-line cut.
 """
 
 import aiohttp
+import asyncio
 import json
 from typing import Any, Dict, Optional
 
@@ -126,6 +127,16 @@ class MultipartUploadMixin:
                     )
                 elif response.status >= 500:
                     raise AnhurError(f"Server error (HTTP {response.status}): {body_text[:500]}", status_code=response.status)
+                elif response.status >= 400:
+                    # Junior Tip [no silent success on a refusal — 2026-11-27]: 413
+                    # (too_large), 405, 408, 410… used to fall through and parse as
+                    # an empty UploadResult(record_id=0) — data silently lost. Any
+                    # unhandled 4xx is an error, as in Go (response.go default case)
+                    # and TypeScript (!response.ok).
+                    raise AnhurQueryError(
+                        f"Request refused (HTTP {response.status}): {body_text[:500]}",
+                        status_code=response.status,
+                    )
 
                 if not body_text:
                     return {}
@@ -134,6 +145,15 @@ class MultipartUploadMixin:
                 except json.JSONDecodeError:
                     return {"message": body_text[:1000]}
 
+        except asyncio.TimeoutError as exc:
+            # Junior Tip [MUST come before ClientError]: asyncio.TimeoutError is not
+            # an aiohttp.ClientError, so an upload timeout escaped raw with an empty
+            # message (SDK_ERROR_CONTRACT defect nº1, the JSON path was fixed on
+            # 2026-08-13 but this path was not). The server may still have stored it.
+            raise AnhurConnectionError(
+                "upload timed out (the server may still have processed it)",
+                kind=AnhurError.KIND_TIMEOUT,
+            ) from exc
         except aiohttp.ClientError as exc:
             raise AnhurConnectionError(
                 f"Failed to connect to AnhurDB: {type(exc).__name__}"
